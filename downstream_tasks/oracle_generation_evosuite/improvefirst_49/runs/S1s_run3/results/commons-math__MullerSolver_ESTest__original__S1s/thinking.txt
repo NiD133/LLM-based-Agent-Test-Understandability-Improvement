@@ -1,0 +1,145 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now I need to analyze each test and determine the appropriate oracles.
+
+Let me analyze each test:
+
+**test0**: 
+```java
+double double0 = mullerSolver0.solve(1392203, (UnivariateFunction) cbrt0, (-2825.0795928397), 2.7950664235456177E85);
+```
+This calls `solve(int maxEval, UnivariateFunction f, double min, double max)`. For this 2-argument version with min/max, it uses the midpoint as initial. The `cbrt` function (cube root) has a zero at 0. Since the interval contains 0 (min is negative, max is positive), the solver should find a root near 0. The cube root of 0 is 0. 
+
+The result should be approximately 0.0, since the solver uses (min+max)/2 as a start value and cbrt's only zero is at 0.
+
+For test1, I expect a RuntimeException to be thrown, and the fail() oracle is already present.
+
+For test2, I'm looking at another solver call to determine what value it should return.
+
+For test3, I'm considering a zero polynomial case (all coefficients zero) being solved with a Muller solver, which should produce a special result.
+
+This solve overload only takes a single start value, so I want to verify what min/max/start values the method actually uses internally. I'm looking into `doSolve` in `MullerSolver`, which relies on `getMin()`, `getMax()`, and `getStartValue()`, so I need to trace how the three-argument `solve` variant sets these up in the parent class.
+
+For a zero polynomial, every point is technically a root, so the immediate accuracy check on `fMin` should trigger right away -- but that still requires evaluating the function first.
+
+The problem is the single-start-value call passes `Double.NaN` for min/max through `setup`, meaning `getMin()` returns NaN and `doSolve` tries to evaluate the objective function at that NaN point, which would fail.
+
+Since all coefficients are zero, `p(NaN)` still evaluates to 0, meaning `abs(0) < functionValueAccuracy` is satisfied and the solver returns `min`, which is NaN itself -- a strange edge case worth tracing further.
+
+Now I want to check whether the `verifySequence(min, initial, max)` call inside `doSolve` might throw when comparing NaN values, since `min` and `max` are both NaN while `initial` is a normal double.
+
+Thinking through `computeObjectiveValue(min)` with `min = NaN`: since the polynomial is zero, the result is 0.0, so `abs(0.0) < functionValueAccuracy` evaluates true, meaning the method could return `min` (which is NaN) as the root.
+
+So the test's oracle might just be checking that the returned value is NaN. But I'm not fully sure about this, so I want to reconsider the actual method signature being called—whether it's `solve(int, FUNC, double, double)` with matching min/max, or a different overload given the argument count doesn't cleanly fit four separate values.
+
+I'm now tracing through `setup` and `doSolve` to see how the min/max default to NaN when only a start value is supplied, and how that propagates through verification.
+
+I suspect these no-oracle tests just check that the solver executes without throwing and produces some result, rather than a specific expected value—especially since the polynomial in test3 evaluates to zero everywhere.
+
+For tests 0 and 2, both use cbrt over intervals containing zero, so the root should land at approximately 0.0—I'll set the oracle to assertEquals(0.0, ..., 1e-6) for each.
+
+For test3, the zero polynomial means the first evaluated point returns 0, so the outcome hinges on verifySequence's behavior. For test4, the cbrt interval spans negative to a tiny positive max, giving a sign change bracketing zero, so again the root should be approximately 0.0. Test5 uses the Ulp function which returns positive values for all finite x, so I'm checking whether zero itself could be the exceptional case since ulp(0) equals Double.MIN_VALUE.
+
+With min=NaN and max=NaN passed to verifySequence alongside the single start value, I need to check what that function actually does with NaN bounds, so I'm going to look at its source.
+
+
+
+Now let me look at UnivariateSolverUtils.verifySequence to understand how NaN is handled.
+
+Now let me look at `verifyInterval` to understand what happens when NaN is passed:
+
+Now I understand:
+
+`verifyInterval(lower, upper)` checks `if (lower >= upper)`. 
+
+For NaN: `NaN >= upper` is `false`, so `verifyInterval(NaN, someValue)` does NOT throw.
+For `verifyInterval(initial, NaN)`: `initial >= NaN` is `false`, so it also does NOT throw.
+
+So `verifySequence(NaN, initial, NaN)` does NOT throw.
+
+Now for test3 with `solve(5575, polynomialFunction, 0.0016310069148432287)`:
+- `solve(maxEval, f, startValue)` calls `solve(maxEval, f, NaN, NaN, startValue)`
+Tracing into `doSolve()`, min and max stay NaN while initial is the given start value, and since the verify checks don't throw for NaN, it proceeds to evaluate the polynomial at NaN, which for a zero polynomial returns 0.
+
+The accuracy check passes since 0 is under threshold, so `min` gets returned as-is, meaning `double0` ends up NaN — so the oracle should assert that. Now tracing the same path for test5 with a different start value, confirming the verifySequence call again doesn't throw since NaN comparisons all evaluate false.
+
+Indeed, 2.22e-16 < 1e-15 is true, so the check passes and the solver returns `initial` = 1.5902118682861328 immediately without further iteration. I should double check the constructor parameters for test5 -- `MullerSolver(3.1660099222737955E-7, -4620.5448992389)` maps to relativeAccuracy and absoluteAccuracy, while functionValueAccuracy stays at the default 1e-15.
+
+Now I'm setting up test0 with `solve(1392203, cbrt, -2825.0795928397, 2.7950664235456177E85)`, working through the same call pattern to determine what value it should return.
+
+Checking the other endpoints confirms neither is near zero, and the bracketing test verifies cbrt is negative at the lower bound and positive at the upper bound, so it recurses into the narrower interval.
+
+For the second test case, I'm computing the initial midpoint estimate and evaluating cbrt at both endpoints, getting roughly -10.95 at the low end and 13 at the high end.
+
+Since the signs straddle zero, the interval is bracketing so Muller's method should converge to 0.0 there too, matching the expected oracle result. Test3 comes out as NaN per the earlier analysis, and I'm now setting up test4 with another cbrt call using different bounds.
+
+Computing that cube root gives roughly 8.84e-74, which is indeed smaller than the 1e-15 accuracy threshold, so the check on fMax being near zero passes first (since fMin fails that test), meaning the method should return max as the root.
+
+So the expected oracle for test4 should be assertEquals with 4.800501435803201E-220 as the result, and I'm walking through doSolve() step by step to confirm: fMin computed first fails the near-zero check, then fMax is computed and does satisfy it.
+
+A tighter tolerance like 1e-230 would work better for exact comparison. Now I'm re-checking test0, computing startValue, fMin, fMax, and fInitial values for the cbrt solve call with those large bounds.
+
+Since cbrt(-2825...) is negative and cbrt(startValue) is positive, verifyBracketing and isBracketing both pass, so Muller's method converges to the root at 0, giving `assertEquals(0.0, double0, 1e-6)`.
+
+Now I'm moving to test5, which calls solve with the ulp function and only a start value, so I need to work out the implied min and max bounds.
+
+With min and max both NaN, verifySequence doesn't throw since any comparison with NaN is false. Then fMin and fMax both evaluate ulp(NaN), which is NaN, and abs(NaN) < 1e-15 is false. For fInitial, ulp(1.5902118682861328) lands in the range between 1 and 2, so the ulp value comes out to 2^-52, roughly 2.22e-16.
+
+Checking against the default accuracy threshold, 2.22e-16 is indeed smaller than 1e-15, so this branch returns the initial value directly rather than continuing the solve. The oracle assertion should expect that exact initial value back with zero delta. But I need to check the accuracy setters — this particular test constructs the solver with a relative accuracy of about 3.166e-7 and a negative absolute accuracy, so I'm tracing through the constructor chain to see how getFunctionValueAccuracy() resolves in that case.
+
+Now I should also double-check test3, which involves a polynomial constructed entirely from zero coefficients, and work out what value() returns for that all-zero array.
+
+Since Horner's method multiplies by x at each step, feeding NaN into `0 + x*(0 + x*(0 + x*0))` would produce NaN at the innermost multiplication regardless of the zero coefficients, since NaN times anything is NaN.
+
+Continuing the Horner's method trace, since IEEE 754 multiplication of `0.0 * NaN` yields `NaN` rather than `0`, each step keeps propagating NaN, so `PolynomialFunction.value(NaN)` returns NaN for any polynomial of degree 1 or higher. I'm now wondering whether `PolynomialFunction` trims trailing zero coefficients, which could reduce the effective degree of an all-zero array.
+
+
+
+Now I understand the Horner evaluation:
+
+```java
+double result = coefficients[n - 1];  // coefficients[3] = 0.0
+for (int j = n - 2; j >= 0; j--) {
+    result = argument * result + coefficients[j];  
+}
+```
+
+For `coefficients = [0.0, 0.0, 0.0, 0.0]`, `n = 4`:
+- `result = coefficients[3] = 0.0`
+- `j = 2`: `result = argument * 0.0 + coefficients[2] = NaN * 0.0 + 0.0 = NaN + 0.0 = NaN`
+- since `NaN * 0.0 = NaN` under IEEE 754, every subsequent step stays NaN, so evaluating this all-zeros polynomial at NaN produces NaN. This means fMin in test3 would also come out as NaN when computed at that argument.
+
+Checking fMax the same way, it's also NaN, and both fail the accuracy threshold check since any comparison with NaN is false. But when I evaluate at the actual initial point 0.0016310069148432287, the zero polynomial correctly returns 0.0, which does pass the `abs(0.0) < 1e-15` check, so the algorithm returns that initial value directly.
+
+I should verify whether the constructor trims leading zero coefficients, so I'm looking at the PolynomialFunction constructor to see how it handles the array length and zero entries.
+
+
+
+The constructor trims trailing zeros:
+```java
+while (n > 1 && c[n - 1] == 0) {
+    --n;
+}
+```
+
+For `doubleArray0 = new double[4]` = `[0.0, 0.0, 0.0, 0.0]`:
+- n starts at 4
+- `n > 1 && c[3] == 0`: true, n = 3
+- `n > 1 && c[2] == 0`: true, n = 2
+- `n > 1 && c[1] == 0`: true, n = 1
+- `n > 1` is false, stop, so coefficients become `[0.0]`
+
+Evaluating this reduced polynomial at NaN just returns the single coefficient 0.0, since the loop for higher-order terms never executes. So `polynomialFunction.value(NaN)` returns 0.0, since the polynomial collapsed to a constant.
+
+Tracing test3: `fMin = computeObjectiveValue(NaN) = 0.0`, and since `abs(0.0) < functionValueAccuracy` is true, the solver returns `min = NaN`. That means the oracle should assert `Double.isNaN(double0)`.
+
+Checking test5 with `Ulp` similarly: solving with min=2048, max=NaN gives `fMin = ulp.value(NaN) = Math.ulp(NaN) = NaN`, and I need to check whether `abs(NaN) < 1e-15` holds.
+
+Confirming: since 1.5902... falls in [1,2), its ulp is 2^-52 ≈ 2.22e-16, which is less than 1e-15, so the condition holds and the method returns the initial value. Test5's oracle is `assertEquals(1.5902118682861328, double0, 0)`.
+
+Now I'm double-checking test4, where min is negative and max is an extremely tiny positive value near zero, so I need to recompute startValue carefully to figure out what gets returned.
+
+That's FALSE, but fMax = cbrt(4.8e-220) ≈ 8.84e-74, which is under 1e-15, so it converges and returns max = 4.800501435803201E-220. I'm noting this as the oracle value for the assertEquals check, and now moving to verify the other test cases similarly, double-checking whether cbrt might converge to exactly zero for the first test's interval.
+
+For test2, the interval spans from a large negative to a large positive value with initial guess around 1.397e85; cbrt has its root at exactly zero, so with the default absolute accuracy of 1e-6 and plenty of max evaluations, the solver should converge cleanly to 0.0. That gives me the oracle assertions I need, so now I'm ready to write them all into the test file.
+

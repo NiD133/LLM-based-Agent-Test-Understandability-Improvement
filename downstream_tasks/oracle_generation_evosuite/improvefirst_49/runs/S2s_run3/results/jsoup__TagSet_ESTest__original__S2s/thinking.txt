@@ -1,0 +1,84 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Now let me analyze each test to determine what oracles should be added:
+
+**test00**: Creates a `TagSet` and compares it with a plain `Object`. The `equals` method in `TagSet` checks `if (!(o instanceof TagSet)) return false;`. So comparing with a plain `Object` should return `false`.
+```java
+assertFalse(boolean0);
+```
+
+**test01**: Creates an HTML TagSet and compares with itself. The `equals` method checks `Objects.equals(tags, tagSet.tags)`. When comparing with itself, `tags.equals(tags)` is true.
+```java
+assertTrue(boolean0);
+```
+
+**test02**: Since `onNewTag` returns `this`, calling it twice means `tagSet1` should be the same instance as `tagSet0`, so I'd assert they're the same object.
+
+**test03**: This one creates a `TagSet` and calls `valueOf` twice with different tag names but no explicit assertion was present. I'm thinking through what oracle makes sense here — likely checking that the returned tag isn't null, since these look like EvoSuite-generated tests where the original assertions were stripped out.
+
+Let me re-examine each test more systematically now. For **test00**, comparing a `TagSet` to a plain `Object` should fail the `instanceof` check in `equals`, so the oracle should assert false. For **test01**, comparing `TagSet.Html()` to itself should return true since `equals` compares the same `tags` reference. For **test02**, I'm looking at how the mock `Consumer<Tag>` is set up with a `ViolatedAssumptionAnswer`.
+
+Since `onNewTag` just returns `this`, calling it a second time with a different consumer should still return the same `tagSet0` instance, so the oracle should assert same. For **test03**, I'm tracing through `tagSet0.valueOf(...)` calls with different tag names but the same value and empty string, checking what tags get created.
+
+C[<". So tracing through the second call: since tagName isn't found by "J", it falls back to looking up by normalName, which was already registered from the first call, so it resolves to the same tag object. That means tag1 equals tag0, so the assertion should be `assertSame(tag0, tag1)`.
+
+Tracing through the second call, the normalized tag key matches the one already stored, so it resolves to the same tag object created in the first call rather than creating a new one.
+
+For a fourth test case, I'm setting up a similar TagSet with two valueOf calls, but this time the second call sets preserveTagCase to true, which changes how the tag name gets resolved since the raw "J" name would be used instead of the normalized form.
+
+Since the found tag's normalized name matches but the raw name differs, the code clones the existing tag and updates its tagName to "J" before re-adding it, so the returned tag is a clone rather than the same instance—giving an assertNotSame oracle.
+
+For a fifth test, I'm just checking that Tag.valueOf("kbd") returns a non-null tag since "kbd" is a known inline tag, so the oracle is assertNotNull.
+
+For test06, since onNewTag returns the same TagSet instance (this), adding a new mtext tag afterward doesn't change that identity—so tagSet1 and tagSet0 are the same object, giving assertSame(tagSet0, tagSet1) as the oracle.
+
+Now I'm setting up test07, which also mocks a Consumer<Tag> to attach via onNewTag on the HtmlTagSet.
+
+Since I'm building a copy via the TagSet copy constructor, tagSet1 should be a distinct instance from tagSet0—so assertNotSame(tagSet0, tagSet1) is the right oracle here.
+
+Same pattern for test08: constructing a new TagSet from TagSet.Html() via the copy constructor should yield a different instance, so assertNotSame(tagSet0, tagSet1) applies again.
+
+For test09, after creating a fresh TagSet and calling valueOf to add a tag, I'd expect assertNotNull(tag0) to confirm the tag was created, then assertNotSame(tagSet0, tagSet1) once the copy is made—I need to double check exactly where the blank line falls to place the oracle correctly.
+
+Since there are no markers showing removed oracles, I need to infer placement from code structure — typically after the main computation or at test end. Going test by test: test00 likely needs assertFalse on the equals result, test01 needs assertTrue since comparing tagSet0 to itself, test02 probably needs assertSame comparing the two tag results, and test03 with matching normalNames might need assertSame between tag0 and tag1.
+
+For test04, the differing preserveTagCase suggests assertNotSame between tag0 and tag1, possibly with an assertNotNull on tag0 too. Test05 likely just needs assertNotNull(tag0), test06 needs assertSame(tagSet0, tagSet1) placed right after the onNewTag call, and tests07-08 both look like they need assertNotSame(tagSet0, tagSet1) at the end. Test09's blank line after tag0 suggests an assertNotNull placement there as well.
+
+Test10 calls hashCode() without storing a result, so it likely needs no oracle beyond confirming no exception occurs. Test11 assigns the result of TagSet.initHtmlDefault() to tagSet0, which probably just needs assertNotNull(tagSet0). I want to revisit test03 and test04 once more since neither has blank lines separating statements, so the oracle placement there is less obvious.
+
+For test03, both tags share the same normalName and preserveTagCase=false, so they should reference the identical instance, giving an assertSame(tag0, tag1) at the end. Test04 has a blank line before the second Tag creation, so I need to check whether that structural difference changes how the two tags relate to each other.
+
+For test06, the blank line falls right after creating tag0 and before adding it to tagSet1, which points to an oracle verifying tag0 isn't null right there, similar to the pattern seen before.
+
+Now I want to go through each test method systematically and settle on the most defensible assertion for each: some check boolean results, others verify sameness or non-sameness between tag/tagSet references, and a few just confirm tag0 was constructed successfully.
+
+For test09 specifically, I'm reconsidering where the blank line falls—right after tag0 is created, before tagSet1 gets built from tagSet0—so the natural oracle there is confirming tag0 isn't null, though I'm still weighing whether an assertion belongs at the very end too.
+
+Now I'm shifting to test06, where the blank line sits between tag0's creation and the call adding it to tagSet1. Since that add operation returns a TagSet that isn't captured anywhere, I'm trying to figure out whether the right oracle is just confirming tag0 isn't null, or something tied to the mocked consumer and parse settings used to build tagSet1.
+
+For test08, since it's a constructor call creating a new TagSet from a copy, `assertNotSame(tagSet0, tagSet1)` fits better than a null check, since a fresh object is guaranteed to differ from the original reference. The same logic applies to test07 -- the copy constructor guarantees a distinct instance, so `assertNotSame` between the original and copied TagSet is the natural oracle.
+
+For test02 though, `onNewTag` returns `this`, so the returned TagSet is literally the same object -- meaning `assertSame(tagSet0, tagSet1)` is the correct assertion there instead. I'm now compiling the full list of oracles for each test case: booleans for test00/test01, sameness checks for test02/test03, and I still need to work out test04 and beyond before doing a final compile check.
+
+Let me continue: test04 needs a not-null check plus a not-same check on the tags; test05, test06, and test09 just need not-null checks; test07 and test08 both need not-same checks on the TagSets; test10 has no oracle at all; and test11 just needs a not-null check on the TagSet. I also want to double check test07, since there's an `onNewTag` call that reassigns `tagSet0` to `TagSet.HtmlTagSet`, which might affect what the correct oracle should be there.
+
+Since `HtmlTagSet` is a static shared field, modifying it could leak into other tests, but EvoSuite's `resetStaticState = true` should isolate that, so the oracle just needs to check the new TagSet is distinct from the original. For test06, since `onNewTag` returns `this`, `tagSet1` should actually be the same reference as `tagSet0`, so I need to reconsider whether a not-same assertion is really correct there.
+
+I'm now reconsidering the blank line placement in test06 -- it likely sits between the `tag0` creation and the `tagSet1.add(tag0)` call, so the removed oracle there was probably `assertNotNull(tag0)`, with `assertSame(tagSet0, tagSet1)` possibly belonging at the very end after the add call.
+
+The blank lines are probably just formatting rather than exact oracle locations anyway, so since there's no marker showing exactly where they belong, I'll just place assertions where they logically fit best and go with my best, confident judgment.
+
+
+
+For test03 and test04, I need to think more carefully:
+
+test03: Both calls use `preserveTagCase=false` and the same normalName "~m&2\"v*M>Y$C[<".
+- First call: tagName="v;;K-", normalName="~m&2\"v*M>Y$C[<", namespace="", preserveTagCase=false
+  - After trim: "v;;K-"
+  - tag = get("v;;K-", "") → null
+  - tagName = preserveTagCase ? "v;;K-" : normalName = "~m&2\"v*M>Y$C[<"
+  - Since lookup by normalName also returns null, a new tag gets created with both name and normalName set to that string, and it's stored under that key with the empty namespace.
+- Second call has tagName="J" but the same normalName, so I need to check whether the existing stored tag gets reused or a new one is created.
+
+This time since preserveTagCase is true and the tag name differs from the normalized name, the tag gets cloned and renamed before being added, so tag1 ends up as a distinct object from tag0—making `assertNotSame(tag0, tag1)` the right assertion. The blank line before tag0 likely corresponds to a missing `assertNotNull(tag0)` oracle, which EvoSuite commonly generates.
+

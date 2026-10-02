@@ -1,0 +1,43 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Now I understand the code. Let me analyze each test to determine what oracles are needed:
+
+**test0**: `parametric.value(2.0, params)` where params=[0.0, 0.0, 2.0] (norm=0, mean=0, sigma=2).
+- The value should be `norm * exp(-diff^2 * i2s2)` = `0 * exp(...)` = 0.0
+- Oracle: `assertEquals(0.0, result, 0.0);`
+
+**test1**: Gaussian at very large value (12^12). The comment says "Gaussian far from mean evaluates to ~0". The result is a DerivativeStructure.
+- Checking that the value comes out to zero, so the oracle should be `assertEquals(0.0, gaussianResult.getValue(), 0.0);`
+
+**test2**: Gaussian at x=12, mean=0, sigma=1, I'm working out the expected value using the normal density formula, computing norm times exp(-72), which comes out to an extremely small number around 5.38e-32.
+
+I'm double-checking whether this tiny value falls below Double.MIN_NORMAL, since that would affect how precise the oracle comparison needs to be.
+
+That matches the oracle value with a tight delta. Now checking test3: for gradient at x=1530 with params [0.0, 0.0, 1530.0], I need to work through the diff, sigma, and i2s2 calculations to find the exponential term and norm factor.
+
+With norm=0, the mean and sigma gradients both come out to 0.0, leaving gradient[0]=n=exp(-0.5) as the only nonzero component, matching the comment. Though I notice the comment's claim that x equals mean seems inconsistent with params=[0.0, 0.0, 1530.0], since mean is actually 0 there.
+
+For test8, evaluating the Gaussian at a huge input value like -2892.35 with default mean=0, sigma=1 gives an exponent so extreme that the result underflows to 0.0, so the oracle should just assert 0.0. Now I'm moving on to sketch out expected results for the remaining test cases starting with test0.
+
+For test2, working through the math: with the DS having 0 free variables, order 12, value 12, the gaussian computation gives u = 12, so coeff = (1/√(2π)) * exp(-72) ≈ 0.399 * 5.38e-32 ≈ 2.15e-32, well above SAFE_MIN (Double.MIN_NORMAL ≈ 2.22e-308), so this should be the expected value to assert against.
+
+I'll plan out oracles for each test case: test0 and test1 use zero-value assertions, test2 needs a precise assertEquals comparing against 0.3989422804014327 * Math.exp(-72) with a tight delta, and test3 will need oracles covering gradient length and values.
+
+For test3, I'm now verifying the gradient computation manually—working through the norm, mean, and sigma parameters to confirm the gradient with respect to norm equals exp(-0.5), roughly 0.6065.
+
+So that resolves it: x/sigma = 1 here, making it a coincidence where x equals sigma rather than mean.
+
+Now I should draft the test file with oracles. For an extreme case like 12^12, the squared term becomes astronomical so exp(-u^2/2) underflows to zero, meaning the coefficient falls below SAFE_MIN and the result should just be filled with zeros — I'm setting up a derivative structure to verify this boundary behavior.
+
+Evaluating gaussian.value(-2892.35...) similarly underflows to 0.0 since the exponent term is astronomically small.
+
+Now revisiting test2: constantTwelve is a DerivativeStructure with 0 free variables, order 12, value 12, so I'm computing gaussian.value at x=12, working through u=12, u²=144, and the resulting coefficient calculation.
+
+I compute coeff ≈ 2.15e-32, which is well above SAFE_MIN (≈2.22e-308), so this result is non-zero — the correct expected value should be roughly 2.1464839799294225E-32, not zero as I might have assumed.
+
+Since I'm not certain of the precise value to full precision, I decide to use a symbolic assertion instead, computing the expected value directly with the Gaussian formula and a loose delta of 1e-40.
+
+For test3, I'm working through the gradient calculation: with diff=1530 and i2s2=1/(2·1530²), the exponent simplifies to exp(-1530²/(2·1530²)) = exp(-0.5) ≈ 0.6065306597126334, giving the first gradient component.
+
+I'm confirming that test0 through test3 and test8 still need explicit oracle assertions, while test4 through test7 already rely on their try/catch/fail structure to serve as the test oracle. Now I'm ready to make the actual edits to the test file.
+

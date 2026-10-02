@@ -1,0 +1,44 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now I understand both files. Let me analyze each test method and determine what oracle(s) are needed:
+
+1. **testCloseMarksStreamAsClosed** - No oracle needed, just tests that close() doesn't throw. No assertion needed since there's nothing to check after close(). Actually, wait - the test just calls `stream.close()` and if it doesn't throw, the test passes. No assertion needed here.
+
+2. **testBuilderWithByteArrayProducesOpenStream** - Just builds the stream. The test name says "ProducesOpenStream" but no oracle was present. We could check `assertNotNull(stream)`. Actually since the test just verifies no exception was thrown, `assertNotNull(stream)` would be a good oracle.
+3. Reading a single byte from a string starting with '{' should return its ASCII value 123, so I'll assert `assertEquals(123, byteRead)`. For skipping past a reader with only one character, `skip(1884L)` should return 1 since that's all there is, so I'll assert `assertEquals(1L, skipped)`. Now I'm working out the case where skip is called on an empty reader — it should return zero and a subsequent read should hit EOF.
+
+For that last case, skipped should be 0 and byteRead should be -1, so I'll assert both `assertEquals(0L, skipped)` and `assertEquals(-1, byteRead)`. Moving to the buffer-fill test, reading 6 bytes from an 11-character string means bytesRead is 6, and then available() should reflect the remaining bytes based on encoderOut's remaining capacity — I need to work through exactly how that remaining value gets computed after reading those first 6 bytes.
+
+So bytesRead should be 6 and available should be 5. Going through the remaining test cases: the buffer-too-small constructor test relies on the try/catch as its own oracle, the builder charset test needs assertSame to confirm the fluent API returns the same builder instance, and the default builder test should verify UTF-8 is used as the encoder's charset.
+
+Continuing through the encoder tests, I want to confirm the returned encoder isn't null and matches the configured default charset, and that available() returns 0 before any reads happen. The builder tests for setting a charset encoder should also assert the same builder instance is returned to preserve the fluent chain.
+
+For the null-charset-name constructor test, I just need to confirm no exception occurs. Then for reading into an empty byte array, I expect zero bytes read, and for reading a single byte with a null encoder using default encoding, I'm setting up a reader with the string "{/" and checking that the first byte read matches the ASCII value of '{', which is 123.
+
+For the skip test, since the reader only has one character, calling skip with a large value should still only return 1, since skip relies on read() and hits EOF after the single byte. For the buffer-filling test, I'm using an 11-character string, reading into a 6-byte buffer to confirm it returns 6 bytes read, then checking that available() reports the remaining 5 bytes still in the encoder output.
+
+For the builder charset test, since setCharset returns the same builder instance, I check that with assertSame rather than verifying any buffer size change. For the default encoder test, I'm confirming the builder defaults to UTF-8 by checking the encoder's charset name, since UTF-8 requires at most 3 bytes per character in this encoder's implementation. Now I'm moving into checking that getCharsetEncoder returns the encoder that was explicitly configured on the builder.
+
+For the remaining smaller tests: I verify the encoder matches the default charset when none is specified, confirm setCharsetEncoder also returns the same builder for chaining, ensure construction with a null charset name doesn't throw and still produces a usable stream, and check that reading into an empty byte array returns zero bytes read. Now I'm turning to the more involved case of reading an eleven-character ASCII string and how that interacts with buffer filling and the available() calculation.
+
+For the buffer-filling trace: with a 6-byte read request, the stream starts with an empty encoded output buffer, so it calls fillBuffer(), which reads the string data into the char buffer and encodes it into the byte buffer, producing all 11 bytes since they fit within the encoder's capacity.
+
+From there, the second iteration copies 6 of those 11 bytes to satisfy the read request, leaving 5 bytes remaining in the encoder's output buffer. That means `bytesRead` equals 6 and calling `available()` afterward returns 5, since it just reports the remaining bytes in the buffer without needing another fill. I'm double-checking this by counting the actual characters in the encoded string to confirm the byte count is right.
+
+Tracing through the buffer mechanics: compact makes the input buffer writable, the reader fills it with all 11 characters of the string, then flip prepares it for encoding, and the encoder writes all 11 bytes into the output buffer.
+
+Then reading 6 bytes leaves 5 remaining in the output buffer, confirming `bytesRead=6` and `available=5` are correct.
+
+Next I'm working through the empty-reader skip test - since an empty StringReader immediately returns EOF on read, InputStream's default skip() implementation should return 0 rather than throwing or blocking.
+
+Then a subsequent `read()` call should return -1 (EOF), confirming both assertions hold. For the null-encoder test, I trace that falling back to the default charset means reading '{' correctly yields ASCII value 123. I'm now going through the remaining tests one by one to verify my assumed oracles - for the byte array builder test, I expect the assertion is simply that the stream is non-null after construction.
+
+For the null charset name test, similarly `assertNotNull(stream)` seems right since the test just verifies the stream gets created despite the null argument. For the close test, I'm uncertain since there's no visible isOpen/isClosed method in the class under test - it might inherit one from AbstractInputStream, so I should check if that superclass file exists.
+
+
+
+Now I know `isClosed()` exists. So for test 1 (testCloseMarksStreamAsClosed), after calling `stream.close()`, we should assert `assertTrue(stream.isClosed())`.
+
+For test 2 (testBuilderWithByteArrayProducesOpenStream), the test name says "ProducesOpenStream" - so we should assert `assertFalse(stream.isClosed())` or just `assertNotNull(stream)`. But `isClosed()` is on `AbstractInputStream`, and `ReaderInputStream` extends it. So we can assert `assertFalse(stream.isClosed())`.
+I want to check the AbstractStreamBuilder next, especially how `setByteArray` works within the builder pattern.
+

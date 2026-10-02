@@ -1,0 +1,59 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now I need to understand what oracles are needed for each test method. Let me analyze each test:
+
+1. **test_solveCbrt_largeInterval_returnsZero**: Solves cbrt(x) over a large interval. The comment says "should converge to 0.0 within a generous tolerance". So I need to assert `assertEquals(0.0, root, someEpsilon)`. What epsilon? The default absolute accuracy is 1e-6. Let me use something reasonable: `assertEquals(0.0, root, 1.0E-6)` or perhaps just check it's close to 0.
+2. For the exception test, since it already uses try/catch with `fail(...)` as its oracle mechanism, I'm checking whether anything more specific like verifying the exception message or type was originally present, since the task implies every oracle should have been stripped out.
+
+3. For the cbrt root test, the comment gives a near-zero value around 3.06e-7, so the oracle is likely an assertEquals comparing the root against that value with some tolerance.
+
+4. For the zero polynomial test, the comment says the result should yield NaN, so the check is asserting Double.isNaN on the result.
+
+5. For the upper bound near-zero test, the comment says the solver returns that endpoint unchanged, so the oracle should assert the root equals the upper bound exactly.
+
+6. For the custom tolerances test, the comment says the result should essentially equal the starting point, so I'm expecting an assertEquals between the result and the starting point with a small epsilon.
+
+Now I notice this particular MullerSolver instance is constructed with a relative accuracy and an absolute accuracy that's actually negative, which is unusual, and the solve call only takes three arguments — meaning it's solving near an initial point without explicit bounds. I'm trying to figure out how doSolve behaves in that single-point case given the odd negative accuracy parameter.
+
+I'm considering whether the -4620 value is really the function value accuracy or just the absolute accuracy for the solver's stopping criteria—likely the latter, since function value accuracy usually has its own default in the base class. Given the starting point 1.5902118682861328, the ulp of that value is tiny (~2.22e-16), so evaluating the Ulp function there won't hit exactly zero, which could trigger a bracketing exception depending on how the solver handles it.
+
+Since ulp(x) is always positive for finite x, there's no true root, so the solver likely can't bracket a sign change—but the test comment suggests the expected behavior is that it just returns the starting point itself, similar to how the zero-polynomial case might short-circuit rather than actually converge.
+
+Actually, doSolve() checks min/max/initial function values first, but when only a startValue is provided, getMin() and getMax() would be NaN, so computeObjectiveValue(NaN) returns NaN, and that NaN comparison against functionValueAccuracy would be false, so it wouldn't short-circuit there.
+
+Given the comment about the result essentially equaling the starting point, I suspect the actual test oracle is just asserting the returned value equals startingPoint with some tolerance.
+
+So since fMin and fMax are NaN, the check fails for both, then fInitial's ulp value is checked against functionValueAccuracy (default 1e-15) — since it's smaller, the solver returns startValue directly. That confirms the oracle should assert exact equality between the starting point and the result, though I should use a small delta to be safe rather than requiring bit-exact equality.
+
+For the other tests: the cbrt test should converge to 0.0 within a generous tolerance like 1e-6, matching the comment about generous tolerance. For the sin test that exceeds max evaluations, I need to figure out what exception verification goes in that empty catch block — likely a TooManyEvaluationsException from the commons math legacy exception package, though I'm not fully certain of the exact class path.
+
+For the remaining tests, I'm settling on oracles: `assertTrue(Double.isNaN(result))` for the zero polynomial case, `assertEquals(upperBound, root, 0.0)` for the near-zero upper bound case, and `assertEquals(startingPoint, result, 0.0)` for the custom tolerances case. Now I'm double-checking test 5 by computing the cube root of the tiny upper bound value to confirm the root should equal it unchanged.
+
+I'm recalling how the solver's doSolve() checks if the function value at the boundary falls below functionValueAccuracy, and since cbrt(4.8e-220) works out to roughly 1.68e-73, which is far smaller than the typical 1e-15 accuracy threshold, this confirms the solver would immediately return the boundary as the root.
+
+For test 5, that means the oracle should assert the root equals the upper bound exactly. Turning to test 3, I'm noting the sign change between the negative and positive cube roots implies a root near zero, so with the solver's default 1e-6 absolute accuracy, an assertion checking the root is within 1e-6 of zero (or close to the noted 3.06e-7 value) should hold.
+
+For test 1, the same logic applies—the large interval should have a root at zero, and with such a huge max evaluation count, convergence shouldn't be an issue. I'm also thinking through how EvoSuite's exception verification works, confirming it checks that a thrown exception matches the expected class like TooManyEvaluationsException.
+
+Tracing the exception class hierarchy, TooManyEvaluationsException extends MathIllegalStateException, which extends MathRuntimeException, which extends RuntimeException—so catching RuntimeException in the test is valid. I'll add the verifyException call for that specific exception class in the catch block.
+
+For test 4 with the zero polynomial that returns NaN, I need to look more carefully at how the solver is invoked—it's only given a single starting point rather than a min/max range, which matters for understanding why every point is trivially a root.
+
+Since all coefficients are zero, evaluating the polynomial at any point, including NaN, gives zero, so fMin computes to 0, and since that's below the function value accuracy threshold, the solver would actually return the starting value rather than NaN—which conflicts with what the comment claims. I need to reconcile this discrepancy in my understanding of the solve behavior.
+
+Computing ulp(1.5902118682861328), which comes out to about 2.22e-16 for values in that range, and checking whether that's under the functionValueAccuracy threshold of 1e-15 — it is, so this branch returns the initial starting point.
+
+So the expected result should just equal 1.5902118682861328 with zero delta. Though I'm not fully certain about the exact functionValueAccuracy value, so I should double-check the base class definition.
+
+
+
+Good. The `DEFAULT_FUNCTION_VALUE_ACCURACY = 1e-15`. 
+
+Now I have what I need:
+- ulp(1.5902118682861328) ≈ 2.22e-16 < 1e-15 → returns startingPoint
+- zero polynomial at NaN → returns NaN (min is NaN)
+- cbrt(4.8e-220) ≈ 7.84e-74 < 1e-15 → returns max (upperBound)
+
+Now let me finalize the oracles:
+
+1. **test_solveCbrt_largeInterval_returnsZero**: `assertEquals(0.0, root, 1.0E-6)`

@@ -1,0 +1,58 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Let me analyze each test to determine what oracle to add:
+
+**test0**: 2-char null buffer vs 6-char null buffer
+- Description says approximately 0.822
+- Both buffers have null chars (\0)
+- first = twoNullChars (2 chars of \0), second = sixNullCharsBuffer (6 chars of \0)
+- Let me compute this manually:
+  - min length = 2, max length = 6
+  - range = max(6/2 - 1, 0) = max(2, 0) = 2
+  - For min[0](\0): xi range is max(0-2,0)=0 to min(0+2+1,6)=3 → check max[0,1,2]. max[0]=\0, matches! matchIndexes[0]=0, matches=1
+  - Continuing, min[1] also matches against max[1], giving matches=2 total, with both matched slots being null characters and zero half-transpositions since everything lines up in order. The common prefix length comes out to 2, capped by the shorter buffer's length.
+
+Now checking the prefix between the two-null buffer and the six-null buffer position by position, both characters at index 0 and 1 match, giving a prefix of 2, capped by the shorter length. Plugging into the Jaro formula: matches/len1 plus matches/len2 plus (matches-transpositions)/matches, divided by 3, works out to roughly 0.778, and now I need to compare that against the threshold.
+
+Confirming the exact fraction: 37/45 ≈ 0.82222..., so the test should assert this value with a small tolerance like 1e-6, matching the "approximately 0.822" comment.
+
+Now I'm working through test1, where an empty buffer against a 2-char null buffer gives similarity 0.0 since there's no overlap to match. Then in test2, comparing an 8-char null buffer to a 1772-char one, I'm computing the Jaro-Winkler-style range window—min length 8, range spanning 885 on each side—to verify the described ~0.668 similarity.
+
+Continuing the trace, min is the shortBuffer (8 chars) and max is longBuffer (1772 chars), and the prefix match comes out to 4 since all characters compared are null bytes. Then I'm computing the Jaro similarity score j using the formula combining prefix/length ratios, which comes to roughly 0.667 before rounding.
+
+So j = (8/1772 + 2)/3 ≈ 0.668171, which stays under the 0.7 threshold so the result equals j directly. Simplifying this fraction, 8/1772 + 2 reduces to 888/443, and dividing by 3 gives 296/443 ≈ 0.6682 -- matching the roughly 0.668 the test description expects, so my oracle assertion for this test should use that precise fraction with a small epsilon tolerance. Now I'm moving on to the next test case.
+
+I'm setting up shorterBuffer as a 6-character array with null characters everywhere except an 'f' at index 3, and longerBuffer as an 8-character array with an 'f' at index 1 and nulls elsewhere. The description gives matches=6, halfTranspositions=2, prefix=1, so my oracle should assert the result array equals {6, 2, 1}. I'm now working through the algorithm's range calculation, computing max(8/2 - 1, 0) = 3 to verify these numbers make sense.
+
+Now I'm tracing through each index of min against max within the sliding window, checking for character matches and building up matchIndexes and matchFlags to confirm the match count reaches 4 so far as I continue verifying the algorithm's step-by-step behavior.
+
+Now I'm building ms1 by pulling min characters at each matched index, and ms2 by pulling the corresponding max characters, giving two sequences of mostly null characters with one 'f' each in different positions.
+
+Comparing ms1 and ms2 position by position, I find mismatches at indices 1 and 3, confirming halfTranspositions equals 2, which matches expectations.
+
+Now I need to figure out the prefix length calculation, checking which buffer is "first" (shorter) versus "second" (longer) as passed into the matches function, since that determines which characters get compared for the common prefix.
+
+Walking through the prefix loop, only the first index matches before a mismatch breaks it, giving prefix=1. So the full result array should be [6, 2, 1], and I need to update the assertion to expect this.
+
+Now for test5, checking matches with bufferAfterWrite: I'm tracing how the shared char array gets written to at positions 0-8 after put("X19l5(mgJ"), leaving position at 9, and comparing that to a freshBuffer wrapping the same array from position 0 — trying to work out what remaining capacity and matching values that yields for the [0,0,0] expected result.
+
+I'm checking how CharBuffer's length() works via CharSequence—it's remaining() = limit minus position, so freshBuffer has length 12 while bufferAfterWrite has length 3 after the put. That seems to contradict the claim that there are no remaining characters left to compare, so I need to trace through exactly what happens after the put call more carefully.
+
+CharSequence: length 12; bufferAfterWrite has length 3, its remaining chars being the leftover null characters after the written string. So the comparison ends up being freshBuffer's "X19l5(mgJ\0\0\0" against bufferAfterWrite's "\0\0\0", and I take the shorter length of 3 to compare character by character.
+
+I'm now scanning within a sliding window range of 5 around each index of the shorter string to find a matching character in the longer one, checking positions 0 through 7 in freshBuffer against the null characters in bufferAfterWrite, and so far none of freshBuffer's characters at those positions are matching null.
+
+Since no matches are found (matches = 0), the result should be zero for matches, half-transpositions, and prefix length, giving [0, 0, 0]. I verify this against the prefix computation—since the first characters 'X' and '\0' don't match, the loop breaks immediately with prefix = 0, confirming the expected output matches the oracle's assertion of {0, 0, 0}.
+
+Now for identical CharSequence comparisons: since Jaro-Winkler treats identical sequences as perfectly similar, comparing a sequence to itself should yield a similarity of 1.0. I'm checking whether apply() relies on equals() for a fast-path, but since it wraps both sides in separate SimilarityInput instances, the outcome depends on whether that wrapper class defines its own equals() method rather than just checking object identity.
+
+Continuing through the Jaro-Winkler math confirms the score comes out to exactly 1.0 either way, so the oracle should assert that value. Now I'll move on to computing the remaining test cases and their oracles.
+
+Working through the arithmetic confirms j = 7/9, and then result = 7/9 + 0.4/9 = 37/45 ≈ 0.8222222222222222, so I'll assert against 37.0/45.0 with a small tolerance.
+
+For test2 with m=8, left length 1772, right length 8, prefix 4, and zero half-transpositions, I compute j = (8/1772 + 1.0 + 1.0)/3, which simplifies to (2/443 + 2)/3 ≈ 0.668171.
+
+Since 0.668 < 0.7, this stays below the threshold, so the result is just j itself ≈ 0.668171, giving the oracle assertEquals((8.0/1772 + 2.0)/3.0, result, 1e-6).
+
+For test1, comparing an empty buffer against a 2-char null string, the min length is 0 so there's no iteration at all, meaning matches stays at 0 and the function returns 0d directly — so the oracle is simply assertEquals(0.0, result, 0.0). Now I'll write out these oracles.
+

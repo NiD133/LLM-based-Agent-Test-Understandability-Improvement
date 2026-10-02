@@ -1,0 +1,331 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Now let me analyze each test to understand what oracles need to be added.
+
+Let me look at the tests one by one:
+
+**test00** - Creates a RunCodec(1825, bHSDCodec0, bHSDCodec0) where bHSDCodec0 is Codec.BYTE1, then calls `getSpecifier(runCodec0, runCodec0)`. Since the same RunCodec is both the codec and the defaultForBand, the bCodec equals defaultForBand, so abDef=2. 
+- k=1825, so 4097 > 1825 > 256, so kb=1, kx = 1825/16 - 1 = 114 - 1 = 113 (but kx is stored as an array element after first)
+Re-checking the formula: kb depends on whether kx equals 3, and the first byte combines these bit-packed values with 117 as a base plus an offset for abDef, while the codec specifier itself is computed recursively based on whether abDef equals 1.
+
+I'm now tracing through the size-band calculation logic - for k values up to 256, 4096, 65536, or beyond, kb and kx take different scaled values. For k=1825, this falls in the second band (kb=1), giving kx = 1825/16 - 1 = 114.
+
+Checking whether aCodec and bCodec match the default codec for the band, both come out false since BYTE1 doesn't equal the RunCodec itself, so abDef equals 0. That means first = 117 + 1 + 4 = 122, with specifier[0] = 122 and specifier[1] = 113 since kx isn't 3. Then I need the specifier for BYTE1 paired with the RunCodec, which resolves to canonical codec index 1.
+
+For test06, I'm trying to work out getSpecifierForDefaultCodec for CHAR3, but without seeing the actual Codec class definitions I can't be certain which BHSDCodec parameters it maps to or its index in the canonical array. I'll need to decide how to handle the tests lacking clear oracles based on what I can verify.
+
+
+
+Now I have enough information to analyze the tests. Let me go through each test:
+
+**test00**: `RunCodec(1825, BYTE1, BYTE1)`, `getSpecifier(runCodec0, runCodec0)` 
+- codec = RunCodec, defaultForBand = the same RunCodec
+- k=1825: 256 < 1825 <= 4096, so kb=1, kx = 1825/16 - 1 = 114 - 1 = 113
+- aCodec=BYTE1, bCodec=BYTE1, defaultForBand=runCodec0
+- Neither aCodec nor bCodec equals runCodec0, so abDef=0
+- first = 117 + 1 + 4 + 0 = 122, since kx=113 differs from 3, specifier[1] holds kx=113 even though that exceeds a byte's normal range as a value
+
+Continuing the trace, I get specifier = [122, 113, 1, 1] with intArray0 expected to be length 4, but this is getting quite convoluted. I think the safest assertion here is just checking that intArray0 isn't null or verifying its length, rather than trying to nail down exact values. Let me switch to tracing a simpler case instead, like getSpecifierForDefaultCodec with CHAR3, which is a BHSDCodec(3,128).
+
+Now I'm checking whether CHAR3 appears among the canonical codecs, but scanning the list I can't find an exact BHSDCodec(3,128) entry—the nearby indices are BHSDCodec(3,256) variants, so it seems CHAR3 isn't directly canonical and I need to look more closely at the full canonical codec table.
+
+Continuing the index count...
+
+Still enumerating codec variants...
+
+Still enumerating codec variants...
+
+Still enumerating codec entries...
+
+Still enumerating codec variants...
+
+Continuing through the codec index table with increasing size parameters...
+
+I notice CHAR3 = BHSDCodec(3, 128) with s=0, d=0 isn't actually in the canonical codec map — that entry falls through to a different computation path, so I'm working out what specifier index and byte values getSpecifier would compute for it in that fallback branch.
+
+So for test06, getSpecifierForDefaultCodec on CHAR3 should return 116, and the assertion should confirm that value.
+
+For test11, I'm now looking at getCodec being called with index 2 and a fresh byte stream, expecting it to return a BHSDCodec.
+
+Since index 2 falls in the range covered by canonicalCodec, the result should just be the canonical codec at that index -- BHSDCodec(1, 256, 1) -- so a simple non-null assertion on the cast result should suffice.
+
+Now I'm working through test04 next, where the codec is CHAR3 and I'm tracing through what byte array gets fed into the decoder.
+
+I'm decoding byte 0x5D bit by bit to extract the delta, s, and b parameters embedded in the codec's specifier byte, working through the binary breakdown of 0101 1101 to determine each field.
+
+So h ends up being 1, which is outside the valid 2..256 range for BHSDCodec — that constructor should throw an IllegalArgumentException. But the test constructs it and calls getSpecifier successfully, so I need to double check whether h=1 is actually rejected or if I'm miscalculating something in the byte parsing.
+
+Let me shift focus to the test oracles instead: for most tests calling getSpecifier, I need to figure out what array values they'd assert; test06 likely expects assertEquals(116, int0); test11 probably just checks the cast succeeded via assertNotNull; test19 likely just needs a not-null check on the constructed object. I should go through each test systematically to determine the right oracle.
+
+Rest need similar treatment: test13's two getCodec calls with no assertions, test15's specifier check, test19's constructor call. For test06, I can work out that CHAR3 isn't canonical, so the specifier array gets computed manually, giving getSpecifierForDefaultCodec a return value of 116 — that's a solid assertion I can lock in.
+
+For test11, getCodec(2,...) falls into the canonical range and returns BHSDCodec(1,256,1), so the cast succeeds and I can assert not-null on it. Same for test19's constructor result. Test13 and test05 don't store their return values, so there's nothing to assert beyond no-exception. Tests 00 through 04 and test15 store into intArray0, so those need array-based assertions.
+
+Now digging into test03: it builds a RunCodec from BHSDCodec(4,256) with k=13, computing kb=0 and kx=12, then checks whether aCodec equals the default codec for the band to decide encoding behavior.
+
+Since aCodec matches defaultForBand, abDef becomes 1, giving a "first" value of 129, and aSpecifier resolves to an empty array. For bSpecifier, since bCodec also matches defaultForBand but is found in canonicalCodecs at index 13, it resolves to [13] instead of empty. Now assembling the final specifier array from these pieces...
+
+Building the array: specifier[0]=129, specifier[1]=12 (since kx isn't 3), specifier[2]=13, so intArray0 becomes [129, 12, 13], which matches the expected oracle result. Now I move to test02, examining a RunCodec built from two identical BYTE1 codecs with Integer.MAX_VALUE as the run count, and start tracing getSpecifier for this new case.
+
+bSpecifier comes out as [1] too, giving specifier array [124, 524287, 1, 1], which matches the expected oracle assertion. Now I'm moving to test00, setting up a RunCodec with k=1825 using BYTE1 for both sub-codecs and tracing through getSpecifier again.
+
+Filling in the remaining specifier values gives [122, 113, 1, 1], matching the expected oracle output.
+
+Now moving to test01, I set up a BHSDCodec DELTA5, wrap it in a PopulationCodec with population size 4, then wrap that in a RunCodec with the same BHSDCodec as the second codec, and start computing its specifier.
+
+Since bCodec equals DELTA5, abDef comes out to 2, and I work through the first-value formula (117 + 0 + 0 + 16 = 133) before determining that aSpecifier requires recursively computing the specifier for the PopulationCodec against DELTA5.
+
+Now I need to figure out the parameters of PopulationCodec(DELTA5, 4, DELTA5) — specifically what that middle integer argument represents in its constructor, since that determines how the specifier gets generated.
+
+Since favoured is likely null given the int constructor, tDefL comes out to 0, so I'm computing first = 144 with favouredSpecifier as EMPTY, and now I need to figure out what tokenCodec resolves to for that constructor form before I can determine tokenSpecifier.
+
+I don't know what getTokenCodec() returns in this case, so this is getting too uncertain to pin down analytically -- I should just abstain on test01 rather than keep guessing, or take a step back and actually examine the PopulationCodec and RunCodec classes directly to understand getACodec and getBCodec.
+
+
+
+Now I understand the PopulationCodec constructors. PopulationCodec(fCodec, int l, uCodec) sets tokenCodec to null and l to the int.
+
+In test01:
+- populationCodec0 = new PopulationCodec(bHSDCodec0=DELTA5, 4, bHSDCodec0=DELTA5)
+  - favouredCodec = DELTA5
+  - l = 4, tokenCodec = null
+  - unfavouredCodec = DELTA5
+
+Now, in getSpecifier(populationCodec0, DELTA5):
+getTokenCodec() returns null since it wasn't set, and both favouredCodec and unfavouredCodec equal DELTA5, so fDef and uDef both come out to 1. Checking getFavoured(), which is likely also null since this constructor didn't set it, so I'm tracing what happens when favoured is null.
+
+With tDefL at 0, first works out to 144, and favouredSpecifier ends up empty since fDef is 1. But then tokenSpecifier calls getSpecifier with a null tokenCodec, and that function doesn't handle null inputs for canonical codecs, BHSDCodec, RunCodec, or PopulationCodec, so it would return null and cause a null pointer exception when its length is accessed later. That seems like a real problem I need to reconsider.
+
+So getSpecifier(null,...) falls through all the instanceof checks and returns null, meaning tokenSpecifier would be null and accessing its length should throw an NPE — yet the test apparently doesn't hit that. I need to look more closely at the actual test setup to see what's really being constructed and passed in.
+
+Now I see the actual call is getSpecifier(runCodec0, DELTA5), not the population codec. Tracing through the RunCodec branch: k=4 gives kb=0, kx=3, and I'm checking whether aCodec or bCodec match DELTA5, finding that bCodec does match.
+
+With abDef=2, I compute first=133. Since abDef isn't 1, I need to nest another call: getSpecifier(populationCodec0, DELTA5). This population codec has a null token codec since it wasn't set in the constructor, and both favoured and unfavoured codecs resolve to DELTA5, giving fDef=1.
+
+Continuing that computation: uDef also comes out to 1, and since favoured is null, tDefL stays at 0, giving first=144. But then tokenSpecifier depends on calling getSpecifier with a null token codec, which looks like it'll break — I need to check what getTokenCodec() actually returns, since maybe PopulationCodec has some fallback behavior I'm missing when constructed via the (fCodec, l, uCodec) signature.
+
+
+
+So `getTokenCodec()` just returns `tokenCodec` which is null when constructed with `PopulationCodec(fCodec, l, uCodec)`.
+
+So in test01, `getSpecifier(populationCodec0, DELTA5)`:
+- tokenCodec = null
+- fDef = 1, uDef = 1
+- tDefL = 0 (since favoured is null)
+- tokenSpecifier = getSpecifier(null, DELTA5) = null
+- Then: `new int[1 + 0 + null.length + 0]` would throw NPE
+The test doesn't seem to expect an NPE though, since there's no try/catch or expected exception annotation, yet it also has no assertion, so maybe it just checks that execution completes without throwing. That would mean my assumption about the tokenCodec being null must be wrong, so let me reconsider what the PopulationCodec constructor actually sets.
+
+Tracing through, favoured also comes back null in this constructor, so the tDefL calculation stays at zero and getSpecifier falls through to calling itself recursively with a null tokenCodec argument. That recursive call then checks whether the codecs-to-specifiers map contains a null key, which HashMap normally permits.
+
+Continuing the trace, none of the instanceof checks match against null, so the method returns null for tokenSpecifier. That means the final array-size computation tries to call .length on a null reference, which should throw a NullPointerException -- but the test itself doesn't wrap this in a try/catch or expect a failure, so either my reasoning has an error somewhere or the actual behavior diverges from what I'm predicting.
+
+Now I'm tracing a second scenario: getSpecifier with a RunCodec wrapping a PopulationCodec and a DELTA5 BHSDCodec. I need to check whether the aCodec or bCodec equals the default DELTA5 codec, which determines how the specifier bits are computed.
+
+If getSpecifier throws NPE internally then this whole path fails, so either it handles null gracefully or BHSDCodec's equals is value-based rather than reference-based, meaning two codecs built with the same parameters would count as equal. I need to check whether BHSDCodec overrides equals, since DELTA5 is used both as the codec in PopulationCodec and as the defaultForBand.
+
+Given that favouredCodec and unfavouredCodec are the same DELTA5 instance, tokenSpecifier would still end up null, which should cause an NPE. But since the test has no exception handling, it must be designed to succeed without throwing, so I might be wrong about how equals works here.
+
+Without being certain about BHSDCodec's equals semantics and how a null tokenCodec is handled, I'll abstain on test01 rather than guess. Moving to test04, I'm now examining bHSDCodec0 as CHAR3 (BHSDCodec(3,128)) alongside a byte array input.
+
+I'm decoding the byte 93 (0x5D) bit by bit to determine the d, s, and b fields for the codec calculation, then moving on to the next byte for h.
+
+This gives h=1, producing BHSDCodec(4,1,2,1) — but I'm questioning whether h=1 is actually valid, since the javadoc suggests H must keep L=256-H within a valid range, and H=1 sits right at that boundary.
+
+Since the test runs without a try/catch, I'll assume it's valid and trace through getSpecifier for this codec against itself: it's not in the canonical codec list, so it falls through to the BHSDCodec branch, computing specifiers[0]=116 and working out specifiers[1] from the delta flag, S value, and B value.
+
+Continuing the calculation gives specifiers[1]=29 and specifiers[2]=getH()-1=0, so intArray0 should be [116, 29, 0] — but this depends on BHSDCodec(4,1,2,1) not throwing during construction, which I'm not fully certain about. I should check the constructor's validation logic for h=1 more carefully.
+
+
+
+Good. So BHSDCodec(b=4, h=1, s=2, d=1):
+- b=4 >= 1 and <= 5: ok
+- h=1 >= 1 and <= 256: ok
+- s=2 >= 0 and <= 2: ok
+- d=1 >= 0 and <= 1: ok
+- b=1 -> h=256? b=4, not 1: skip
+- h=256 && b==5? h=1: skip
+
+So BHSDCodec(4, 1, 2, 1) is valid!
+Now checking test04, I trace getSpecifier for this codec against itself: it's not in the canonical codecs list, so it falls into the BHSDCodec branch, computing the specifier bytes from the delta flag, s, and b values.
+
+This gives specifiers[1] = 1 + 4 + 24 = 29, and specifiers[2] = h - 1 = 0, so the expected result is [116, 29, 0]. I need to double-check whether codec0.equals(codec0) matters here since it's compared against itself, which could affect whether it's treated as a canonical codec.
+
+Since none of the canonical codecs have h=1, this codec falls through to the BHSDCodec branch, confirming the oracle for test04 as [116, 29, 0]. Moving to test15, I'm now looking at getCanonicalCodec(13) which gives BHSDCodec(4, 256), with byteArray0 initialized to [0].
+
+For value=128, I'm tracing through the RunCodec branch since it falls between 117 and 140, computing offset=11 and unpacking the kx, kbflag, adef, and bdef bit flags from that offset to determine the decoding parameters.
+
+Since kbflag is false, kb defaults to 3, giving k=16384. With adef true, aCodec becomes the default BHSDCodec(4,256), and since bdef is false, I read the next byte (0) from the stream to determine bCodec, which also resolves to BHSDCodec(4,256) via getCodec. This builds codec0 as a RunCodec with k=16384 and both sub-codecs set to BHSDCodec(4,256).
+
+Now checking getSpecifier(codec0, codec0.UNSIGNED5) — I need to figure out what Codec.UNSIGNED5 actually is, since I only read part of Codec.java. It likely doesn't affect the outcome much, so I'm working through the calculation: with k=16384 falling in the range 4097-65536, kb=2 and I'm computing kx as 16384/256.
+
+Continuing the trace: kx-1 = 63, and comparing aCodec and bCodec (both BHSDCodec(4,256)) against UNSIGNED5 for equality, which likely both return false, giving abDef=0. Then computing first = 117+2+4 = 123, aSpecifier maps to canonical index 13, and I'm about to work out bSpecifier next.
+
+I'm arriving at the expected array [123, 63, 13, 13] for test15, but I still need to verify what UNSIGNED5 actually is in Codec.java since I've only reviewed lines up to SIGNED5 so far.
+
+
+
+UNSIGNED5 = BHSDCodec(5, 64). This is at index 26 in the canonical codecs (BHSDCodec(5, 64)).
+
+Now let me re-trace test15:
+- k=16384: 4097 <= 16384 <= 65536, so kb=2, kx = 16384/256 - 1 = 64 - 1 = 63
+- aCodec = BHSDCodec(4, 256) (same as bHSDCodec0 = canonicalCodec[13])
+- bCodec = BHSDCodec(4, 256) - but wait, getCodec(0, ...) returns defaultCodec which is bHSDCodec0 = BHSDCodec(4, 256). Is this the exact same reference?
+- Yes, getCodec(0, ...) does return the same defaultCodec reference, and since adef=true sets aCodec to defaultCodec too, both aCodec and bCodec point to the identical bHSDCodec0 instance.
+- Checking whether aCodec or bCodec equal the default UNSIGNED5 codec for the band -- BHSDCodec(4,256) doesn't match BHSDCodec(5,64), so neither matches trivially.
+
+Working through the arithmetic: first computes to 123, and both specifiers resolve to index 13 since BHSDCodec(4,256) exists in the canonical codecs list, giving a final specifier array of [123, 63, 13, 13] for test15's expected output. I want to double-check whether BHSDCodec's equals() method is doing value-based comparison rather than reference comparison, since that assumption underlies this whole calculation.
+
+
+
+Good, BHSDCodec.equals() is value-based (checks b, h, s, d).
+
+Now I'm more confident in my analysis. Let me also verify the test03 oracle and check if BHSDCodec(4,256) (which is canonicalCodec[13]) would be the same as getCanonicalCodec(13).
+
+test03:
+- bHSDCodec0 = getCanonicalCodec(13) = canonicalCodec[13] = BHSDCodec(4, 256)
+  - Note: b=4, h=256, s=0, d=0
+- runCodec0 = RunCodec(13, bHSDCodec0, bHSDCodec0), tracing through getSpecifier with k=13, kb=0, kx=12, and both aCodec and bCodec set to the same bHSDCodec0 reference matching defaultForBand.
+
+Since aCodec equals defaultForBand, abDef=1, giving first=129 and an empty aSpecifier. For bSpecifier, since abDef isn't 2, it computes getSpecifier for bCodec against bHSDCodec0, finds BHSDCodec(4,256) at index 13 in canonicalCodecs, and returns [13]. Now building the combined specifier array...
+
+Test03's expected result of [129, 12, 13] matches my computed intArray0, confirming that oracle. Moving to test00, I already have intArray0 = [122, 113, 1, 1], but I want to double-check the canonical codec index for BYTE1 = BHSDCodec(1, 256), which sits at index 1 in the canonical codec list.
+
+Since BHSDCodec's equals method only matches other BHSDCodec instances, both aCodec and bCodec (both BYTE1) fail equality against runCodec0, so abDef stays 0. That gives first = 122 as expected, and the specifier array continues with 113, then the specifiers derived from BYTE1 against runCodec0.
+
+Now working through test02 with Integer.MAX_VALUE as k: since it exceeds 65536, kb becomes 3 and kx computes to 524287, giving first = 124 since kx doesn't equal 3. The aSpecifier again resolves to [1], and I'm now computing the bSpecifier the same way.
+
+For test05, I switch to DELTA5 = BHSDCodec(5, 64, 1, 1) and a value of 166 falls into the PopulationCodec branch (141-188 range), so offset becomes 25 and I'm checking the fdef and udef bit flags from that offset.
+
+Working through the tdef bits, I get l=128, fCodec becomes DELTA5 as the default, and uCodec resolves to DELTA5 again, so codec0 ends up as a PopulationCodec(DELTA5, 128, DELTA5) and I'm now computing its specifier via CodecEncoding.getSpecifier.
+
+Since test05 discards this result rather than storing it, there's nothing to assert—it's just checking no exception is thrown. Test06 is different though, since it stores the output in int0; I'm now tracing getSpecifierForDefaultCodec(CHAR3) where CHAR3 is BHSDCodec(3, 128), checking whether that codec matches an entry in the canonicalCodecs list.
+
+I've confirmed CHAR3 isn't in canonicalCodecs, so I'm computing the specifier array directly from the BHSDCodec branch, working through the bit calculations to get the resulting values.
+
+For test06, that array's first element is 116, matching the expected assertion.
+
+Now for test11, I trace getCanonicalCodec(13) as BHSDCodec(4, 256), then check that a value of 2 falls into the range that returns index 2, giving BHSDCodec(1, 256, 1) — confirming the cast succeeds and the not-null assertion holds.
+
+For test19, constructing a new CodecEncoding just needs a not-null check.
+
+For test13, I notice the second getCodec call's result isn't stored anywhere, so it needs no oracle — only the first call's result, stored in codec0, matters for assertions.
+
+Tracing through the decoding logic with value 188 lands in the PopulationCodec branch: computing offset 47, flags fdef and udef both true, tdefl giving l=252, and since both flags are default, fCodec and uCodec both resolve to the default BHSDCodec(4,256) without reading anything further from the stream. So codec0 ends up being a PopulationCodec wrapping two BHSDCodec(4,256) instances with l=252.
+
+I should add an assertNotNull check on codec0 since the test doesn't capture a second variable. Now shifting to test01, which builds a RunCodec from DELTA5 and a PopulationCodec, then calls getSpecifier on it — tracing k=4 giving kb=0, kx=3, with aCodec as the population codec and bCodec as DELTA5.
+
+Since PopulationCodec doesn't override equals, it can't match DELTA5 by reference, but bCodec does equal DELTA5, giving abDef=2. The first value computes to 133, and then I need to recursively determine the specifier for the population codec against DELTA5.
+
+Continuing through fDef and uDef, both equal 1 since favoured/unfavoured codecs match DELTA5. With favoured null, tDefL becomes 0, and first sums to 144. The favoured specifier is empty since fDef=1, but the token specifier tries getSpecifier(null, DELTA5) which should NPE — meaning this test case would throw an exception if executed without a try/catch, which seems inconsistent with the oracle's expectations unless the null-token branch is handled specially. Let me check how getSpecifier actually handles a null tokenCodec in the PopulationCodec case.
+
+When tDefL=0 and tokenCodec is null, calling getSpecifier(null, DELTA5) does indeed return null, and then accessing tokenSpecifier.length throws NPE — which would propagate all the way up through the outer getSpecifier call. Since EvoSuite tests don't handle undeclared exceptions gracefully by default, I need to figure out whether this test path is even reachable or if there's a guard I'm missing before this point.
+
+Actually, I should reconsider whether bCodec.equals(DELTA5) actually returns false — since RunCodec probably doesn't override equals, it falls back to reference equality, and bCodec here is the same reference as bHSDCodec0 which was set to Codec.DELTA5. So bCodec == DELTA5 might actually hold true, changing which branch executes.
+
+Let me also check whether `HashMap.containsKey(null)` throws — no, HashMap explicitly supports null keys, so it just returns false since we never put a null key in.
+
+Continuing the getSpecifier logic, none of the instanceof checks match null, so it falls through and returns null. That means tokenSpecifier is null, and calling `.length` on it should throw an NPE — unless the test actually expects that failure, or I'm misreading the tDefL computation involving `populationCodec.getFavoured()`.
+
+Tracing through with the specific DELTA5 codec, favoured comes back null so tDefL stays 0, which routes into getSpecifier(null, DELTA5), producing another null. Then the specifier array construction tries to read `.length` on that null, which would NPE — yet the test has no try/catch, so either EvoSuite stripped an oracle that was checking for this exception, or something else is off.
+
+Looking at the other tests, the ones expecting thrown exceptions (7, 8, 10, 12, 14, 16, 17, 18) keep their try-catch wrappers, while tests like 0-6, 11, 15, 19 don't — meaning oracle removal wouldn't strip a try-catch for an unexpected exception. So test01 must not actually throw, which tells me my trace through PopulationCodec.getSpecifier has an error somewhere I need to revisit.
+
+Checking the constructor confirms `favoured` stays null since it's never assigned, so `getFavoured()` returns null and tDefL is 0. That still points to getSpecifier(null, DELTA5) returning null unless there's branching logic I'm missing in the PopulationCodec instanceof check that handles tDefL being zero differently.
+
+getSpecifier calls the codec's token codec accessor, which only returns the field as-is—so unless decodeInts already ran, tokenCodec stays null since there's no setter that would populate it otherwise. So my reasoning holds that test01 should throw an NPE, which makes me doubt whether the test is actually failing as I assumed, since these exception-related tests typically keep their original try-catch structure intact.
+
+Maybe the oracle removal process stripped out more than just assertions for test01—perhaps the entire try-catch block was itself the oracle and got deleted, meaning I'd need to reconstruct it or mark the test as abstained. Given this ambiguity, I'll abstain on test01 while keeping confident oracles for test00, test02, test03, test04, test06, test11, test15, and test19.
+
+Reconsidering the RunCodec logic: the test calls getSpecifier on a RunCodec with k=4, aCodec=populationCodec0, bCodec=DELTA5, defaultForBand=DELTA5. Since bCodec equals defaultForBand, the code computes aSpecifier via getSpecifier(populationCodec0, DELTA5), and if that throws an NPE, the entire test would fail rather than produce a result—so I need to reconcile that with the test storing a value in intArray0 without any exception handling.
+
+I'm stuck trying to trace through equals() checks and reference identities without being able to actually execute the code, so I'll abstain on this test case and move on to check test05.
+
+Since the result of getSpecifier() isn't stored in a variable, there's nothing to assert on there, so that test doesn't need an oracle change. Now I'm re-examining the actual setup in test05, tracing through the byte array and stream construction it uses.
+
+Looking at test13 next, I trace through how it derives a codec from a canonical codec, decodes another codec via getCodec, then makes a second getCodec call using codec0's MDELTA5 field—but again this second result isn't stored, so I need to check whether the earlier stored codec0 itself already has an assertion.
+
+Writing more assertion oracles...
+
+Now I'm double-checking test04's byte decoding math by hand, tracing how the byte value 93 splits into its d, s, and b bitfields through shifts and masks.
+
+I compute b = 4, then read the next byte (0) to get h = 1, giving a BHSDCodec(4, 1, 2, 1). I confirm this passes validity checks, so isDelta() returns true, getS() returns 2, getB() returns 4, and I'm working out the resulting specifiers array values.
+
+Since this codec isn't in the canonical list, it falls to the BHSDCodec branch regardless of whether it's also passed as defaultForBand, so the specifiers array should be {116, 29, 0}, matching test04's expected assertion. Now I'm moving on to double-check test15, starting with the UNSIGNED case.
+
+For getCanonicalCodec(13), that resolves to BHSDCodec(4, 256) at canonical index 13. Then tracing getCodec(128, ...), the value 128 falls into the RunCodec range since 117 <= 128 <= 140, giving offset 11, so I'm working through the bit flags kx, kbflag, adef, and bdef to determine the run codec's parameters.
+
+Since kbflag is false, k comes out to 4 * 4096 = 16384, and both aCodec and bCodec default to BHSDCodec(4, 256), producing codec0 = RunCodec(16384, BHSDCodec(4,256), BHSDCodec(4,256)).
+
+Now computing getSpecifier for codec0 against UNSIGNED5 = BHSDCodec(5, 64): since it's a RunCodec, k=16384 splits into kb=2 and kx=63, and since neither aCodec nor bCodec equals the default UNSIGNED5, abDef stays 0, giving first = 117 + 2 + 4 + 0.
+
+That gives specifier[0]=123, specifier[1]=63, and both aSpecifier and bSpecifier come out as canonical index 13, so the full specifier array is [123, 63, 13, 13] — matching test15's expected output exactly.
+
+Now I want to think more carefully about whether test01 actually throws an NPE, considering whether PopulationCodec might override equals in a way that changes the abDef logic when compared against DELTA5.
+
+I checked PopulationCodec and it doesn't seem to override equals, so it falls back to Object.equals, meaning populationCodec0.equals(DELTA5) is false while DELTA5.equals(DELTA5) is true, giving abDef=2 and forcing aSpecifier = getSpecifier(populationCodec0, DELTA5), which could throw. I need to double check that bCodec really is bHSDCodec0 = Codec.DELTA5 and that defaultForBand matches it exactly, then look closer at how BHSDCodec.equals is implemented.
+
+Now I'm confirming BHSDCodec's equals compares b, h, s, d fields directly, and since bCodec and defaultForBand are literally the same DELTA5 object, equals returns true, confirming abDef=2 and that aSpecifier = getSpecifier(populationCodec0, DELTA5) will throw an NPE as I suspected -- so I'm leaning toward abstaining on test01.
+
+Now I'm moving on to examine test09, which starts with Codec.CHAR3.
+
+For test09, it calls CodecEncoding.getCodec but never stores the result in a variable, so there's no oracle to assert against — nothing to check since the return value isn't captured.
+
+Continuing through the remaining tests, I'm noting which ones have assignable variables that could support oracle assertions: test11, test13, test15, and test19 all have variables worth checking. For test05, I'm tracing through the codec0 computation manually - value 166 falls into the PopulationCodec branch, and I'm working out the offset bits to determine fdef, udef, and other flag values.
+
+I'm concluding codec0 should be a PopulationCodec wrapping two DELTA5 codecs, so I could add a not-null assertion for that variable. Since the second method call's result isn't stored anywhere, I can't assert directly on its return value, but the absence of an exception is itself meaningful for the test.
+
+Now I'm tracing through getSpecifier with codec0 passed twice, checking whether the favoured/token codec logic could produce a null and trigger an NPE—if so, that means test05 might have the same issue I'm missing something about.
+
+Still computing token codec bounds...
+
+Wait, tracing through: tDefL stays 0, so `tDefL != 0` is false, meaning we call getSpecifier(null, codec0), which returns null—and then null.length throws an NPE. So both tests would hit this NPE from getSpecifier, which is confusing since I'd expect different behavior between them.
+
+I wonder if there's something about how EvoSuite generated these tests that I'm missing, or a different code path. Let me trace test05 more carefully: codec0 = PopulationCodec(DELTA5, 128, DELTA5), calling getSpecifier(codec0, codec0), so defaultForBand equals codec0, and I need to check whether fDef evaluates to 1 or 0 based on whether DELTA5 equals codec0.
+
+Since BHSDCodec.equals checks instanceof BHSDCodec and codec0 is a PopulationCodec, that comparison returns false, so both fDef and uDef come out to 0, giving tDefL = 0. Now I need to compute favouredSpecifier = getSpecifier(DELTA5, codec0), and I'm checking whether DELTA5 (BHSDCodec(5, 64, 1, 1)) matches one of the canonicalCodecs entries — it looks like index 42 is exactly that codec.
+
+Since equals() is value-based rather than identity-based, DELTA5 and canonicalCodec[42] are equal despite being separate objects, so the HashMap lookup by key would treat them as the same entry.
+
+But wait, if tokenCodec is null, then getSpecifier would be called with null as the codec argument, which would immediately NPE when calling methods on it. Let me trace test05 specifically: codec0 = PopulationCodec(DELTA5, 128, DELTA5) has a null tokenCodec since it's built via the (fCodec, l, uCodec) constructor, so fDef and uDef both evaluate false since DELTA5 doesn't equal codec0 itself, making favoured null and tDefL zero, which forces the call getSpecifier(null, codec0) -- I need to check whether the HashMap lookup can even handle a null key here.
+
+So the null-key check returns false, none of the instanceof checks match, and it should return null, which would then NPE on `tokenSpecifier.length`. Yet test05 has no try-catch, which is genuinely puzzling given this logic -- unless EvoSuite originally generated an assertNull oracle that got stripped, but the code path clearly leads to a null-pointer dereference rather than a clean null return. At this point I think I should abstain on this test case since the analysis isn't converging.
+
+Actually, reconsidering: for test05 the getSpecifier result isn't even assigned to a variable, so there's nothing to place an oracle on there anyway. The only viable oracle would be on the earlier codec0 variable itself, asserting it's not null. For test01, since intArray0 stores the getSpecifier result which may throw, I'll abstain from asserting on it and instead double check what test01's actual structure looks like.
+
+Looking closer at getSpecifier, when tDefL is 0 and tokenCodec is null, tokenSpecifier ends up null, and dereferencing null.length for the array size calculation is itself a NullPointerException in Java. So this confirms both test01 and test05 would genuinely throw NPE at that point.
+
+I'm noticing the EvoSuite runner config uses mocking and non-determinism handling, so maybe the original test had a try-catch around this that got stripped when the oracle was removed — but I'm speculating too much here. I'll settle on: abstain for test01 since the outcome is uncertain, and for test05 add an assertNotNull check on the codec object.
+
+I'll stop trying to guess the uncertain case and just lock in the array-equality assertions I'm confident about for test00, test02, test03, and test04, abstaining on the rest.
+
+Actually I realize the ordering matters here - if I place the assertion at the end of test05 and the getSpecifier call throws an exception before reaching it, the assertion would never execute, so I need to reconsider whether it's safe to add at all.
+
+Since there's no try-catch around getSpecifier in the generated test, that suggests it likely succeeds without throwing NPE with these particular arguments, so an assertion afterward could actually be reachable. Let me reconsider what codec0 actually represents when passed as its own specifier argument.
+
+Tracing through getSpecifier(codec0, codec0) with codec0 as the PopulationCodec: the token codec is null, but the favoured and unfavoured equality checks both come back false, so those default flags stay at zero. Following the recursive call for the favoured specifier lands on DELTA5 which resolves cleanly to its canonical value, but the token specifier recursion hits null and should trigger an NPE — yet the test apparently doesn't guard against that, so I'm still stuck on reconciling this contradiction and need to look at it from another angle.
+
+I check whether HashMap's containsKey(null) could throw, but no—Java handles null keys fine and it just returns false, so the instanceof checks all fail and getCodec returns null, feeding into another NPE downstream.
+
+I've decided to stop chasing the exact runtime behavior for test01 and test05. I'll mark test01 as abstained, and for test05 I'll add an assertNotNull check, though I realize if the second getSpecifier call throws before reaching that assertion, the test would fail with an uncaught exception rather than validate my assertion.
+
+And accessing null.length then throws NPE, confirming this. So either test01 and test05 originally expected NPE and the oracle got stripped, or EvoSuite genuinely generated a failing test.
+
+For safety, I'll abstain on test01 since its result stems from that NPE-throwing call. For test05, the second statement throws NPE before storing anything, so I'll consider just adding a safe assertion or marking it abstained rather than trying to force a passing assertion after a throwing line.
+
+I'm settling on adding `assertNotNull(codec0)` for test05 to validate the first call's non-null result, and marking test01 as abstained since there's nothing safe to assert there. Now I need to think through test00 as well.
+
+In test00, I trace through the RunCodec construction with a specifier of 1825 and both parameters set to BYTE1, then verify the specifier lookups return index [1] since BYTE1 sits at that position in the canonical list, with the resulting int array coming out as [122, 113, 1, 1]. This looks consistent, so I move on to check test02, which uses Integer.MAX_VALUE as the specifier with the same BYTE1 parameters.
+
+For that case I work through the kb=3 branch, computing kx by dividing 2147483647 by 4096 and subtracting 1 — carefully verifying the integer division gives 524287 with a remainder of 4095, so kx should actually be 524286, not what I initially assumed.
+
+Let me verify: 4096 * 524288 = 2,147,483,648, which is one more than 2^31-1 = 2,147,483,647. So 2147483647/4096 truncates to 524287, confirming kx = 524287 - 1 = 524286.
+
+Now let me double-check with k=1825: since 256 < 1825 <= 4096, kb=1, and 1825/16 = 114 (integer division), so kx = 114 - 1 = 113.
+
+For test03 with k=13: since k <= 256, kb=0, kx = 13 - 1 = 12.
+
+For test15 with k=16384: since 4096 < 16384 <= 65536, kb=2, and 16384/256 = 64, so kx = 64 - 1 = 63.
+
+Now I've confirmed all the expected array values across test00, test02, test03, test04, and test15, plus the non-array assertions for test05, test06, test11, test13, and test19. Time to insert these oracles into the actual test file, adding each assertion at the end of the corresponding test body.
+

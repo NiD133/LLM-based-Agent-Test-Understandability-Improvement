@@ -1,0 +1,142 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Now I need to analyze each test to determine what oracle (assertion) should be added. Let me go through each test:
+
+**test00** - Creates a Value with NUMBER shape. No specific assertions needed other than not-null check. But the test seems to just verify construction. Let me check what the test is supposed to verify. The test name says "HasCorrectShapePatternAndRadix" - so we should assert the shape, pattern, and radix. With radix=115, pattern="ADJUST_DATES_TO_CONTEXT_TIME_ZONE", shape=NUMBER. 
+- `assertEquals(115, value.getRadix());`
+I'll also assert the shape and pattern, checking radix and shape as the most straightforward oracles.
+
+**test01** - Creates a Value with OBJECT shape, radix=-1639. I'll assert both the shape and radix match expectations.
+
+**test02** - This one involves creating features, and I'm moving on to determine its assertions next.
+
+Continuing through the remaining tests: test06 expects equal to be false for shape vs leniency-false comparison, test07 expects equalToTimeZone false for a non-Value object, test08 expects equal false against null, and test09 expects equal true when comparing the same instance. Test10 just confirms hashCode doesn't throw after a HashMap removal, requiring no further assertion, and I'm now moving into test11's setup.
+
+Moving forward, test11 checks that a radix of 95 (not DEFAULT_RADIX) makes hasNonDefaultRadix true, while test12 confirms an empty value using DEFAULT_RADIX makes it false. Test13 verifies that an explicit Boolean.FALSE lenient setting makes hasLenient true, and test14 checks that a null _lenient field makes hasLenient false.
+
+Continuing on, test15 checks EMPTY has no timezone, test16 verifies a non-empty timezone string like "O" makes hasTimeZone true, test17 confirms a set locale makes hasLocale true, and test18 checks the default value has no locale. Then test19 verifies that Value.forRadix() produces an empty pattern, so hasPattern() returns false.
+
+Moving on, test20 confirms a non-empty pattern like "FALSE" makes hasPattern true, test21 shows BINARY shape differs from ANY so hasShape() is true, and test22 confirms the default ANY shape means hasShape() is false. Then test23 checks that calling getTimeZone() on an invalid timezone string lazily resolves it, making hasTimeZone() true afterward, and I'm now setting up test24 to verify getTimeZone() returns null for an empty value.
+
+For test25 I'm checking that a value initialized with a TimeZone object returns non-null from getTimeZone(). For test26 I'm considering how to verify timeZoneAsString() when called with the default timezone -- since the result isn't captured in a variable, I'm thinking through whether this test just needs to confirm the call doesn't throw, or whether there's a way to assert on the returned timezone ID.
+
+Test27 checks that withRadix(-1) returns the same instance since -1 is the default radix, so I need `assertSame(value, result)`. Test28 verifies two values with different radix settings aren't equal, so I need `assertFalse(equal)`.
+
+Continuing with the remaining tests: test29 for lenient-null returns same instance (assertSame), test30 checks the lenient flag is now true on the new value (assertTrue), test31 confirms setting an identical shape returns the same instance (assertSame), and test32 needs to verify the new value actually has the BINARY shape assigned.
+
+For test33, I'm reasoning through the merge override logic — the result should adopt the override's NUMBER_INT shape since the override takes precedence, so I'll assert that merged.getShape() equals NUMBER_INT.
+
+Continuing through more test cases: test34 checks that when the base is EMPTY, withOverrides just returns the override directly, so I'll assert same on the default value. test35 confirms merging two empty values produces no pattern, test36 checks that a null override falls back to returning the base value unchanged, and test37 verifies from(null) yields the EMPTY singleton, so I'll assert sameness against JsonFormat.Value.empty(). I'm now moving into test38 about merging sparse arrays where only non-null values get merged.
+
+Adding remaining assertions...
+
+Working through several more equality tests (46-49), all asserting false for different scenarios like type mismatches, null comparisons, and locale/timezone differences in internal representations. Then I start on test50 examining toString output with a disabled feature.
+
+I'll go with a simple `assertNotNull(result)` check there.
+
+For test51, checking that the returned feature state equals Boolean.TRUE.
+
+For test52, I'm looking at how `featuresWithout` gets created by removing a feature slot, examining whether the enabled/disabled bits for WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED get cleared properly.
+
+After `without(featureSlots)`, the enabled bit gets cleared while disabled stays set, so `_enabled` differs from before—meaning `featuresWithout` really is a new instance, confirming the "CreatesNewDistinctInstance" test should assert they're not the same. For the next tests, I'm checking that calling withoutFeature again when already disabled returns the same instance, while enabling a previously-disabled feature should always produce a new Value.
+
+For the merge test, I need to trace through how enabled and disabled feature sets combine as overrides—one value has a feature enabled while the other has a different feature disabled, so I'm working out what the merged result should look like when one is applied as overrides onto the other.
+
+Since these are different features, combining them yields a new Features instance, so `assertNotNull(merged)` works as a safe check.
+
+For test56, applying the "enabled" value as an override on the "disabled" value should restore that feature, so I'll assert `assertEquals(Boolean.TRUE, result.getFeature(feature))`.
+
+For test57, I'm tracing through a scenario where a default value gets a feature enabled, then re-enabled again to see if applying the same feature twice changes anything.
+
+Merging that value with the default should preserve the feature since the default has empty overrides, and applying it further with another override should still leave the same features unchanged.
+
+Since they're not the same instance, a new Value gets created via withOverrides, but the result should still have the feature enabled since both inputs have it. I'll add an assertion checking `result.getFeature(feature)` equals `Boolean.TRUE`, and apply the same pattern for the next test case where the override explicitly has the feature enabled.
+
+For test59, checking that `withOverrides(null)` returns the same instance via `assertSame`. Now I'm digging into test60, comparing how baseValue and overrideValue are constructed with different constructors to figure out whether they should be considered equal.
+
+Continuing the merge, the features stay empty since both sides are empty, lenient and radix take the override's values, and timezone string carries over as "O" with a null timezone object—so the merged result matches the override value almost exactly, which I now need to verify with an equals check between them.
+
+Since both locales are equal Locale objects parsed from "FALSE", equalToOverride should be true. Then I'm running through the remaining isStructured tests: null returns false, POJO and ARRAY return true (structured types), SCALAR returns false.
+
+For the isNumeric tests, I'm checking that null and SCALAR return false while NUMBER_FLOAT, NUMBER_INT, and NUMBER all return true as numeric types. Then I'm moving on to verify forRadixValue's getFeatures call doesn't throw.
+
+For test73, I'm working out the expected toString format based on the default Value fields: empty pattern, ANY shape, null lenient/locale/timezone, EMPTY features, and radix of -1, giving the string "JsonFormat.Value(pattern=,shape=ANY,lenient=null,locale=null,timezone=null,features=EMPTY,radix=-1)".
+
+For test74, EMPTY value should have shape ANY, which I can verify directly.
+
+For test75, I'm checking a case involving withTimeZone on the empty value where the timezoneStr stays null, so I need to figure out what the test is actually asserting since the result isn't compared elsewhere.
+
+Tracing through the fields, everything matches between the empty value and the result after withTimeZone, so they'd actually be equal—I could assert that directly. For test76, since no return value is captured, I'm treating it as just a check that no exception occurs, or possibly asserting getLocale() returns null.
+
+I should wrap that call with `assertNull(...)` so the test actually verifies the null return, since calling it twice is harmless and cheaper than restructuring the test.
+
+More broadly, I need to check each test for whether the oracle is missing because a variable holds an uncaptured result, an unassigned method call, or nothing at all, and handle each pattern accordingly by appending assertions or converting calls into assertions where I can only edit the existing file.
+
+Adding assertions for each test...
+
+Continuing to define expected test outcomes for lenient values, shapes, merged formats, and default fallbacks across the remaining test cases.
+
+Adding more test assertions...
+
+Adding more assertions...
+
+Now I want to double-check test36's merge behavior, revisiting the base value setup and how merging with a null override should just return the base value unchanged.
+
+For test34, since the base is the EMPTY singleton, calling withOverrides should return the override value directly, so I'm working through that assertion next.
+
+Then I move to a batch of simpler tests - test76 through test80 - filling in missing assertions where methods like getLocale(), getLenient(), isLenient(), and valueFor() were called but never checked, so I'm adding assertNull, assertFalse, and assertEquals checks as appropriate for each.
+
+Now I'm double-checking test35 to make sure my reasoning holds up.
+
+For test35, merging two empty JsonFormat.Value instances returns the same empty instance since they're identical singletons, so I confirm the merged result has no pattern and assert that with assertFalse.
+
+For test37, I trace through what happens when JsonFormat.Value.from() is called with a null argument.
+
+Since `from(null)` returns the EMPTY singleton, the value should be identical to JsonFormat.Value.empty(), so I use assertSame to verify that identity.
+
+For test38, mergeAll on an array where the second entry is the same reference as the first should short-circuit through the identity check in withOverrides and return the original value unchanged, so I assert that the merged result is the same as the initial value.
+
+Now I'm tracing test52, where I construct a JsonFormat.Features instance from an array with duplicate feature entries and then call without() on that same array to see how the duplicates are handled.
+
+So the result differs since e=0 but original was 0x100, confirming `featuresWithout` is not the same instance and `assertNotSame` passes. Now I'm tracing test53, starting with an empty Value and applying `withoutFeature` twice for WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED to see how the internal feature bits evolve across calls.
+
+So `valueWithoutFeatureAgain` equals `valueWithoutFeature`, confirming the assertSame check passes. Now I'm tracing test54, where the same feature is set in both enabled and disabled masks with 6 identical entries, so disabled should take precedence and `get()` should return FALSE since the disabled bit check comes first.
+
+With `featureState` resolved to FALSE, I'm building a new `Value` and calling `withFeature`, which computes new enabled/disabled masks by setting the enabled bit and clearing the disabled bit, producing a distinct Features object since the disabled mask changed from 0x8 to 0 — meaning a new Value instance gets created rather than reusing the original.
+
+Now moving to test55, I'm creating an empty Value and testing `withFeature`/`withoutFeature` for two different enum-related features, then merging them with `withOverrides` to see how the enabled/disabled flags combine.
+
+Since newD differs (0x8 vs 0) even though newE matches, this creates a new merged Features object with both flags set — so a simple non-null assertion on the merged result should suffice for this test case. Now I'm moving on to test56, setting up an empty JsonFormat.Value to check its behavior.
+
+Tracing through: overrideE=0x4 combined with base yields new Features(0x4, 0), so the feature checks as enabled, confirming `result.getFeature(feature) = Boolean.TRUE` for that test. Now I'm setting up test57, building a default Value and applying the same feature twice via `withFeature` to check idempotency.
+
+Since `withFeature` is idempotent, `valueWithFeatureAgain` is literally the same instance as `valueWithFeature`. Merging that with the empty default via `withOverrides` should leave features unchanged and produce an equivalent Value, with the pattern field resolving to the empty base pattern since the override's pattern is empty too.
+
+The rest of the fields (lenient, radix, tz) all fall back to base values, producing a new Value with those defaults. Then applying withOverrides again on valueWithFeature against this merged base essentially reproduces the same properties since they're distinct objects but equivalent in content.
+
+Checking test58: overriding a default Value with a feature-enabled Value correctly yields the feature enabled in the result, confirming the merge logic works for a single flag change.
+
+Now I'm working through test75, starting from an empty Value and checking timezone defaults against the system default TimeZone.
+
+That checks out—equals() ignores the `_timezone` field entirely and only compares `_timezoneStr`, which is null on both sides, so the assertion should hold. Now I'm moving to verify test60, examining the baseValue constructed with a French locale, false timezone, empty features, lenient flag, and radix 10.
+
+For the overrideValue, I'm tracing through how "FALSE" gets parsed as a locale string (falling back to `new Locale("FALSE")` since no separator is found) and how "O" gets handled as the timezone string.
+
+This resolves to the constructor setting pattern "FALSE", shape SCALAR, locale Locale("FALSE"), timezone null, timezoneStr "O", features EMPTY, lenient TRUE, radix 10. Now I'm tracing through the withOverrides method to see how the base and override values combine.
+
+Comparing the constructed result against overrideValue field by field, shape, features, lenient, timezoneStr, and pattern all match. Now I need to check whether the two Locale("FALSE") instances are actually equal.
+
+Locale normalizes the language code to lowercase internally, so both instances end up as Locale("false", "", ""), which makes them equal by Locale.equals. The radix values match too, so equalToOverride should come out true and the assertion passes.
+
+For the next test, I'm looking at timeZoneAsString() being called without capturing its result — since it returns the TimeZone's ID, and the default timezone varies by system, this test seems unreliable across environments.
+
+For test73, I'm working out the exact toString format for a default Value: checking that pattern is empty, shape is ANY, lenient/locale/timezone are null, features is EMPTY, and radix defaults to -1, then constructing the expected string to assert against.
+
+Now for test50, I need to figure out the feature bitmask for valueWithoutFeature, which has WRITE_SORTED_MAP_ENTRIES disabled—so I'm counting through the enum ordinals to determine the correct disabled bit value for the toString comparison.
+
+That exact string assertion feels too brittle to rely on, so I'll opt for a simpler check instead, like asserting the result isn't null.
+
+Now I'm ready to go through the test file and add the edits one by one, placing each oracle in the right spot.
+
+Still planning assertions...
+

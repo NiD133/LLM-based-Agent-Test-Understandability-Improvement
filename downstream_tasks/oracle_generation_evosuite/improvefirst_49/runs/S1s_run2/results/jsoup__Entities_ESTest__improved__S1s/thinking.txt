@@ -1,0 +1,113 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Now I understand the tests and the class under test. Let me analyze each test and determine what oracle should be added:
+
+1. **test00_escapeEmptyStringReturnsEmpty**: `Entities.escape("")` should return an empty string.
+   - Oracle: `assertEquals("", result);`
+
+2. **test13_escapeNullStringReturnsEmpty**: `Entities.escape((String) null)` should return empty string (code: `if (data == null) return ""`).
+   - Oracle: `assertEquals("", result);`
+
+3. **test08_escapeDoubleQuoteAndLessThanInDefaultHtmlMode**: `Entities.escape("^du^X\"w<", settings)` - `"` becomes `&quot;`, `<` becomes `&lt;`.
+   - Result: `"^du^X&quot;w&lt;"`, giving oracle `assertEquals("^du^X&quot;w&lt;", result);`
+
+4. For apostrophe/ampersand in default HTML mode with `"K'?wQt&"`, apostrophe becomes `&apos;` and `&` becomes `&amp;`, giving `"K&apos;?wQt&amp;"`.
+
+5. For the non-breaking space tests, in base HTML mode `\u00a0` becomes `&nbsp;` giving `"yen&nbsp;"`, while in xhtml mode it becomes the numeric form `&#xa0;` giving `"yen&#xa0;"`.
+
+6. For angle brackets in XML syntax with `"e\n//]<]>"`, `<`→`&lt;` and `>`→`&gt;`, giving `"e\n//]&lt;]&gt;"`.
+
+7. Now I'm working through the apostrophe-in-XML-syntax test, trying to determine whether setting the syntax to XML also switches the escape mode to xhtml, since that would change whether apostrophe renders as `&apos;` or the numeric `&#x27;`. The test name implies numeric hex encoding, suggesting XML syntax does trigger xhtml-style escaping, which would make `"K'?wQt&"` escape to `"K&#x27;?wQt&amp;"` — I want to verify this against the `Document.OutputSettings.syntax()` behavior before finalizing the oracle.
+
+
+
+Now I have a clear picture. When `syntax(Syntax.xml)` is set, it automatically changes `escapeMode` to `xhtml`. So for test04, xml syntax → xhtml escape mode → apostrophe is encoded as `&#x27;`.
+
+Let me now work through each test:
+
+1. **test00_escapeEmptyStringReturnsEmpty**: `Entities.escape("")` → `""`
+   - Oracle: `assertEquals("", result);`
+
+2. **test13_escapeNullStringReturnsEmpty**: `Entities.escape((String) null)` → `""` (code: `if (data == null) return ""`)
+   - Oracle: `assertEquals("", result);`
+
+3. Working through test08 with double quote and less-than under default HTML settings, quotes become `&quot;` due to the attribute flag and `<` becomes `&lt;`, giving `"^du^X&quot;w&lt;"`.
+
+4. For test09 with apostrophe and ampersand under default settings, the apostrophe becomes `&apos;` since escape mode is base rather than xhtml, and `&` becomes `&amp;`, giving `"K&apos;?wQt&amp;"`.
+
+5. For test25 with a non-breaking space character, I'm reasoning through how `appendNbsp` converts `\u00a0` to `&nbsp;` in base/extended escape mode, appending it after the literal "yen" text.
+
+I'm now noticing that both test25 and test07 use the same-looking `"yen "` input but expect different outputs, which only makes sense if that trailing character is actually U+00A0 rather than a plain ASCII space — the test names confirm this is meant to be a non-breaking space. So test25 in base/html mode should yield `"yen&nbsp;"`, while test07 in xhtml mode should instead encode it as the numeric hex entity `&#xa0;`.
+
+Working through the remaining escape tests, I trace how angle brackets, apostrophes, and ampersands get converted in XML/xhtml mode, and then move to the ASCII-charset test where a non-ASCII section sign character forces a fallback to a named entity encoding.
+
+For the final tests, I'm checking how unencodable characters like `≻` fall back to numeric hex entities when there's no matching named entity in the base escape mode, confirming that switching the charset to ASCII doesn't itself change the escape mode from its default base setting.
+
+I'm also verifying that passing a negative option value to the escape method leaves the settings untouched -- the syntax stays html and the escape mode stays base across several appendable and file writer variants.
+
+I need to check whether `outline()` is actually a getter method on `OutputSettings`, since the field defaults to false, before confirming that test's oracle. Similarly, I'm confirming the default indent amount of 1 stays unchanged when a positive option is passed, then moving on to checking how `coreCharsetByName` behaves with an unknown charset name.
+
+For test01, calling `Entities.CoreCharset.byName("")` should just fall back to a default charset without throwing, but since the test doesn't capture the return value, I'm weighing whether the oracle should simply assert no exception occurs or whether it should also check that the returned value equals `CoreCharset.fallback`.
+
+I could add that assertion, though it duplicates the call, or just leave the test as a no-exception check since that's its actual name. Moving on: for test14, since "shy" is a known entity name (soft hyphen), findPrefix should return "shy" itself, so I'll assert that equality; and for test15, an input like "a%VaysnL|7L=rC" has no matching entity prefix, so findPrefix should return an empty string.
+
+For test16, checking codepointsForName with an empty string should return 0 since nothing is found. Then for test17, I'm trying to figure out whether "QUOT" (uppercase) is actually a valid entity name in jsoup's HTML5 table, since entity names are typically case-sensitive and only "quot" lowercase is standard—I need to verify whether the uppercase variant is also included before deciding what the test should assert.
+
+I'm working through several more oracle assertions: unknown entity names should return empty strings or false, known entities like "sup2" should return true, and codepoint-to-name lookups for '&' and '>' should return "amp" and "gt" respectively. For the escape-to-appendable test variants, I'm reasoning that most of these check that settings remain unchanged after escaping—syntax stays "html", escape mode stays "base", and default indent amount stays 1—though I still need to verify whether `outline()` is actually a public getter method on OutputSettings before writing that assertion.
+
+
+
+Good, `outline()` and `indentAmount()` are public methods. Now let me write all the oracles.
+
+Let me compile the complete list of oracles to add:
+
+1. test00: `assertEquals("", result);`
+2. test13: `assertEquals("", result);`
+3. test08: `assertEquals("^du^X&quot;w&lt;", result);`
+4. test09: `assertEquals("K&apos;?wQt&amp;", result);`
+5. test25: `assertEquals("yen&nbsp;", result);` (non-breaking space in input)
+6. test07: `assertEquals("yen&#xa0;", result);` (numeric non-breaking space)
+7. test02: `assertEquals("e\n//]&lt;]&gt;", result);`
+8. test04: `assertEquals("K&#x27;?wQt&amp;", result);` (xml→xhtml mode escaping)
+9. test03: `assertEquals("kp1D(Cu%~vB8caHD&sect;", result);` (§ escaped in base mode)
+10. test23: I'm still working out the expected escaped entity for this case.
+
+Continuing through the remaining test assertions, I'm checking settings defaults (syntax, escape mode, outline, indent amount), charset fallback behavior, entity decoding for "shy" and empty strings, count and quote-character results, and a series of boolean true/false assertions for validation checks.
+
+Then I move to test21, test22, and test27, expecting name lookups for "amp" and "gt", and a "<" result for the last one. I'm also double-checking the QUOT alias mapping to a double quote, confirming §'s named entity is "sect", and working through the XML/xhtml escaping logic for a tricky input string containing newlines, slashes, brackets, and angle brackets, tracing character by character which ones get escaped versus passed through as valid XML.
+
+For test08, I recognize the escaped double quote in the Java literal means the actual string is `^du^X"w<`, and the expected output escapes the quote and angle bracket to `^du^X&quot;w&lt;`. Now I'm ready to add all these oracles into the test file.
+
+
+
+There might be a special character in the string that's not a regular space. Let me read the relevant portion of the file.
+
+I can't run arbitrary bash commands. Let me try to match the string with the correct non-breaking space character in the edit. The string likely contains U+00A0 (non-breaking space). In UTF-8, U+00A0 is encoded as `0xC2 0xA0`. Since I can't see the raw bytes, I need to include the actual non-breaking space character in my match.
+
+Let me try using the Unicode escape in Java: "yen\u00a0" - but the file might have the literal character. I need to match the exact bytes in the file.
+
+Let me try with the actual non-breaking space character.
+
+The issue is the special character in "yen " can't be matched like this. I need to use a different approach. Let me use the line number approach with the Read tool to identify the exact lines and use a longer context in my Edit.
+
+Actually, looking at the Read output, the file shows "yen " with what appears to be a non-breaking space or some other character after "yen". The Edit tool needs to match the exact bytes, and the non-breaking space (U+00A0) might not be passing correctly through my input.
+
+Let me try surrounding with more context to ensure a unique match.
+
+Good. Now let me do the same for test07 with xhtml mode.
+
+There seems to be a special character in `"yen "`. The issue is that when I type "yen " in the old_string, the tool needs to match the exact bytes in the file. The non-breaking space is U+00A0. Let me try using a different approach - include more context around this string and see if we can match.
+
+Actually, let me try a different approach - I'll read more lines around that area to understand the exact context.
+
+The issue is that the string "yen " contains a non-breaking space (U+00A0) which cannot be matched because I'm typing a regular space. I need to use the actual Unicode character. Let me try a different approach to include the Unicode character in my match string.
+
+Actually wait - for test25, the edit succeeded even though it also has "yen ". Interesting... Perhaps the issue is with test07 which has a different surrounding context. But the error is the same. Let me re-examine.
+
+For test25, I used:
+```
+    public void test25_escapeNonBreakingSpaceAsNbspEntityInHtmlMode() throws Throwable {
+```
+
+That test successfully matched and passed, so the non-breaking space handling worked there. Now I'm wondering if test07's second occurrence of that string has different surrounding context or encoding that's causing the mismatch, so I need to look more closely at the current state of the file around that area.
+

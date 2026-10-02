@@ -1,0 +1,62 @@
+Let me start by reading both the test file and the class under test to understand what needs to be done.
+
+Now I need to analyze each test and determine the correct oracle for each one.
+
+**test0**: 
+```java
+RefinedSoundex refinedSoundex0 = new RefinedSoundex();
+Object object0 = refinedSoundex0.US_ENGLISH.encode((Object) "01360240043788015936020505");
+```
+The `encode(Object)` method calls `soundex((String) obj)`. The string "01360240043788015936020505" contains only digits and no letters. After `SoundexUtils.clean()`, all non-alphabetic characters are removed, leaving an empty string. 
+
+So `soundex` returns the empty string, and `encode(Object)` returns that empty string as the resulting object.
+
+For test1, I'm now examining `RefinedSoundex.difference` called with a null first argument and "ov9Sw<^R" as the second. This delegates to `SoundexUtils.difference`, which encodes both strings and counts matching positions, so I need to work out what happens when one input is null and gets encoded.
+
+For test2, `getMappingCode('9')` should return 0 since '9' isn't a letter, so the oracle assertion should check that char0 equals 0.
+
+Now for test4, I'm examining how a 6-length mapping array with default null characters interacts with the difference calculation on two identical encoder exception strings — since letters beyond index 5 in the mapping would return the default null code.
+
+Tracing through the letters carefully, stripping punctuation and uppercasing gives ORGAPACHECOMMONSCODECENCODEREXCEPTION.
+
+Now I'm checking the soundex mapping logic: with an all-null mapping array of length 6, indices for A-F resolve to the null character, while G-Z produce an out-of-bounds index that also returns 0 — meaning every character maps to code 0 regardless of letter.
+
+So `'\0'` behaves as integer 0, meaning `current != 0` is false whenever the mapping returns null-like values, so those characters get skipped in the buffer. The first letter of the string is appended directly, and then subsequent letters only get appended if their mapping code differs from both zero and the previous code.
+
+All subsequent letters also collapse to '\0', so both strings encode to just "O". That means `SoundexUtils.difference("O", "O")` returns 1, matching char by char up to the shorter length, so `int0 == 1`. I want to confirm this by checking the actual SoundexUtils source to be sure the difference logic works as I expect before moving to test1 again.
+
+Mapping out the remaining letters of the Soundex code table...
+
+Now I'm tracing through the "OVSW" example step by step: appending the first letter 'O', then iterating through each character, computing its mapping code, and comparing it against the previous code to decide whether to append or skip it, following the standard Soundex logic of collapsing consecutive duplicate codes.
+
+I realize '0' as a char has code 48, not integer 0, so the comparison is true and '0' does get appended, giving "O0230" as the result.
+
+Now I need to check what happens for null input — if encode returns null, I should verify how SoundexUtils.difference handles that case by looking at its implementation.
+
+
+
+Now I have everything I need. Let me trace through each test:
+
+**test0**:
+- `encode(Object "01360240043788015936020505")`
+- Calls `soundex("01360240043788015936020505")`
+- `SoundexUtils.clean("01360240043788015936020505")`: No letters, so count=0, returns `new String(chars, 0, 0).toUpperCase()` = `""`
+- Actually wait: `isEmpty` checks if the string is null or length 0. "01360240043788015936020505" is not empty, so it proceeds.
+Since every character is a digit, the clean count stays zero, so the cleaned result is an empty string. Back in soundex, since str is now empty, it returns "" directly, so object0 equals "" and the oracle asserts that.
+
+For test1, it calls difference(null, "ov9Sw<^R"), which routes through SoundexUtils.difference and then differenceEncoded with the encoder.
+
+Since encode(null) calls soundex(null), which returns null, differenceEncoded receives null and returns 0, so the oracle asserts int0 equals 0.
+
+For test2, charArray0 is a fresh char[3] of all null characters, and getMappingCode('9') returns 0 since '9' isn't a letter, so char0 equals the null character, giving an oracle of assertEquals(0, char0) or its char equivalent.
+
+Test3 already has its assertion via the try/fail/catch pattern, so nothing more is needed there.
+
+For test4, charArray0 is a char[6] of nulls, and I'm tracing through difference() called with the same string twice — since both arguments are identical, they'll encode to the same soundex value, so I'm working through clean() stripping the dots from "org.apache.commons.codec.EncoderException" to isolate just the letters.
+
+Since the mapping table is all null characters, every code lookup returns zero regardless of the letter, so the soundex algorithm just keeps the first letter and produces nothing but zeros for the remaining digits.
+
+Both strings end up encoding to just "O", meaning their soundex codes are identical.
+
+Now I'm working out which oracles each test actually needs: test0 asserts an empty string, test1 and test4 assert integer results (0 and 1 respectively), test2 asserts a char value, while test3 and test5 don't require assertions since they already handle exceptions or just verify construction succeeds. I'm adding these oracles into the test file now.
+

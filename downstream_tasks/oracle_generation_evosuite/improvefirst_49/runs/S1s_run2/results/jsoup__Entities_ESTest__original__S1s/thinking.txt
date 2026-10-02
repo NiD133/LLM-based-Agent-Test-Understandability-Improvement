@@ -1,0 +1,273 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now I need to analyze each test method and determine what oracle (assertion) should be added. Let me analyze each test:
+
+**test00**: `Entities.escape("")` returns an empty string
+```java
+assertEquals("", string0);
+```
+
+**test01**: `Entities.CoreCharset.byName("")` returns `fallback` (since "" doesn't match "US-ASCII" or start with "UTF-")
+```java
+assertEquals(Entities.CoreCharset.fallback, ???);
+```
+Wait, this doesn't store the return value. It just calls `byName("")`. No variable captured. So no oracle needed here... But wait, the task says "Add an oracle wherever one is needed". 
+
+Checking further, several tests like test01, test05, test06, test10, test11, test12 don't capture their return values at all, so there's nothing to assert on for those. I'm trying to work out what byName("") would actually resolve to, since it doesn't match "US-ASCII" or start with "UTF-".
+
+For tests where the return is captured in a variable, though, I do need to add an assertion. Working through test00: since `Entities.escape("")` returns into `string0`, that would need `assertEquals("", string0)`.
+
+For test02 with XML syntax, escaping `e\n//]<]>` converts angle brackets to entities, giving `e\n//]&lt;]&gt;` as the expected string. Moving to test03 with ASCII charset, since `\u00A7` (§) can't be encoded in ASCII, I need to work out what the default escape mode produces for that character.
+
+Tracing through the escape logic: since escape mode defaults to base (not xhtml) with both ForText and ForAttribute options set, `'` maps to `&apos;` and `&` maps to `&amp;`, giving the expected output for that test case.
+
+Looking at the remaining tests: several call escape with a void return so there's nothing to assert; another checks xhtml mode encoding a non-breaking space as `&#xa0;`; and another verifies that with default settings, `"` becomes `&quot;` and `<` becomes `&lt;`.
+
+Test09 confirms default settings escape `'` to `&apos;` and `&` to `&amp;`, producing `"K&apos;?wQt&amp;"`. Test13 checks that escaping a null string returns an empty string. Test14 looks at `findPrefix("shy")`, considering whether "shy" itself is a recognized base HTML entity for soft hyphen.
+
+For test15, I'm reasoning through `findPrefix` on a random string — since baseSorted only contains alphabetic entity names, none would match as a prefix of something starting with characters like "%" mixed in oddly, so I expect it returns null or empty.
+
+For test16, I'm checking `codepointsForName("")` against an empty string input, which shouldn't be in the multipoints or extended maps, so it should return -1.
+
+For test17, "QUOT" won't match since the entities map uses lowercase "quot" - HTML entity lookups are case-sensitive, so this returns an empty string.
+
+For test18, checking `isBaseNamedEntity("LQ2")` should be false since that's not a valid entity name.
+
+For test19, "sup2" is a legitimate named HTML entity representing the superscript 2 character, so `isNamedEntity` should return true here.
+
+Moving to test20, testing `isNamedEntity` with a nonsensical string like "|TM1yKJ" that clearly isn't a real entity name, expecting false.
+
+For test21 and test22, I'm checking `nameForCodepoint` for the ampersand (38) which maps to "amp" in base escape mode, and for the greater-than sign (62) which maps to "gt" in xhtml mode.
+
+Now for test23, I'm working through an ASCII charset escape test involving the succeeds symbol (≻, U+227B), which can't be represented directly in ASCII and needs to be handled through named entity substitution.
+
+Since U+227B likely isn't in the base entity set, it would fall back to a numeric character reference like `&#x227b;`, giving the expected output "ethiH_p3&#x227b;".
+
+For test24, I'm checking that looking up a malformed entity name like "degGT=k&quot;]+G" returns an empty string since it doesn't match any known entity.
+
+For test25, since NBSP always renders as `&nbsp;` unless in xhtml mode, the escaped result should be "yen&nbsp;".
+
+For test26, I'm working through what option flags 76 decodes to (Normalise, TrimLeading, and one more) to determine how the void escape method handles whitespace and text options.
+
+For test27, unescaping "&lt;" should simply yield "<".
+
+Then for test02, I need to work through XML syntax escaping with the default base mode on this string containing special characters like "//]<]>", following the same UTF-8 base escaping rules character by character.
+
+For test03, I'm switching to ASCII charset with a string containing "§" (codepoint 0xa7), and since that's above the ASCII range, it will need to be escaped as a numeric entity.
+
+I don't have direct access to find that resource file, so I'll focus on cases I'm confident about instead: the empty-string tests, the xhtml nbsp escape, and the quote/apostrophe/ampersand escaping tests all have clear, verifiable answers I can assert with confidence.
+
+I'm digging into whether setting the syntax to XML actually changes the escape mode used, since `escape()` pulls its mode from `out.escapeMode()` rather than directly from the syntax setting — I need to check how OutputSettings ties these two together.
+
+If XML syntax defaults escapeMode to xhtml, I can reason through test02 and test04: in xhtml mode, angle brackets get escaped to `&lt;` and `&gt;`, and apostrophes get handled via `appendApos` for both text and attribute contexts.
+
+I want to actually check the Document.java source to verify how OutputSettings ties syntax to escapeMode rather than guessing further.
+
+
+
+Now I see it clearly. When syntax is set to XML:
+```java
+if (syntax == Syntax.xml)
+    this.escapeMode(Entities.EscapeMode.xhtml);
+```
+
+So setting syntax to XML changes the escapeMode to xhtml.
+
+Now I can correctly determine:
+
+**test02**: `escape("e\n//]<]>", document_OutputSettings0)` with XML syntax → escapeMode = xhtml
+- In xhtml mode:
+  - `<` → `&lt;`
+  - `>` → `&gt;`
+  - `\n` is valid XML char (0xA), written as-is
+- So the result is `"e\n//]&lt;]&gt;"`, confirmed by the assertion.
+
+For test04, escaping `"K'?wQt&"` under the same xhtml mode: the apostrophe becomes `&#x27;` and the ampersand becomes `&amp;`, giving `"K&#x27;?wQt&amp;"`, which matches the expected assertion.
+
+For test07, with explicit xhtml mode, escaping `"yen\u00A0"` turns the non-breaking space into `&#xa0;`, yielding `"yen&#xa0;"`.
+
+For test09, using default base-mode UTF-8 settings on `"K'?wQt&"`, the apostrophe becomes `&apos;` instead and the ampersand becomes `&amp;`, giving `"K&apos;?wQt&amp;"`.
+
+Now for test23, I'm testing ASCII charset with base escape mode on a string containing U+227B (≻), which can't be represented directly in ASCII, so I need to check whether this codepoint has a named entity in the base HTML entity set — it's a fairly obscure math symbol, so it likely isn't among the ~106 common base entities and would need to fall back to a numeric character reference instead.
+
+For test25, I'm checking that U+00A0 (non-breaking space) in base mode gets escaped as the named entity `&nbsp;`, giving the result `"yen&nbsp;"`.
+
+For test08, I'm verifying that double quotes and less-than signs both get escaped to `&quot;` and `&lt;` respectively under default settings, since both attribute and text escaping flags are active.
+
+Now moving to test03, I'm working through ASCII charset escaping of the character U+00A7 (§), which can't be represented directly in ASCII. I'm checking whether the base HTML entity set includes "sect" as the named entity for this character to determine the correct escaped output.
+
+For test14, I'm checking whether "shy" (the soft-hyphen entity) belongs to the base 106-entry set or only the extended set, since that determines whether findPrefix returns "shy" or an empty string. I need to consult the EntitiesData reference to confirm this.
+
+
+
+Now I can see the entity data clearly. Let me extract the information I need:
+
+From `basePoints`:
+- `sect=4n;f` - § is at codepoint 0x4e? Wait, the format is `name=codepoint_base36;index`.
+
+Actually the format is: `name=cp1;index&` or `name=cp1,cp2;index&`
+
+So `sect=4n;f` means:
+- name = "sect"
+- codepoint = parseInt("4n", 36) = 4*36 + 23 = 144 + 23 = 167 = 0xa7 ✓
+So § confirms as "sect" in the base set, which lets me verify test03: the \u00A7 character in that string maps to &sect; using ASCII charset with base escape mode. Now I'm working out the codepoint for "shy" the same way, parsing "4t" in base 36.
+
+For test14, findPrefix("shy") matches directly since "shy" is already in the sorted base entity list. For test15, I need to find matching prefixes in "a%VaysnL|7L=rC" by checking against lowercase base entities starting with 'a' like aacute, acirc, aelig, agrave, amp, aring, and atilde.
+
+The '%' at position 1 rules out all of them, so the result is an empty string. Then for test19, checking isNamedEntity("sup2") - decoding its codepoint from the fullPoints table gives 178, which is the superscript-2 character, confirming "sup2" exists in the extended entity set and returns true.
+
+For test21, decoding nameForCodepoint(38) in base mode: parsing the amp entry gives codepoint 38, matching "amp" as the entity name for ampersand. For test22, decoding nameForCodepoint(62) in xhtml mode similarly confirms the gt entry maps to codepoint 62.
+
+Now checking test23, escaping the SUCCEEDS character (U+227B) with an ASCII charset — I'm verifying whether this codepoint exists in the base entity table, then checking the full entity table by computing the base-36 value for "succ" to see if it matches 0x227B.
+
+Since the escape mode defaults to base rather than extended, and 0x227B likely isn't among the small set of base entries, I expect the code falls back to writing a numeric hex character reference instead of a named entity.
+
+Checking test25: with default base UTF-8 settings, the non-breaking space character should map to `&nbsp;`, giving `"yen&nbsp;"`.
+
+For test02, I'm tracing through XML syntax escaping (xhtml mode) on a string with a newline and slashes, confirming that valid XML characters like `\n` pass through unescaped while special characters get encoded.
+
+For test04, I'm working through apostrophe and ampersand escaping under XML syntax, noting that when both text and attribute flags are set in xhtml mode, the apostrophe becomes `&#x27;` and the ampersand becomes `&amp;`.
+
+I continue tracing test07, where the non-breaking space character gets escaped to `&#xa0;` in xhtml mode, and test08, where I walk through the base UTF-8 output settings and confirm the quote character becomes `&quot;` since the attribute flag is set, while the less-than sign becomes `&lt;`.
+
+For test09, I check `escape("K'?wQt&", ...)` and find the apostrophe converts to `&apos;` since both text and attribute flags are set in base mode, giving `"K&apos;?wQt&amp;"`. Then I move to verifying test17's `getByName("QUOT")` lookup, confirming that "QUOT" maps to codepoint 34 (the quote character) and is indeed present in the base character set.
+
+Actually, checking both basePoints and fullPoints, "QUOT" (uppercase) does exist separately from "quot" (lowercase), mapping to codepoint 34 in both. So `getByName("QUOT")` correctly returns `"\""`, confirming test17. Now I move on to test14, examining `findPrefix("shy")`.
+
+Since "shy" appears directly in basePoints and is part of baseSorted, and it matches its own name exactly, `findPrefix` should just return "shy" itself.
+
+Then I turn to test08, tracing through `escape("^du^X\"w<", ...)` with default UTF-8 base settings character by character -- the ASCII characters pass through unchanged, and when I hit the double-quote character, I need to check how `appendEscaped` handles it under the ForText|ForAttribute option combination.
+
+The quote gets escaped to `&quot;` since the ForAttribute flag is set, giving a final result of `"^du^X&quot;w&lt;"` after the `<` also gets escaped.
+
+Now I'm going through the remaining tests to confirm which ones lack a checkable oracle -- test01 returns a fallback value that's never captured, and several others are void calls (like test05 with its odd negative options value and test06) where there's simply nothing to assert against.
+
+For tests like test26, which also involves a void call, I'm considering whether the appendable's output could be inspected. Since these wrap streams like a file writer, reading back the written content isn't something typical generated tests do, and for these void methods the only real assertion is that no exception is thrown -- so tests 05, 06, 10, 11, and 12 have no meaningful oracle to add.
+
+For test01, similarly, the return value from `CoreCharset.byName("")` isn't captured, so there's no oracle there either -- it just verifies the call completes without throwing. I'm now assembling the full oracle list: test00 expecting an empty string, test01 with no oracle, test02 expecting a specific decoded string, and continuing on to test03 with another expected string value.
+
+Continuing through the remaining test cases and their expected assertions, then I want to double-check test03 by tracing through what Document.OutputSettings is being constructed and used for in that test.
+
+For test03, setting the charset to ASCII and calling Entities.escape on a string with an unencodable character (\u00A7), I trace the logic: all standard ASCII characters pass through unchanged, but the section sign can't be represented in ASCII, so it gets converted to its named entity "&sect;" via the base escape mode's codepoint lookup.
+
+For test17, I verify that looking up "QUOT" in the entity name table via binary search correctly returns codepoint 34, which is the double-quote character.
+
+Then I move to test08 with the string "^du^X\"w<" using UTF-8 charset and base escape mode, checking how the escape options interact with default text/attribute flags when null strings return empty immediately.
+
+Now I'm working out the bitmask values for options like -1814, -991, -249532396, -20, -67, and 76 across tests 05, 06, 10, 11, 12, and 26 — matching them against the flag constants for ForText, ForAttribute, Normalise, TrimLeading, and TrimTrailing.
+
+For the void methods, there's no return value to assert on, so I'll skip adding oracles there. Now I'll write the final edits to add all the oracles.
+
+
+
+The file uses the unicode escape `\u00A7`. Let me use it differently.
+
+The issue is likely that the actual file has `\u00A7` as a literal unicode character (§) in the source file, but when reading I see `\u00A7`. The Edit tool is having trouble matching because of the character encoding.
+
+Let me try a different approach - I'll read the raw bytes around that section.
+
+Actually, looking at the file content that was shown, line 48 has:
+```
+      String string0 = Entities.escape("kp1D(Cu%~vB8caHD\u00A7", document_OutputSettings1);
+```
+
+The tool says it tried swapping `\uXXXX` escapes and their characters, and neither worked. 
+
+The file content shows `\u00A7` at line 48. The Edit tool says it tried both forms and neither matched. Let me try a different strategy - I'll insert the oracle by editing around line 49.
+
+Actually, looking at the Read output, the file uses the literal unicode character in some places. Let me look at the last line of test03 more carefully. 
+
+The Edit tool's note says it "tried swapping \uXXXX escapes and their characters; neither form matched, so the mismatch is likely elsewhere in old_string."
+
+This suggests the mismatch is actually in a different part of my old_string. 
+
+Re-reading the source lines around test03, I'm checking each line character by character against what I used in old_string to spot where the discrepancy actually lies.
+
+Checking the whitespace formatting more closely - the double spaces around "throws Throwable" match what I used, so I'm trying to figure out where the actual mismatch with the old_string might be, maybe by comparing against a similar edit that succeeded earlier.
+
+Maybe there's a subtle whitespace difference around those lines that's causing the mismatch. Let me try narrowing the match to just the line right before the closing brace.
+
+
+
+OK, so the partial match DID work - meaning the text `Document.OutputSettings document_OutputSettings1 = document_OutputSettings0.charset("ascii");\n      String string0 = Entities.escape("kp1D(Cu%~vB8caHD` is in the file. The issue must be with the `\u00A7` part.
+
+Wait - but the Edit tool note says it tried both forms and neither matched. Let me look at this differently. I need to see what's actually in the file around that area. The Read tool showed `\u00A7` but that might be the tool escaping it for display. The actual file might have the literal § character (0xC2 0xA7 in UTF-8). The Edit tool says it tried both forms.
+Maybe there's an encoding mismatch I'm not accounting for. Let me try widening the edit range around line 48, or maybe target the whole test03 method and rewrite it with the oracle included, using just the tail end of the charset call plus the unicode character as my anchor text.
+
+
+
+Let me try a completely different approach - just include the test04 comment and the initial lines of it which don't have any unicode. The Edit tool says "mismatch is likely elsewhere in old_string" even when I include `test04()`. This is very strange.
+
+Wait - I see the issue! The Edit tool said "tried swapping \uXXXX escapes and their characters; neither form matched" - so neither the escape form `\u00A7` nor the actual character `§` matched. But my test with just the prefix (before `§`) DID work (it gave "no changes" error meaning it found the match)!
+Maybe the Read output displays `\u00A7` while the actual file uses the literal character, but the Edit tool already tried both forms without success -- so perhaps there's a duplicate occurrence of `document_OutputSettings0` elsewhere in the file causing the mismatch.
+
+I wonder if the Read tool's display of `\u00A7` is actually masking a literal six-character escape sequence in the source rather than the resolved `§` symbol -- Java source files can contain `\u00A7` as literal backslash-u-escape text, which the compiler resolves later, so the Edit tool might need to match that literal sequence instead of either interpretation I tried.
+
+
+
+The issue appears to be that the Read tool shows line 48 as having `\u00A7`, but the Edit tool says it can't find the match even with both forms. 
+
+Let me think about this differently. What if the actual file content is something like:
+`"kp1D(Cu%~vB8caHD\u00A7"` where the `\u` is actually encoded differently? Like maybe the file has byte sequences that don't match what I'm providing?
+
+Actually, I just realized: the Edit tool tries "swapping \uXXXX escapes and their characters" in the old_string, but what it means is it tries BOTH:
+If neither swap works, the mismatch must lie elsewhere in the string, so I should try anchoring my match on a narrower region right around the § character instead of the whole line.
+
+
+
+This is very strange. The prefix up to `kp1D(Cu%~vB8caHD` worked before (got "no changes" which means it matched the text). But now when I add more context before it (the charset line), it doesn't work.
+
+Wait - actually the "no changes" error earlier just means old_string == new_string; it doesn't actually confirm the string was found in the file! It stops before even looking for the string.
+
+Let me try with just the final part of the line.
+
+Good, so the Edit tool CAN find `vB8caHD` in the file (both as a string). The issue is specifically with the `§` or `\u00A7` character. 
+
+Let me try a different approach - I'll match the text that comes AFTER the `\u00A7` character - specifically `", document_OutputSettings1);\n  }\n\n  @Test(timeout = 4000)\n  public void test04()`. Let me see if I can anchor to the part after the problematic character.
+
+But wait - if I use `replace_all: false` and there are other occurrences of `", document_OutputSettings1);` in the file... let me check.
+Since test03 is the only one using `document_OutputSettings1` instead of `document_OutputSettings0`, matching that suffix should be unique enough to anchor the replacement.
+
+
+
+Wait, I need to check test07 more carefully. The test is:
+```java
+Document.OutputSettings document_OutputSettings0 = new Document.OutputSettings();
+Entities.EscapeMode entities_EscapeMode0 = Entities.EscapeMode.xhtml;
+document_OutputSettings0.escapeMode(entities_EscapeMode0);
+String string0 = Entities.escape("yen\u00A0", document_OutputSettings0);
+```
+
+I changed it to `"yen "` by matching `"yen "` (since the non-breaking space is \u00A0). Wait, let me re-read the file to make sure the edit worked correctly.
+The replacement matched the literal string with the non-breaking space correctly, confirming the edit took hold. But I need to double-check I targeted test07 specifically, since there's another similar escape call in test25 using default mode with the same "yen\u00A0" input that I shouldn't confuse with this one.
+
+Now moving on to test08, I'm checking the escape call with the string containing special characters like `^du^X"w<`.
+
+
+
+Good - the prefix `"ethiH_p3` is matched. Now I need to add the assertion after the escape call. The oracle needs to go after the closing `);` of the escape call. Let me try to match from after the `\u227B` character.
+
+Since the prefix works, let me match the suffix: `", document_OutputSettings0);` followed by test24.
+
+Wait - this match `", document_OutputSettings0);` could match multiple places in the file. Let me check what happened.
+
+Actually, looking at the escape calls with `document_OutputSettings0` ending with `);`:
+- test02: `Entities.escape("e\n//]<]>", document_OutputSettings0);` ← already has oracle
+- test07: `Entities.escape("yen\u00A0", document_OutputSettings0);` ← already has oracle (in test07, NOT test25)
+- test08: `Entities.escape("^du^X\"w<", document_OutputSettings0);` ← already has oracle
+- test09: already has oracle
+- test23: just got its oracle added
+- test25 still needs one
+
+I traced the match I used and confirmed it targets the block right before test24 begins, which lines up with test23's location, so that's correct. Now I need to look at test24 and test25 specifically.
+
+
+
+Let me check whether there is a second occurrence of `"yen\u00A0"` in test07 or it's only the `"yen ` (with literal non-breaking space). If test07 already has its oracle, the remaining one is test25. Let me find the specific line that has test25's escape call and add the oracle after it.
+
+Looking at line 206: `      String string0 = Entities.escape("yen\u00A0", document_OutputSettings0);`
+And line 207: `  }`
+And line 208: (empty)
+And line 209: `  @Test(timeout = 4000)`
+And line 210 marks the start of test26, so I'll match on that instead.
+

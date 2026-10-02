@@ -1,0 +1,82 @@
+Let me start by reading the masked test file to understand what tests are there and what oracles need to be added.
+
+Now let me analyze each test to determine what oracles (assertions) need to be added:
+
+**test00**: `soundex0.encode("vyHWF);{")` - encodes a string with Soundex. The result should be a String. With US_ENGLISH Soundex, "vyHWF" - 'v' maps to '1', 'y' is ignored, 'H' is ignored, 'W' is ignored, 'F' maps to '1'. The first letter is 'v' (capital 'V'), then we look at each subsequent letter... Let me think:
+- Soundex encodes: first letter is kept, then subsequent consonants are mapped
+- 'v' is the first letter, then Y/H/W are ignored, and F maps to code 1, giving something like "V100" -- I need to verify the exact mapping rules where B,F,P,V map to 1, and H/W are silently skipped rather than breaking the duplicate-detection.
+
+Without the actual test assertion, I need to reason through the US_ENGLISH soundex mapping table itself, tracing each letter's code position to figure out how special characters and vowels get treated during encoding.
+
+Finishing the Soundex mapping table, then I apply it to "vyHWF);{": keeping the first letter 'V', then dropping the '0' codes for 'y' and 'H' since those are ignored, and continuing to check 'W' next.
+
+Without the assertion in place, it's hard to know the exact oracle for each test. For test01, the original assertion on getMaxLength was marked unstable and removed, so I need to figure out what should replace it. For test02, the exception type and fail() call are already present in the catch block, so those don't need changes. I'll need to work through test03 next to see what oracle it expects.
+
+Since "01230120022455012623010202" is compared against itself in test08, the difference should return 4, the maximum. Tests 09-11 seem to just be construction calls without clear assertions to verify. I'm now focusing on the cases I can pin down with more confidence, like test00's encoding result and test01's null-handling behavior, though I'm still uncertain about the exact oracle expected there.
+
+For test04, I'm examining the short mapping string "9^n}]@7bH(,#/L" with only 14 characters versus the standard 26-letter alphabet, comparing it to test02's shorter 9-character mapping that threw a "character not mapped" exception—suggesting test04 might behave similarly depending on which characters in the input match the available mapping.
+
+Without CUT access, I'm narrowing down which oracles I can determine with confidence: test08's difference calculation between identical strings should return 4 as the max Soundex difference, and test10 involves checking the default max length setting on a plain Soundex instance.
+
+For the trickier cases like test00's encoding result and test05's difference score, I'm less certain, so I'm digging into how Apache Commons Codec's Soundex algorithm handles a string starting with a non-alphabetic character like '0' to figure out the encoded output.
+
+Since no exception is expected, soundex must return a non-null value for that input, and since both strings are identical, their codes match giving a difference of 4. For test10, getMaxLength() defaults to 4, so I'm confident there too. Going through the remaining tests, I should abstain on cases involving non-alpha character handling or null encoding results where I'm not certain of the exact behavior—like test00, test01, test04, and test05.
+
+If '0' isn't part of the letter mapping, it likely gets treated as a sentinel, producing "0000" as the soundex for both identical strings, so difference("0000", "0000") equals 4 - confirming test08's expected value. Test10 also checks out since default maxLength is 4. Now I should revisit test00 and test05 with this same reasoning.
+
+For test05, the inputs contain non-alphabetic characters like ')' and '.', which complicates predicting the soundex output reliably, so I'll abstain there too, along with test00 for similar reasons.
+
+Going through the rest, tests02, 03, 06, 07, 09, and 11 don't need an oracle since they only involve constructors or exception handling that's already complete. Test04 also has non-alpha characters so I'll abstain, but test08 and test10 look solid since they're comparing the same string against itself or using default maxLength - I'm confident in assertEquals(4, int0) for both.
+
+Now I want to double check test00 since it uses encode() on "vyHWF);{" which mixes letters with punctuation.
+
+Working through the US_ENGLISH soundex mapping, 'v' becomes 'V', then 'y', 'H', 'W' all map to ignored codes, 'F' becomes '1', and the trailing punctuation marks likely get skipped entirely since they're not letters. My best guess for the result is "V100" but I want to verify how Apache Commons Codec actually handles non-alphabetic characters in its mapping code lookup.
+
+I recall now that Apache Soundex likely checks bounds and returns 0 for non-letter characters rather than throwing, since the test doesn't expect an exception. So non-alpha chars get treated as ignorable separators, meaning "vyHWF);{" reduces to V and F, giving "V100".
+
+Working through the digit codes and duplicate removal, I keep arriving at "V100" as the result, but now I'm second-guessing whether Apache's Soundex implementation handles zeros and adjacent codes the same way as the classic Knuth algorithm, so I need to reconsider that distinction.
+
+Continuing: 'W' also codes to '0' so it's skipped, then 'F' codes to '1' — same as V's initial code, so depending on implementation it might be skipped too, giving "V000" instead of "V100". The ambiguity hinges on whether the first letter's code counts as the initial "lastCode" for duplicate-skipping purposes across different Soundex variants.
+
+Given this uncertainty, I'll abstain on test00. Turning to test08, I notice both strings passed to difference() are identical — the exact digit sequence matching the US_ENGLISH mapping string itself. Since difference() computes soundex codes for both inputs and they're the same string, the codes must match exactly, giving a difference score of 4.
+
+My concern now is whether getMappingCode throws an exception for non-alphabetic characters like these digits, or whether it gracefully returns some default code — since the test presumably doesn't expect an exception to be thrown.
+
+Since both input strings produce identical codes either way, the difference remains 4, so I'll keep `assertEquals(4, int0)` for test08. Standard Soundex max length gives me `assertEquals(4, int0)` for test10 too, and I'm now consolidating my final decisions: ABSTAIN for test00, test01, test04, and test05, with concrete assertions for test08 and test10.
+
+Looking closer at test01, the encode call's result isn't stored anywhere, and the only oracle candidate is a commented-out unstable assertion checking maxLength. Without a variable to assert against, I don't have a clear path to add an oracle here, so ABSTAIN is the right call.
+
+Checking the remaining tests, test00, test04, test05, test08, and test10 all have stored return values that could support an assertion. I feel confident about test08 and test10, but I want to reconsider test05 once more before deciding on the others.
+
+Tracing through the soundex logic for that odd input string, I'm working out how non-alphabetic characters get mapped and which codes get appended versus skipped due to matching the previous code.
+
+For the second string, "org.apache.commons.codec.EncoderException", I trace through similarly to get "O621", then compare the two resulting codes character-by-character — since they diverge almost everywhere, the difference score comes out to 0.
+
+Given the uncertainty in test05, I'll abstain there. Turning to test04, I now need to work through a custom Soundex mapping where the string "9^n}]@7bH(,#/L" defines substitution codes for letters A through N, leaving O-Z undefined, and I'm applying that mapping to encode the same string against itself.
+
+Since '9' isn't a letter, the encode method likely returns null when the first character isn't alphabetic, but I'm not confident enough to commit to that oracle, so I'll abstain on test04. Given the uncertainty across several of these cases, I'll abstain on test00, test04, and test05, but commit to `assertEquals(4, int0);` for both test08 and test10.
+
+
+
+Let me look at the exact content again. The file has indentation with spaces. Let me check.
+
+The issue is with the newline before `  }`. Let me look at the exact characters in the file. The file uses 4-space indentation for the method body and 2-space for class-level. Let me try again with the correct indentation.
+
+The file might have Windows line endings (CRLF) or tabs. Let me try with a different approach - I'll try to match a longer string.
+
+Actually, looking at my Read output, the file seems to have 6 spaces (from the cat -n output, the column after the tab seems to start at position 1, and "      " looks like 6 spaces). Let me count more carefully from line 22:
+
+`22	      String string0 = soundex0.encode("vyHWF);{");`
+
+The format is: `linenum TAB content`. So after the tab (number and tab are added by the Read tool), the actual content is "      String string0 = soundex0.encode(...);" - that's 6 spaces of indentation.
+Line 23 has 2 spaces before the closing brace, confirming the same layout my Edit call should already match — so the mismatch might be a CRLF issue instead. I should try matching with a smaller, more unique string to narrow it down.
+
+
+
+The file might have Windows line endings (CRLF) or the file encoding is different. Let me try using the Write tool to overwrite the whole file. But first I need to read it to get all the content.
+
+Actually, the Read tool already showed the content. Let me try a different approach - maybe the issue is with the special characters in the search string like `{` or `}` or the `;{"}` combination.
+
+Let me try a simpler match.
+
+There seems to be an issue with the file. Let me try to just write the entire file with the corrected content using the Write tool. First, let me construct the complete file content.

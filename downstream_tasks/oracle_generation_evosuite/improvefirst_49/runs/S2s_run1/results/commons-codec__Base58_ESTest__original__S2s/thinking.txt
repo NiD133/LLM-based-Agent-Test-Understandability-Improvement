@@ -1,0 +1,58 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now let me analyze each test to determine what oracles should be added:
+
+**test00**: Encodes `{-115, 0}` as string. The comment says "// Unstable assertion: assertEquals("(jM", string0);" - This is already commented out as unstable, so no oracle needed or I could add nothing meaningful here.
+
+**test01**: Tests that `ArrayIndexOutOfBoundsException` is thrown - the try/catch/fail is already there as the oracle.
+
+**test02**: Encodes `{0}` with offset=-20, length=-20. Since length is negative, this signals EOF. But with a fresh context, the accumulate starts as EMPTY. 
+
+Since length=-20 is negative, EOF triggers and the conversion runs on an empty byte array, so the BigInteger value ends up as zero with no leading zeros and an empty base58 output, meaning the final encoded result should just be an empty byte array. I want to trace through how the underlying encode method handles this before settling on the oracle.
+
+Without seeing the BaseNCodec source directly, I'm reasoning through how the 3-arg encode likely delegates to the streaming version, flushing with an EOF signal since length is negative—which would produce output equivalent to encoding an empty input, though I'm not fully certain how offset=-20 factors in.
+
+This likely calls the byte-array-returning encode method, which internally sets up a context, invokes the streaming encode, signals EOF, then returns the result. With offset and length both -20, and no assertions or exception handling in the test, it seems the expectation is simply that no exception gets thrown—so no oracle is really needed here for test02. Moving on, I'm now looking at test05, which involves calling decode on a byte array.
+
+Right, the task requires me to restore removed oracles, so I need to figure out what assertion each test originally had. Going through each test: test02 assigns the encode result to a variable but the behavior is too dependent on BaseNCodec internals, so I'll abstain there; test05 assigns the decode result to byteArray0, which likely just needs an assertNotNull check.
+
+Continuing through similar cases: test06's decode call likely needs the same kind of check, while test08's decode of "11" should produce two leading zero bytes. For the builder tests, test09's setEncodeTable probably returns itself so I'd expect an assertNotNull or assertSame check, and test10's get() call likely just needs assertNotNull on the returned Base58 instance. Test11 involves a boolean result I still need to examine.
+
+For test08, decoding "11" should give two leading zero bytes since each '1' represents a leading zero, so I'd assert the byte array equals `{0, 0}`. For test11, checking "Invalid character..." against the Base58 alphabet, since 'I' itself is excluded from Base58, the whole check should return false, so I'd assert that.
+
+For test12, encoding 18 zero bytes should produce 18 leading '1' characters, so the expected result is "111111111111111111" as a strong oracle check.
+
+Now for test05, decoding "Dt2" I'm tracing through each character's value in the decode table starting with 'D'=68.
+
+For 't'=116 and '2'=50, I need their positions too, then compute value = 12*58² + 51*58 + 1, working through the arithmetic to get the total.
+
+Now I'm converting the resulting number to bytes, since BigInteger's toByteArray() adds a leading zero byte when the high bit of the most significant byte is set, to preserve the positive sign.
+
+After stripping that leading zero, the decoded array becomes {-87, 63}, and since there are no leading ones in the input, the result is just this two-byte array — so I'm reasoning that `assertArrayEquals(new byte[]{-87, 63}, ...)` is the likely test oracle, while noting uncertainty about whether EvoSuite would assert element-by-element instead. Now I'm moving on to consider the next test case, decoding the string "t2".
+
+Confirming the decode table values: 't' maps to 51 and '2' maps to 1, so with no leading ones, the value is 51*58+1 = 2959, which is 0xB8F in hex, giving bytes {11, -113} for the byte array.
+
+For test08 with input "11", both characters are leading '1's, so leadingOnes = 2 and there's nothing left to decode into a value—the result is just two zero bytes.
+
+For the remaining tests, they're mostly checking builder methods return non-null objects: setEncodeTable returns the same builder instance, get() returns a new Base58 instance, and Base58.builder() returns a non-null builder.
+
+For encoding tests, 18 zero bytes should encode to eighteen '1' characters since Base58 represents zero bytes as leading '1's. The isInAlphabet check for "Invalid" should return false since 'I' isn't part of the Base58 character set. I'm less certain about the exact behavior of the encode(byte[], int, int) overload without more context on the underlying implementation.
+
+I'm not confident enough about the oracle for test02, so I'll abstain on it. Turning to test05 and test06, which lack assertions but likely check decoded byte array content, I start tracing through the decode table values for "Dt2" character by character to verify the expected output.
+
+Since BigInteger's leading byte doesn't have its high bit set here, no extra zero-padding is needed, so the array stays as {11, -113} with zero leading ones stripped, giving the expected assertion for test06.
+
+For the remaining tests, I'm reasoning that EvoSuite typically generates oracles for every assignment that survives, so I plan to include assertions for tests 05, 06, 08-13, while skipping test02 since I'm less certain there. I'm also starting to work through test09, where an encode table byte array is being set up.
+
+Since the builder assigns the result to a separate variable, that's likely a deliberate check that the returned builder is the same instance, so `assertSame(base58_Builder0, base58_Builder1)` fits best.
+
+Now I'm going through the remaining test cases one by one, adding the appropriate oracle for each: array equality checks for byte array results, null checks for constructed objects, and boolean assertions for comparison results.
+
+For test02, since it just calls encode with negative length values and assigns the result without further use, I'm reasoning through whether the encode streaming logic would produce an empty array given the negative parameters, but since I can't confirm the exact outcome, I'll mark it as abstained rather than guess.
+
+More broadly, I'm reconsidering my approach: tests that just call a method and discard the result (like test05, test06) may not need an oracle at all if there's no meaningful assertion to reconstruct, so I should focus on identifying which tests actually have a value worth asserting on.
+
+For test01, test03, test04, test07, the try/catch/fail structure already serves as the oracle. For the others with assigned variables (02, 05, 06, 08-13), I'm working through likely assertions - abstaining on test02 due to uncertain behavior, and leaning toward assertArrayEquals, assertNotNull, assertFalse, or assertEquals depending on what each test's variable represents.
+
+For test09, since the builder pattern's setEncodeTable returns `this`, assertSame(base58_Builder0, base58_Builder1) seems more precise than assertNotNull, though I'm weighing whether to trust that precision or hedge with the safer option.
+

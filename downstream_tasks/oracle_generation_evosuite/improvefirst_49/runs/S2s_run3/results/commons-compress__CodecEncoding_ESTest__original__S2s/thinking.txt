@@ -1,0 +1,82 @@
+Let me start by reading both the test file and the class under test to understand what needs to be verified.
+
+Now I need to analyze each test and understand what oracles should be added. Let me trace through each test:
+
+**test00**: Creates a RunCodec with k=1825, gets specifier. No oracle was present. The test just verifies it doesn't throw. I could add a non-null assertion, or check specific values.
+
+For `RunCodec(1825, bHSDCodec0, bHSDCodec0)` with `bHSDCodec0 = Codec.BYTE1`:
+- Since `runCodec0` is passed as both `codec` and `defaultForBand`, `bCodec.equals(defaultForBand)` would be `bHSDCodec0.equals(runCodec0)` - wait no, the codec is `runCodec0` and the default is `runCodec0`.
+- Both aCodec and bCodec are BYTE1, defaultForBand is runCodec0, so abDef is 0 since neither equals the default. With k=1825, kb=1 and kx works out to 113 after the division. I'm working through the exact byte encoding this produces.
+
+First byte = 122, since kx isn't 3 the length includes both specifiers, and since aCodec/bCodec are both BYTE1 with runCodec0 default, each specifier returns a single-element array {1}. So the final specifier array is {122, 113, 1, 1}.
+
+For the test oracle, I'll need something like asserting the array isn't null or checking its length and first element, since the exact contents depend on codec internals I've traced through. Now I'm moving to the next test case involving a RunCodec with population and DELTA5 codecs.
+
+Continuing the calculation, DELTA5.equals(DELTA5) evaluates to 1, favoured starts as null, tDefL is 0, giving first = 144, and favouredSpecifier stays EMPTY. I'm trying to work out tokenSpecifier via getSpecifier(tokenCodec, DELTA5), but I'm unsure what tokenCodec actually is here since I can't inspect the PopulationCodec constructor directly—I need to reason through what the second argument (4) represents in that constructor.
+
+Since PopulationCodec's internals (getTokenCodec, getFavouredCodec, getFavoured, etc.) aren't accessible to me, this line of reasoning is too speculative to pin down precisely. I think the safer approach for tests calling these methods is to rely on assertNotNull as the oracle when I can't determine exact expected values, while being more specific only when the result is clearly known—like in test06 checking CodecEncoding.get.
+
+For test06, I need to figure out what CHAR3 actually represents among the canonical codecs to determine whether getSpecifierForDefaultCodec returns a specific canonical index.
+
+Moving to test11, I'm tracing through a case where getCanonicalCodec(13) yields a BHSDCodec(4, 256), then getCodec is called with a zero-filled byte array to see what codec value 2 resolves to using that default.
+
+Then in test15, I'm setting up a similar scenario but with a single zero byte and calling CodecEncoding again to check what codec gets returned.
+
+With getCodec(128, ...), 128 falls in the Run codec range (117-140), so I'm working out offset=11 and decoding the flags kx, kbflag, adef, bdef from the bit pattern of that offset.
+
+Continuing the derivation, bdef comes out false, kb=3, k=16384, and both a/bCodec resolve to defaultCodec canonicalCodec[13], giving RunCodec(16384, canonicalCodec[13], canonicalCodec[13]). Now I'm tracing getSpecifier for that RunCodec, working out kb=3 since k=16384 exceeds the threshold.
+
+Since kx==3 and neither codec matches UNSIGNED5, abDef stays 0, giving first = 120. Then each sub-codec's specifier reduces to just {13} since they're canonical, so the final specifier array becomes {120, 13, 13}.
+
+For the assertions, I'm leaning toward using assertNotNull for most result-checking tests, but for cases involving specific known codec values like CHAR3 or BYTE1, I'd need to verify their canonical indices before asserting exact values rather than guessing.
+
+I'm not confident about the exact canonical index for CHAR3 based on the test calls referencing getCodec with different byte values, so I'll abstain from asserting that specific test. For the safer assertions, I'll focus on just verifying non-null results for the int array tests rather than guessing at exact values, since I'm uncertain about my calculated result for test00 and others.
+
+For the codec-returning tests, I'll add assertNotNull checks on the returned Codec/BHSDCodec objects rather than trying to verify their specific canonical identity, since confirming exact index matches would require more certainty than I have.
+
+Another test has an unstored second call result, so no oracle needed there. Now I'm going through each test methodically, checking whether the result is assigned to a variable and adding assertNotNull for those that are—like test00, test01, and test02, all of which store an int[] specifier result needing a null check.
+
+For test11, casting getCodec's result to BHSDCodec and checking it's not null, or comparing against Codec.canonicalCodec[2]. Test13 has two calls whose results aren't stored, so those just verify no exception is thrown. Test15 assigns a codec and its specifier array, both checked with assertNotNull.
+
+For test06 which returns an int, I need to figure out CHAR3's canonical index by cross-referencing typical pack200 constant definitions like UNSIGNED5, DELTA5, and BCI against the canonicalCodec array entries.
+
+I'm re-checking the array indices more carefully, matching each BHSDCodec constructor call to its position starting from index 0.
+
+Continuing to list the codec test cases...
+
+Still listing codec definitions...
+
+Still mapping codec indices...
+
+Still enumerating codec indices... I'm trying to pin down where BHSDCodec(3,128,1,1) lands and cross-check it against the actual CHAR3 constant used in commons-compress, though I'm not fully certain of that value.
+
+Checking the b=3 section again, I confirm BHSDCodec(3,128) with s=0, d=0 isn't listed directly there, so CHAR3 may not be canonical after all. I recall common pack200 implementations define constants like BYTE1 and CHAR3 using BHSDCodec directly rather than pulling from the canonical array.
+
+Still mapping codec indices...
+
+Continuing through the codec table, I count 116 total entries (indices 0-115), and none matches BHSDCodec(3, 128) with s=0, d=0 — so CHAR3 isn't in the canonical array. That means calling getSpecifier on CHAR3 would fall through to the BHSDCodec path, returning specifiers[0] = 116 as its index marker rather than a canonical lookup value.
+
+So getSpecifierForDefaultCodec(CHAR3) should equal 116, matching the test06 oracle's assertEquals(116, int0). I want to double-check by verifying whether BHSDCodec(3, 128) actually appears as a key in canonicalCodecsToSpecifiers.
+
+Confirmed: it's not canonical since only the delta-variant versions with s or d set are present, not the plain (s=0, d=0) form. So it falls through to the generic BHSDCodec branch, computing specifiers[1]=16 and specifiers[2]=127, giving the array {116, 16, 127}.
+
+getSpecifierForDefaultCodec then returns index 0 of that array, which is 116 -- so for test06, assertEquals(116, int0) should hold.
+
+Moving to test11, I'm now working through getCanonicalCodec(13) yielding BHSDCodec(4, 256), then checking getCodec against another encoding value to compare against it.
+
+For the oracle here, `assertEquals(CodecEncoding.getCanonicalCodec(2), bHSDCodec1)` seems like a good choice since getCodec(2, ...) should match canonicalCodec[2].
+
+Now I'm going through each remaining test to plan the assertion to add, starting with simple null checks for the int array outputs in test00 through test03, then moving to more specific checks for test04 involving both the codec and the resulting value.
+
+For test05, the second call to getSpecifier doesn't store its result, but I can add a null check for codec0 right after it's obtained. For test06, I'll assert the returned integer equals 116. Test09 needs no oracle since it's just verifying no exception occurs. Test11 will get a null check on the resulting BHSDCodec object.
+
+For test13, only the first call's result gets stored as codec0, so I can add a null check there, while the second call doesn't need an oracle. Test15 needs assertNotNull for both codec0 and intArray0.
+
+Now looking at test04, which sets up CHAR3 with a byte array containing 93, then calls getCodec followed by getSpecifier - I'm decoding that byte (93 = 0x5D) bit by bit to figure out what the resulting codec should be.
+
+Continuing the bit extraction, b comes out to 4, and the second byte gives h=1, forming BHSDCodec(4, 1, 2, 1). But h=1 seems below the typical minimum, which makes me question whether the constructor would actually accept this without throwing—since the test presumably expects success, I need to reconsider my decoding logic.
+
+Rather than pinning down exact constructor values, I'll settle for asserting codec0 and intArray0 are not null as a safer test oracle. For getSpecifier(codec0, codec0), since equal codecs are being compared, the result depends on whether codec0's values match a canonical entry—likely not, given the odd h=1 value, but without running the code I can't be certain, so assertNotNull remains the safest bet.
+
+Drafting all oracles now: most tests use assertNotNull checks on intArray0, codec0, or the resulting objects, with test06 using assertEquals(116, int0) since that value is more predictable. These conservative assertNotNull checks favor safety over precision given the uncertainty in exact codec construction.
+

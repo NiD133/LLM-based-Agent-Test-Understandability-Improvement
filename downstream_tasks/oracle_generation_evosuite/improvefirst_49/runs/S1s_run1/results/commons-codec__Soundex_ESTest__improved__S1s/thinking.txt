@@ -1,0 +1,96 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now let me analyze each test and determine what oracle to add:
+
+**test00**: `soundex.encode("vyHWF);{")` - We need to figure out what this returns.
+- Input: "vyHWF);{" 
+- SoundexUtils.clean() strips non-letter characters: "vyHWF" → uppercase: "VYHWF"
+- specialCaseHW = true for US_ENGLISH (uses default constructor)
+- first char 'V', out[0] = 'V', count = 1, lastDigit = map('V') = '1'
+- 'Y' → map('Y') = '0', digit != SILENT_MARKER, digit == '0', so don't store, lastDigit = '0'
+- 'H' and 'W' get ignored due to specialCaseHW, then 'F' maps to '1' which differs from lastDigit, so it gets appended, giving count 2 and result "V100". I should double check this against the actual US_ENGLISH mapping string to confirm each letter's digit value is correct before finalizing the oracle.
+
+Tracing through "VYHWF" step by step: V maps to '1' and gets stored as the first character, Y maps to '0' so it's skipped, H and W are ignored due to the special case rule, and F maps to '1'.
+
+Since '1' differs from the last stored digit '0', it gets appended, giving output "V100" — so this test asserts `assertEquals("V100", result)`.
+
+For the null input test, the code returns null immediately when the input string is null, and I notice the test has an unstable assertion comment without actually capturing a result variable to check.
+
+That unstable assertion comment about getMaxLength suggests the original oracle was likely checking the null return value instead. Since the test calls encode(null) without capturing it, I think the cleanest fix is to capture that result in a variable and assert it's null, matching the comment's description of the expected behavior.
+
+For test00, I'll add `assertEquals("V100", result)` since the value was captured in a variable. For test01, since the return isn't stored anywhere, I'll wrap the existing call with `assertNull(...)` directly rather than assuming a separate variable was intended.
+
+Now for test04, I'm tracing through what encoding "9^n}]@7bH(,#/L" would actually produce, since the mapping logic depends on stripping non-letters and indexing into a mapping string that's shorter than the full alphabet — I need to work out what result value the oracle should assert.
+
+Let me index each character carefully: positions 0-13 map to '9^n}]@7bH(,#/L'. So 'N' at index 13 gives 'L', 'B' at index 1 gives '^', 'H' at index 7 gives 'b', and 'L' at index 11 gives '#'.
+
+Now applying clean() to the input string "9^n}]@7bH(,#/L" - filtering letters only and uppercasing gives "NBHL". I need to verify SoundexUtils.clean() actually strips non-letters and uppercases, which matches how it's used in soundex().
+
+Working through the algorithm on "NBHL": first letter 'N' stays as output[0], count starts at 1, and lastDigit becomes the mapped value for N which is 'L'. Then for 'B' at position 1, it's not H/W, and its mapped digit is '^', which doesn't match lastDigit so it would be added.
+
+Then for 'H' at position 2, since specialCaseHW is true, it gets skipped entirely. For 'L' at position 3, the mapped digit is '#', different from the current lastDigit '^', so it gets added too, giving something like "N^#0" for the result. This is getting into territory with unusual mapping values I'm not fully confident about, so I think I should abstain from giving a definitive answer here and move on to look at the next test case involving a difference() call between two strings.
+
+I'm now checking what US_ENGLISH_GENEALOGY's custom mapping table looks like character by character to figure out how each letter converts to a digit code.
+
+Then I'm tracing through cleaning the input string ")1XSFmv!V?i#" by stripping non-letters and uppercasing to get "XSFMVVI", then working through the soundex algorithm on that result letter by letter.
+
+The loop finishes giving "X151". Now I'm tracing "org.apache.commons.codec.EncoderException" the same way, stripping to letters and uppercasing, then noting that the first letter 'O' maps to the silent marker, so I need to check how the code initializes lastDigit before the loop starts.
+
+Result: "O621". Comparing that against "X151" position by position, only the last character matches ('1' vs '1'), so the difference count is 1, matching the expected assertion that a diff of 1 indicates little similarity. I want to double check the GENEALOGY mapping string length by recounting its characters.
+
+With X confirmed as '2', I'm now tracing through the Soundex algorithm on the cleaned string "XSFMVVI": X becomes the first letter kept, S maps to the same digit as X so it's skipped, then F maps to a different digit ('1') and gets recorded.
+
+Continuing, M maps to '5' (new digit, recorded), and V maps to '1' (different from previous, recorded), giving the final result "X151" for that input.
+
+Now I'm working through Soundex for "org.apache.commons.codec.EncoderException", starting with the cleaned letters "ORGAPACHECOMMONSCODECENCODEREXCEPTION" — O is kept as the first letter with a silent marker, then R maps to '6' and gets recorded as the next digit.
+
+Continuing, G maps to '2' (recorded as new), A is silent so it's skipped, and P maps to '1' (different from previous, recorded), completing the result as "O621". Comparing "X151" against "O621" position by position, only the last digit matches, so the difference count is 1, confirming the expected assertion.
+
+Now I'm looking at test08, which computes the Soundex difference between two identical strings that represent the US_ENGLISH_MAPPING_STRING itself, expecting a match since they're the same input.
+
+Since these strings are all digits with no letters, cleaning them for Soundex encoding strips everything away, leaving empty strings for both. Comparing two empty encodings means there's nothing to iterate over, so the difference count comes out to 0 rather than the expected 4, which seems inconsistent with what the test comment claims.
+
+Since both strings have no letters, clean() reduces them to empty strings, and soundex encoding of an empty string is also empty. With two empty encoded strings, the difference calculation compares zero characters, so the hamming count stays at 0 — matching the comment's claim that difference() returns 0 here rather than the usual max value for identical codes.
+
+Right, when the input is all digits with no letters, clean() strips everything and soundex returns an empty string, so comparing "" with "" gives a difference of 0, confirming `assertEquals(0, diff)`.
+
+For test10, since the default constructor always sets maxLength to 4, that test should assert `assertEquals(4, maxLength)`.
+
+Now looking at test00 more closely, I'm tracing through cleaning "vyHWF);{" down to its letters "VYHWF" to work out the expected Soundex code.
+
+Tracing the encoding manually: V maps to digit '1' as the first letter, Y maps to '0' (a vowel-like code) so it's skipped, both H and W are treated specially and ignored due to specialCaseHW, and F maps to digit '1' — but since the last stored digit was already '1' from V, I need to check whether it gets deduplicated or kept given the H/W skip logic.
+
+Working through this, I land on "V100" as the expected result for test00. I'm now going through the remaining tests to identify which oracles I can confidently assert: test01 expects null for null input, test05 expects a difference of 1, test08 expects 0, and test10 expects a max length of 4. For test04 I still need to check SoundexUtils.clean's behavior on a string full of special characters, and tests 06/07 seem to just be construction checks without capturable results, so likely no oracle is needed there unless the constructor state itself needs verification.
+
+
+
+Now I have all the information I need. Let me finalize my analysis:
+
+**test00**: `assertEquals("V100", result)` - Confirmed above.
+
+**test01**: The return value isn't stored. I can add `assertNull(soundex.encode((String) null))` as a new line. Actually, looking at this more carefully, the test calls `soundex.encode((String) null)` without storing it. Since the oracle was "removed entirely", maybe the test previously had the result stored. But the task says we should add an oracle wherever needed.
+
+Actually, looking at the test structure: the test just calls `soundex.encode((String) null)` - no variable. If the oracle was `assertNull(result)`, the `result` variable would be there. 
+
+I'm now noticing that double-commented line about `getMaxLength()` returning 0 - the outer comment marks it as a disabled unstable assertion, which makes me wonder if it was actually checking something related to the encode(null) call, though that connection seems questionable since encode shouldn't affect maxLength state.
+
+Since the intended behavior is that encoding null returns null without throwing, I'll add `assertNull(soundex.encode((String) null))` as the oracle for this test case.
+
+Now moving to test04: input "9^n}]@7bH(,#/L" with the same string used as the mapping. Cleaning the input for letters gives "NBHL", and I'm checking whether the mapping contains a '-' marker to determine if this is a special H/W case—since it doesn't, specialCaseHW is true. I'm walking through each character index of the mapping string to figure out what codes get assigned.
+
+Working through "NBHL": N maps to code 'L' (setting the initial output and lastDigit), then B maps to code '^', which isn't the silent marker and differs from lastDigit, so it gets appended to the output.
+
+Continuing, H is treated as silent since it's in the special HW case, so it's skipped, and L maps to '#', which also gets appended since it differs from the previous code. The final result comes out as "N^#0" -- I'm now wondering whether this string with the unusual characters actually matches what EvoSuite expects, since I need to trace through how encode(Object) wraps this result.
+
+That confirms `assertEquals("N^#0", result)`.
+
+For test05, diff equals 1 as established, and test08 involves two identical all-digit strings that clean to empty strings, so their soundex encoding and difference both come out to 0. Test10 confirms the default maxLength of 4 from the constructor.
+
+For test09, I'm checking that setMaxLength() on the static US_ENGLISH instance doesn't leak into a separately constructed instance, so I'm setting up a Soundex object with its own mapping array and comparing it against the static instance's behavior.
+
+Since maxLength is an instance field, setMaxLength on US_ENGLISH only changes that instance, so soundex.getMaxLength() should still be 4 — confirming this as the oracle.
+
+For test11, the (String, boolean) constructor with specialCaseHW=false still defaults maxLength to 4, so the oracle should again be assertEquals(4, soundex.getMaxLength()).
+
+Now I'm going through each test case to work out its expected oracle systematically.
+

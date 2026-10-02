@@ -1,0 +1,95 @@
+Let me start by reading the masked test file to understand what tests are there and where oracles need to be added.
+
+Looking at the test file, I need to identify where oracles (assertions) are missing. The test file has many tests, and I need to find where assertions should be added. Let me analyze each test:
+
+1. **test00** - parses with option group, no oracle (the result isn't captured in a variable). Need to verify something about the commandLine or group selection.
+
+2. **test01** - `CommandLine commandLine = parser.parse(options, args, true);` - commandLine is captured but no assertion. Need to assert `commandLine != null` or check if option -s is present.
+
+3. **test02** - `CommandLine commandLine = parser.parse(optionsWithS, args, false);` - captured but no assertion.
+Continuing through tests 03 through 07, I see the same pattern repeating: each parses with different option sets and flags (optionsWithS, optionsWithD, properties, null args) and captures the commandLine result, but none of them include an assertion to verify the outcome.
+
+Tests 08 and 09 are exception tests using fail() with an empty catch block, which is the intended oracle since the exception itself is what's being tested. Tests 10, 12, and 13 continue the pattern of parsing without assertions, while test11 just calls handleUnknownToken without needing explicit verification since passing implies no exception occurred.
+
+Continuing through tests 14-23, most follow the same pattern: capturing a CommandLine result from parser.parse() calls without any assertions, alternating with several straightforward exception tests (15, 18, 19, 21, 23) that rely on fail() calls to verify exceptions are thrown correctly.
+
+35. **test34** through **test36** - similarly exception tests or captured-but-unasserted commandLine variables.
+
+For the tests where commandLine is captured without assertion, the likely oracle is a simple assertNotNull check, possibly with more specific assertions about which options were parsed. Exception tests rely on the fail() call and catch block for their oracle, while test33 probably needs to verify the builder reference itself, and test00 likely needs to confirm the option group selection.
+
+Given the test name mentions the group being marked selected, the oracle likely should assert that `group.getSelected()` equals "s", since the option string "s" was passed as `-s`. For the other tests where `commandLine` is captured, simple assertions like `assertNotNull(commandLine)` or checking `hasOption("s")` seem like reasonable oracles to add for each case.
+
+Continuing through the remaining tests (test14 through test26), each following the same pattern: verifying `commandLine` is captured with `assertNotNull`, sometimes paired with a specific option check like `hasOption("c")` or `hasOption("s4")`.
+
+For the rest, test28, test30, and test36 follow the same `assertNotNull(commandLine)` pattern, while test29 needs no assertion since it just confirms no exception is thrown. test33 is different though—it captures `builderWithHandler`, so I'm considering `assertSame(builder, builderWithHandler)` since builder methods typically return `this`. Now I want to look at what the test names themselves suggest for more targeted oracles, like test00's name "groupIsMarkedSelected" pointing toward checking `group.getSelected()` equals "s".
+
+Mapping out more test cases...
+
+- test26/test28: `assertNotNull(commandLine)`
+- test29: no assertion needed
+- test30: `assertNotNull(commandLine)` or checks `hasOption("s4")`
+- test33: `assertSame` or `assertNotNull` for builder instance
+- test36: `assertNotNull(commandLine)`
+
+Now I'm turning to test10, which covers a lone dash being treated as a valid argument value rather than an option prefix for `-s`.
+
+With `stopAtNonOption=true`, since `-s` requires an argument and the next token is a lone dash, that dash should become the option's value — so I expect `commandLine.getOptionValue("s")` to equal `"-"`.
+
+Looking at test12, the comment indicates a lone dash by itself isn't treated as an option at all, but rather becomes a plain command-line argument.
+
+For test13, `--` signals the end of option processing, so I'd expect no options parsed afterward and no leftover arguments from the `--` itself.
+
+For test25, I'm checking how `-s#` parses when `-s` takes an argument — the `#` should be picked up as the inline concatenated value for that option.
+
+For test33, since the test name indicates "returnsSameBuilderInstance", the oracle should just assert the builder returned equals the original one via `assertSame`.
+
+For test00, I'm reconsidering that the parse result isn't captured in a variable — instead the group's selection state itself should be checked directly after calling parse, expecting `"s"` as the selected option.
+
+Now I'm going through the remaining tests systematically, categorizing which ones just need a basic `assertNotNull(commandLine)` check since commandLine was captured but never asserted, versus the exception-style tests where the try/catch/fail pattern already serves as the oracle and needs nothing more.
+
+I'm also flagging special cases: test00 needs a check on `group.getSelected()` equaling "s", and test33 needs an assertion on the builder with handler, while a few others like test10, test12, test16, test20, test25, and test30 might warrant slightly more specific checks like `hasOption` or `getOptionValue` beyond just the null check.
+
+For tests like test11 and test29, no explicit oracle is needed since they're just verifying no exception is thrown -- I want to avoid adding assertions that could break correct behavior, so I'm being careful to only add oracles I'm confident are correct.
+
+Going through the remaining tests: for the required option group with -s provided, checking the selected group value is safe. For the batch of tests checking basic parsing success, verifying the command line isn't null is a safe addition. For the single-dash-as-value case, I'm confident that with stopAtNonOption enabled, a lone dash gets consumed as the option's argument value.
+
+For the single-dash-as-argument test, the comment confirms it becomes a positional argument, so checking that getArgs() contains just "-" should be safe. For the long-option-with-equals test and the required-long-option test, verifying hasOption returns true is safe. For the concatenated short option with inline value, I'm checking that the extracted value matches the expected character.
+
+For the exact-match long option test, hasOption should hold true, and for the builder returning itself, the test name suggests assertSame is the right check, though assertNotNull is a safer fallback. For the unrecognized short option with stopAtNonOption, just confirming commandLine isn't null seems safe.
+
+I'm now organizing which oracles I feel most confident about, starting with assertNotNull(commandLine) as a baseline check.
+
+Beyond that safe baseline, I'm building confidence in several specific assertions: the selected group value equaling "s", the presence of hasOption checks across several tests, particular option value comparisons like "-" and "#", and the builder returning the same instance via assertSame. For the single-dash-as-argument case, I'm checking what getArgs() should contain.
+
+Now I want to organize these oracles by confidence level before adding them to the test file — simple non-null checks are essentially guaranteed since a successful parse can't return null, while the more specific value assertions need individual justification based on how each option and group is configured.
+
+For test13, I'll go with assertNotNull since I'm unsure whether the double-dash token gets added to the args list. Test16 with "-c=wt9" looks like a high-confidence case for hasOption("c") being true. Test17 seems similar but with stopAtNonOption suppressing recognition, so hasOption("c") should be false since "c" isn't a registered option.
+
+I'll play it safe and just check `assertNotNull(commandLine)` there. Moving through the remaining tests: test20 with `--s` should partial-match to "s4" as a long option, so I'm fairly confident checking `hasOption("s4")`; test22 with null args and stopAtNonOption just needs a not-null check; test25's `-s#` should give an option value of "#" with high confidence; test26 is trickier with `-s-#` combined with a J flag.
+
+For the boolean -s option with stopAtNonOption=true, I'll lean toward just asserting the command line isn't null since parsing behavior is uncertain there. test30's exact `--s4` match should confidently show `hasOption("s4")` as true, test33's builder pattern should return the same builder instance via `assertSame`, and test36 with an unrecognized `-s` and stopAtNonOption just needs a not-null check on the command line.
+
+Now I'm going through each test case to pin down the most reliable oracle: test00 checks the selected group is "s", test01 confirms both a non-null command line and the "s" option present, test10 might just need a not-null check or something more specific, test12 verifies the args array contains a single "-" entry, test25 checks the option value for "s" equals "#", and test33 confirms the builder identity match.
+
+Adding non-null assertions for each remaining test case's commandLine...
+
+Adding assertions for the remaining test cases...
+
+I'm double-checking test26, noting that -s is a boolean option combined with a value like "#", which raises a question about how the parser should actually handle that combined argument.
+
+Now I'm going through several other test methods, adding assertions like assertNotNull for parsed CommandLine objects and assertSame/assertTrue checks for builder and option state in test28, test30, test33, and test36, then reviewing these assertions for correctness.
+
+For test26, I'm tracing through how DefaultParser handles the concatenated short option string "-s-#\"J" — since -s is a valid boolean option, it gets processed first, and the remainder "-#\"J" fails to parse as a valid option, causing parsing to stop due to stopAtNonOption. This means hasOption("s") should correctly return true, though I want to double-check this reasoning.
+
+Since the test focuses on "doesNotThrow" behavior, asserting that the command line isn't null should be enough for test26 without needing deeper certainty about the option semantics.
+
+For test10, I'm working through the case where `-s` requires a value and the next token is a lone dash—since a lone dash is treated as a valid argument value rather than another option, with stopAtNonOption enabled the parser should consume it as `-s`'s argument.
+
+Now I'm planning the actual edits I need to make to the test file, going through each test case one at a time to add the right assertions in the right places, like confirming the selected option group after parsing.
+
+So method bodies use 6-space indent total. Now I'm planning the specific assertions to add to each test method: things like checking the selected group, verifying the command line isn't null, and confirming specific options are set — I'll work through them one at a time with targeted edits rather than rewriting the whole file.
+
+Adding more assertion checks...
+
+Finishing the test00 edit by adding a group selection assertion, then reconsidering test33 -- I want to verify whether the builder method returns the same instance before deciding between assertSame and assertNotNull for the "returnsSameBuilderInstance" check. Given the test name implies identity, I'll go with assertSame and move on to writing the remaining edits efficiently.
+

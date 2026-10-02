@@ -1,0 +1,118 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be filled in.
+
+Now I need to analyze each test method and determine what oracles should be added:
+
+**test00**: `encode("vyHWF);{")` - Let me trace through the Soundex algorithm for "vyHWF);{":
+- `SoundexUtils.clean("vyHWF);{")` - clean strips non-letter characters and converts to upper case. So this would give "VYHWF" 
+- Actually wait, `);{` are not letters, so clean would remove them. So the string becomes "VYHWF"
+- First char: V, out[0] = 'V', count = 1, lastDigit = map('V') = '1' (V is at index 21, US_ENGLISH_MAPPING[21] = '1' based on US_ENGLISH_MAPPING_STRING = "01230120022455012623010202")
+- Working out the letter-to-digit mapping using the alphabet index positions against that mapping string to figure out each character's Soundex code.
+
+But I realize US_ENGLISH treats H and W specially -- they're ignored rather than mapped, so I need to retrace: cleaning "vyHWF);{" to "VYHWF", then processing character by character starting with V mapping to '1'.
+
+Continuing: Y maps to '0' but zeros aren't stored, H and W are skipped entirely due to the special case, then F maps to '1' which differs from the last stored digit so it gets added, giving the final code "V100".
+
+For test01, encode(null) should return null, but since the test never stores the return value in a variable, I can't directly assert on it -- I'd need another way to verify the behavior, like checking that the object's state remains unchanged.
+
+Actually, since the value isn't captured, I should just abstain for test01 rather than force an oracle onto untracked state.
+
+For test04, I'm working through what the cleaned mapping string would look like after stripping non-letter characters and uppercasing, since that determines the expected encoded output.
+
+Mapping each character to its alphabet index position, I get the full soundex mapping array from '9' through 'L'. Now I'm checking whether this particular string contains a silent marker character.
+
+No dash found, so I'm treating this as the special H/W case and tracing through "NBHL" character by character, tracking the last digit code and skipping H's under the special rule while building the output string.
+
+Continuing the digit lookups for 'L' gives me the final result "N^#0" as object0. I'm second-guessing whether this is fully correct given the complexity of the mapping, so I'm leaning toward abstaining on this one to be safe.
+
+So specialCaseHW is true since there's no '-' marker. Now I'm tracing through cleaning the string to extract just the letters - going character by character through "9^n}]@7bH(,#/L" to pick out n, b, H, L as the only alphabetic characters, which uppercase gives "NBHL".
+
+With that cleaned string, I'm now stepping through the soundex encoding logic: initializing the output array, taking 'N' as the first character, then computing its mapped digit by indexing into the custom soundexMapping table at position 13 (N being the 14th letter), which lands on 'L' as the lastDigit. Then I'm continuing to the next character 'B', checking the special-case H/W handling (which doesn't apply since B isn't H or W) before computing its mapped digit.
+
+0' gives the string "N^#0", matching the expected oracle output, so test04 looks correct.
+
+Now for test05, I need to trace through the difference() method using US_ENGLISH_GENEALOGY's custom mapping to encode both input strings and count matching characters between them.
+
+Still tracing through the soundex algorithm...
+
+M gives digit '5', differs from lastDigit, so it's stored, then V gives '1', also differs, stored too. With four characters filled, the loop stops and the result comes out to "X151".
+
+Working through the soundex trace for "XSFMVVI" step by step, tracking each character's digit code and building the output string character by character.
+
+Continuing to trace M gives '5', then V gives '1', reaching the four-character limit and returning "X151". Now I'm starting the soundex trace for "org.apache.commons.codec.EncoderException" - stripping non-letters and uppercasing gives a long string starting with O, whose mapping is the silent marker, so I need to work through how that gets handled in the algorithm.
+
+Continuing the trace: 'A' maps to silent marker so it's skipped via continue, meaning lastDigit doesn't update to that value mid-loop, but I realize the first character's lastDigit is set before the loop even if it's the silent marker, which creates an edge case I need to trace carefully.
+
+Tracing through "RGAPACHECOMMONSCODECENCODEREXCEPTION": R gives '6', G gives '2', A is silent so it's skipped, P gives '1', filling the output array to its 4-character limit and stopping there.
+
+Comparing the two resulting codes "X151" and "O621" position by position, only the last digit matches, so the difference score comes out to 1. I want to double-check the cleaning step for "org.apache..." since periods should be stripped out as non-letter characters before encoding.
+
+Only one position matches, so the difference score should be 1, giving int0 = 1 with the assertion `assertEquals(1, int0)`. Let me also check test08, where both input strings are identical numeric strings with no letters -- cleaning strips them down to empty strings, and Soundex encoding of an empty string just returns empty, so both encodings match trivially.
+
+For test10, calling getMaxLength() on a default Soundex instance is straightforward -- the default max length is 4, so the oracle should be `assertEquals(4, int0)`. I want to verify the difference() logic in SoundexUtils before finalizing my confidence on the earlier cases.
+
+
+
+Now I have all I need. Let me trace through each test more carefully:
+
+**test00**: `soundex0 = Soundex.US_ENGLISH`, `encode("vyHWF);{")`
+- US_ENGLISH uses US_ENGLISH_MAPPING_STRING = "01230120022455012623010202", specialCaseHW=true
+- clean("vyHWF);{") - letters: v, y, H, W, F -> uppercase: "VYHWF"
+- soundex("VYHWF"):
+  - first='V', out[0]='V', count=1
+  - lastDigit = map('V') = '1'; then Y maps to '0' so it's skipped and lastDigit becomes '0'; H and W are skipped due to specialCaseHW, continuing to the next character F.
+
+Working through F: it maps to digit 1, which differs from lastDigit, so it gets appended, giving out = "V100" as the final encoding. For the null-input test case, since the encode result isn't stored anywhere and the length assertion is unstable, there's nothing meaningful to assert, so I'll abstain on that test.
+
+For test09, I notice it sets US_ENGLISH's maxLength to 0 on the static instance, but since EvoSuite resets static state between tests, this shouldn't leak into other test cases.
+
+Since this assertion is flagged as unstable and order-dependent, I'll abstain from including it for test01.
+
+Now moving to test04: I need to trace through the Soundex mapping for the input string character by character to determine what code each letter maps to.
+
+With no '-' marker present, specialCaseHW gets set to true, and I proceed to trace the encode() call for this string.
+
+Filtering out only the letters from "9^n}]@7bH(,#/L", I extract n, b, H, L, giving the cleaned uppercase string "NBHL" to feed into soundex.
+
+Working through the soundex mapping: 'N' becomes the first output letter with code 'L' tracked as last digit, then 'B' maps to a special marker code, and 'H' is skipped due to the H/W rule since it follows a consonant.
+
+For 'L' at index 3, its mapping code differs from the previous tracked digit, so it gets appended to the output, giving "N^#0" as the final soundex result — matching the expected oracle value for test04.
+
+Now moving to test05, which tests the difference method between a garbled string and an exception class name.
+
+Actually wait, checking more carefully: the call uses the static US_ENGLISH_GENEALOGY instance rather than the soundex0 object built from the exception string. This instance has mapping "-123-12--22455-12623-1-2-2" with specialCaseHW false since it contains a dash. I'm now stripping non-letter characters from ")1XSFmv!V?i#" to get the clean letter sequence "XSFMVVI" for encoding.
+
+Working through the soundex algorithm on "XSFMVVI" with this genealogy mapping table, I set the first output character to 'X' and start tracking the running count and last digit code as I step through the remaining letters.
+
+Continuing through S (maps to same digit, skipped), F (new digit '1'), M (new digit '5'), and now moving into V...
+
+Finishing that trace gives "X151" for the input word, and now I'm tracing soundex encoding for "org.apache.commons.codec.EncoderException" under US_ENGLISH_GENEALOGY, cleaning it to remove periods and uppercasing, then starting the digit mapping process letter by letter.
+
+Loop finishes with the result "O621". Comparing "X151" and "O621" character by character, only position 3 matches ('1' vs '1'), giving a difference score of 1, matching the expected assertion.
+
+Now I'm checking test08, which compares the same 27-character digit string against itself using US_ENGLISH's special mapping with specialCaseHW enabled, so I expect the encodings to match identically.
+
+For test10, calling getMaxLength() on a freshly constructed Soundex should return the default value of 4.
+
+I also notice test00's string0 isn't used after being assigned, so I could add an assertion checking its value, and both test05 and test08 store their int0 results without an oracle yet.
+
+Let me fill these in: test00 asserts string0 equals "V100", test04 asserts object0 equals "N^#0", test05 asserts int0 equals 1, test08 asserts int0 equals 0, and test10 asserts int0 equals 4. For test01, since encode(null) doesn't store its result or change any observable state, there's nothing meaningful to assert, so I'll abstain there.
+
+Rereading the task, I realize adding an oracle just means introducing a new assertion, not that I must leave every existing line untouched. Since encode's return value isn't captured in test01, I'll wrap the call to capture the result and assert it's null, either by introducing a variable or wrapping the call directly in an assertNull.
+
+Duplicating the call has no side effects since encode(null) just returns null without altering state, but I don't think adding a second identical call is the right approach here. The original oracle was likely testing state via maxLength, which is unstable, so I'll abstain on this test case and move on to making the edits.
+
+
+
+Let me re-read the file to see the exact content and indentation.
+
+I see - the indentation is 6 spaces, not 4. Let me use the exact text from the file.
+
+There might be an issue with the whitespace/tabs/encoding. Let me try using Bash to do a hex dump or view the raw bytes.
+
+The Bash tool is restricted to `bash build.sh` only. Let me try to use the Write tool to write the entire file with the correct content.
+
+Actually, let me try the Edit tool more carefully. The file uses tab indentation based on how the Read tool shows it with numbers. Let me look carefully at the raw output - the Read tool shows lines with the format "linenum\tcontent". Each line of actual code in the test file seems to have 6 spaces of indentation based on what I see.
+
+Wait, but I've been copying from the Read output which uses a tab-based line number format. The actual content might use tabs for indentation.
+I'll just rewrite the whole file directly with the correct expected values this time.
+

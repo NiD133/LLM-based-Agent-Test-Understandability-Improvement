@@ -1,0 +1,36 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be filled in.
+
+Now I understand both files. Let me analyze each test method and determine what oracle should be added:
+
+1. **test_setTemporalField_milliOfSecondToZero** - Sets MILLI_OF_SECOND to 0 on an epoch UTC clock. No meaningful assertion to add (the method just shouldn't throw). No oracle needed since the epoch clock already has millis=0, so calling `clock.instant()` would return `Instant.EPOCH`. But this test might just be testing that it doesn't throw. Since there's no variable to check, maybe I should add an assertion checking the instant is still epoch.
+
+Actually looking at the test - `clock.set(ChronoField.MILLI_OF_SECOND, 0L)` - the epoch clock's instant is EPOCH (0 millis), so setting millis to 0 should not change it. 
+
+I could assert that the resulting instant equals `Instant.EPOCH` since I'm working with the standard java.time Instant rather than any mock variant, and since MILLI_OF_SECOND is already zero for an epoch clock, setting it again shouldn't alter the value.
+
+For the next test, since Instant implements TemporalAdjuster, setting the clock using `pastInstant` directly as an adjuster should shift the ZonedDateTime to match that instant exactly, so I expect the clock to reflect `pastInstant` after the operation. I need to double check whether the mock instant's nanosecond handling introduces any discrepancy, particularly around negative epoch seconds and nanosecond adjustments.
+
+So `clock.instant()` should equal `pastInstant`, giving me an assertion to verify that. For the decades test, adding -1 decade to the epoch UTC clock (1970-01-01) should land on 1960-01-01T00:00:00Z, which gives me another concrete assertion to add.
+
+For the zone-equality test, two views built from the same base clock with the same zone offset share the same instantHolder and zone, so `equals()` should return true between them. And for the independent clocks test, two separate `epochUTC()` calls create distinct instantHolder instances, so they should not be equal even though their initial instants match.
+
+Then I'm going through more equality edge cases: a clock compared to a plain Object should return false, a clock compared to itself should return true, and calling `withZone` with the same zone should return the identical instance since the code short-circuits when the zone matches. I'm continuing to a case where withZone with a different zone should produce a clock that's not equal to the original.
+
+I also want to check the toString format for an epoch UTC clock, which should render as "MutableClock[1970-01-01T00:00:00Z,Z]", and verify that setInstant properly updates the clock's returned instant.
+
+For the hashCode test, since there's no captured value to check, I'll just add a consistency assertion comparing the hashCode to itself. For the zero-duration addition test, I can assert the instant remains at epoch after adding Duration.ZERO.
+
+Now I'm going through the remaining test cases one by one, checking each for whether it captures a result variable or just calls a method without an oracle — for the ones without captured results, I can add assertions comparing `clock.instant()` against the expected instant value in each scenario.
+
+Continuing through the remaining cases: #9 asserts inequality for a different-zone clock, #10 checks the toString output format, #11 confirms the clock's instant updates after setInstant, and #12/#13 have no captured values to assert on, though #13 could still check clock.instant() directly. I'm now sorting through which of these test cases I feel most confident asserting correctly.
+
+Working out the string format, that resolves to `"MutableClock[1970-01-01T00:00:00Z,Z]"`, confident there. For the tests missing assertions, I'm reasoning that setting millis to zero on an epoch clock should leave it unchanged, and that using an Instant as a TemporalAdjuster should make the clock reflect that instant directly, though I want to think through that second case more carefully.
+
+The negative nanosecond value normalizes so the second decrements to -1035 with remaining nanos of 999998966, giving `Instant.ofEpochSecond(-1035L, 999998966L)`. Since the clock was already set to `pastInstant` via `MutableClock.of`, calling `clock.set(pastInstant)` again should leave it unchanged, and with the zone at `ZoneOffset.MIN` (-18 hours) I need to check how that affects the resulting ZonedDateTime.
+
+Using `current.with(pastInstant)` invokes `Instant.adjustInto`, which sets the temporal to that exact instant, so `result.toInstant()` should equal `pastInstant`, confirming `clock.instant()` should equal `pastInstant`.
+
+For the next case, `clock.add(-1L, ChronoUnit.DECADES)` starting from the epoch (1970-01-01) subtracts 10 years, landing on 1960-01-01T00:00:00Z.
+
+For test 12, the hashCode test just checks it doesn't throw, so no assertion is really needed there. For test 13, adding Duration.ZERO to the epoch clock should keep it at Instant.EPOCH, so I'll add that assertion. Now I need to go through the test file and insert these oracle assertions at the end of each relevant test method, being careful to match each test's expected behavior, starting with checking how test_withZone_sameZoneReturnsSameInstance is structured.
+

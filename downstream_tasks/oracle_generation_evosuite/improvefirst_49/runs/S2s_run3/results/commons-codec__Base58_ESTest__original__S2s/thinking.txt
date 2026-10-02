@@ -1,0 +1,88 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now let me analyze each test method to determine what oracles to add:
+
+**test00**: Encodes a byte array with bytes `[-115, 0]` and calls `encodeAsString`. The comment says `// Unstable assertion: assertEquals("(jM", string0);` — this is already commented out and explicitly marked unstable. Since the test already has this handled (unstable comment), there might not be an oracle needed. Let me think about whether there was an oracle that was removed here...
+
+The test calls `encodeAsString` and stores the result in `string0`. The comment says the result is unstable. But there might have been an assertion about it being non-null, or the unstable comment is the original oracle that was already there (not a masked oracle). 
+
+The unstable comment in test00 looks like it was already present originally, so I'll leave that test alone. For test01, the try-catch already verifies the ArrayIndexOutOfBoundsException with a fail call, so nothing more is needed there. Moving to test02, I'm looking at a call to encode with offset and length both set to -20 — since a negative length signals EOF, I need to work out what the encoder should output given the accumulated state and negative offset.
+
+Since length is negative, this triggers the EOF path, so I trace through the empty-buffer case in convertToBase58: constructing a BigInteger from an empty byte array gives zero magnitude, so the loops never execute and the resulting base58 output is an empty string, meaning no bytes get written and position remains unchanged.
+
+Since length is -20, negative, this immediately triggers the EOF path with an empty accumulated buffer, so encoding an empty byte array to Base58 should yield an empty string with no leading zeros or digits, meaning `byteArray1` is likely an empty array.
+
+I notice this test has no assertion on the result, so I should add an oracle checking that the returned array is empty or its length is zero.
+
+Tracing through the empty-input path confirms it produces an empty StringBuilder, an empty encoded string, and ultimately a zero-length byte array with no bytes written to the buffer position.
+
+For test03, the exception assertion is already sufficient—no additional oracle needed there. For test04, I'm tracing through both decode calls: the first hits the EOF path with a null buffer, so accumulate stays empty and the length-check branch is skipped entirely; the second call happens after eof is already set to true, so I need to trace what that means for the second decode's behavior.
+
+Since neither decode call returns a value and context isn't publicly accessible, this test seems to just be verifying no exception gets thrown rather than checking specific output.
+
+For test05, I'm tracing through decoding "Dt2" as Base58 by manually working through the decode table values for each character starting with 'D'.
+
+Continuing the calculation, 't' maps to 51 and '2' maps to 1, giving a final decoded value of 12 × 58² + 51 × 58 + 1 = 43327.
+
+Let me double-check this by tracing through the actual decode logic instead. I need to trace how the string "Dt2" gets converted to raw ASCII bytes [68, 116, 50], then fed through the decode method which buffers these bytes and calls convertFromBase58 at EOF.
+
+I'm checking leading '1' characters (none here since 68≠49), then looping through the bytes right to left, looking up each byte's value in the base58 decode table and accumulating the result with increasing powers of 58.
+
+'D' decodes to 12, giving value = 2959 + 12*3364 = 43327, which is nonzero. Converting 43327 to bytes yields [-87, 63], a two-byte array where the first byte isn't zero, so I'm constructing the result array accordingly.
+
+Actually since the high bit of 0xA9 is set, two's complement representation requires a leading zero byte to keep the value positive, so toByteArray() likely returns 3 bytes: [0x00, 0xA9, 0x3F] rather than 2.
+
+So the result becomes [-87, 63], giving byteArray0 with length 2, which I can verify with assertEquals and assertArrayEquals.
+
+For test06, decoding "t2": leading ones is 0 since 't' isn't '1', then I trace through the base58 digit conversion for 't' (51) and '2' (1) to compute the accumulated value.
+
+Continuing the calculation, the value reaches 2959, which converts to bytes [11, -113] with no leading-zero trimming needed, so I can assert the array length is 2.
+
+For tests 05 and 06 where results are just stored locally, I'll rely on length or non-null checks as oracles. Test07 already has its exception assertion via `fail`, so nothing more is needed there.
+
+Now tracing test08 with input "11": both characters are the leading '1' character, so leadingOnes equals 2, meaning the conversion loop never executes and the decoded value stays zero with an empty byte array, leaving the result array sized to just the leading zero bytes.
+
+This gives byteArray0 as a two-element array of zeros, so I'd assert its length is 2 and that it matches an array of {0, 0}.
+
+For test09, calling setEncodeTable on the builder returns the builder itself due to the fluent API pattern, so the appropriate oracle is asserting that base58_Builder1 is the same instance as base58_Builder0.
+
+For test10, calling get() on the builder produces a new Base58 instance, which I'd assert is not null.
+
+For test11, I'm looking at a call to isInAlphabet with a string checking for invalid characters.
+
+Checking the rest of the decode table confirms other characters like ':' and '%' also map to -1, so the string clearly fails the alphabet check since it contains multiple invalid characters, not just 'I'.
+
+For the 18-zero-byte encoding test, I trace through: with all leading zeros and no value bytes, the loop that builds the base58 digits never executes, so the result is just eighteen '1' characters representing each leading zero byte. The final encoded string should equal "111111111111111111" with length 18.
+
+For test13, `Base58.builder()` simply instantiates a builder, so the assertion would just check it's not null.
+
+Now I'm sorting through which tests genuinely lost their oracle versus which ones don't require one — test00 has an "Unstable assertion" comment suggesting it's original rather than removed, and test01 uses a try-catch with fail() so it doesn't need a separate result assertion.
+
+Going through the rest, most follow the same pattern: tests that store a variable like `byteArray1`, `base58_Builder1`, `base58_0`, `boolean0`, or `string0` without asserting on it likely had an oracle stripped out, while the try-catch-fail tests (test03, test07) are already complete without needing one, and test04 just seems to check that no exception occurs.
+
+For test02 specifically, I'm reasoning through what encoding `byteArray0` with a negative length of -20 would produce — since that signals an immediate EOF condition, the result should just be an empty array, so asserting the returned value isn't null seems safe.
+
+Given the test calls encode with a negative length, the public encode method should return an empty byte array since pos never advances past zero. I'll just assert the result isn't null rather than checking exact contents, since the empty-array behavior is what matters here.
+
+I realize the test02 case uses the 3-argument public encode method rather than the Context-based one, so I should just check that the returned array isn't null rather than assuming a specific length, since I'm not fully certain what Base58's behavior is with a negative length like -20.
+
+Going through the remaining tests, I'll settle on adding notNull checks for most byte array results, an array-equals check for test08 where I'm confident about the exact output, and skip oracles for methods that don't return an inspectable result like the void context-mutating call in test04.
+
+Converting 2959 to bytes gives [0x0B, 0x8F], which since the high bit isn't set needs no extra padding, so the result is [11, -113] with length 2 — I'll assert that array directly.
+
+For the "11\n" input case with leading ones and no digits, the value stays 0 and the decoded array ends up empty, so the final result is just a zero-filled byte array of length 2: [0, 0].
+
+For the builder test, `setEncodeTable` returns `this` in the chain, so I expect `assertSame` to hold between the two builder references. For test11 I'm confident the boolean result is false, and for test12 I'm working through encoding 18 zero bytes, where leadingZeros equals 18 and the BigInteger value is 0, so the loop never executes and the encoder just appends '1' eighteen times to produce a string of all ones.
+
+Now I'm going through each test method to pin down checkable assertions: test02 likely just needs a not-null check on the byte array, and for test04 I'm reasoning through the decode logic — after a call with a negative length, `context.eof` should flip to true, and the second decode call should return early since eof is already set, so asserting `context.eof` is true seems like a solid oracle.
+
+For the remaining tests, I'm working out the expected byte array outputs by tracing through the encode/decode logic step by step, landing on specific byte values for test05, test06, and test08 with varying levels of confidence.
+
+For test09 through test13, I'm confirming straightforward assertions: object identity checks, null checks, boolean results, and string equality for the "111111111111111111" case.
+
+For test04, I'm considering whether I can assert on the `eof` field of the context object, since test03's pattern shows `buffer` is accessible, suggesting `eof` might be too.
+
+Tracing through the two decode calls with a fresh context: the first call passes a negative length triggering the EOF path, setting `context.eof = true` and leaving the buffer effectively empty since accumulate has zero length, so nothing gets converted or stored. The second decode call then returns immediately because eof is already true. This confirms `assertTrue(baseNCodec_Context0.eof)` should hold after both calls.
+
+Now I'm confirming that `eof` is a public field on Context, just like `buffer`, since the earlier test accessed `buffer` directly the same way. I'll finalize these observations into the test edits.
+

@@ -1,0 +1,88 @@
+Let me start by reading the masked test file to understand what tests are present and where oracles need to be added.
+
+Now I need to analyze each test to determine what oracles (assertions) to add:
+
+1. **test00** - Tests that `previous()` throws `NoSuchElementException` on empty iterator. The exception handling is already in place, no additional oracle needed.
+
+2. **test01** - After `hasNext()` is called, then `hasPrevious()` is called and stored in `boolean0`. I need to add an assertion for `boolean0`. Let me think... 
+   - `linkedList0` has one element (object0)
+   - `listIterator0` is at position 0
+   - `filterListIterator0` wraps `listIterator0` with `equalPredicate0` (matching `object0`)
+   - `filterListIterator1` wraps that with `uniquePredicate0`, and calling `hasNext()` pre-fetches the next matching element internally without necessarily moving the cursor, which makes reasoning about the resulting `hasPrevious()` value for the nested filter tricky.
+
+I'm considering the internal flags `nextObjectSet` and `previousObjectSet` — when `hasNext()` finds an element it sets `nextObjectSet=true`, and `hasPrevious()` then checks that flag or looks for a preceding matching element, so the exact result depends on these implementation details.
+
+For test01, I'm tracing through what happens when `hasNext()` is called on the wrapped `filterListIterator1`: it delegates down through `filterListIterator0` to `listIterator0`, checking whether `object0` in the underlying list matches `equalPredicate0` before deciding if a next element truly exists.
+
+Now I'm working out whether `hasPrevious()` should return true afterward, since the internal state of the filter iterators tracks a "peeked" next object, and I need to figure out how that interacts with checking for a previous element. This requires digging deeper into how `FilterListIterator` actually manages its state.
+
+I recall that FilterListIterator tracks nextObjectSet and previousObjectSet flags while delegating to the underlying ListIterator. Since calling hasNext() advances the underlying iterator forward to peek at the next match, calling hasPrevious() afterward without next() would need to check whether the iterator's position still allows finding a matching previous element from that advanced spot, which makes the exact return value implementation-dependent and uncertain to predict.
+
+Given this ambiguity, I'll abstain on hasPrevious() assertions after hasNext() calls and move on to clearer test cases like test02, which mirrors test01's structure without the extra predicate wrapping.
+
+For test03, equalPredicate0 matches object1 but the list only contains object0, so hasNext() should return false. Test04 involves next() consuming the single element, then hasPrevious() and a second iterator's next(), so the final hasNext() on the original iterator should also be false since nothing remains. Test05 pairs next() with previous(), which I still need to trace through.
+
+Now for test07, I'm tracking next() followed by two hasPrevious() calls on a single-element list - after consuming the element with next(), the cursor moves past position 0, so hasPrevious() should return true since we can still go back.
+
+For test08, calling hasNext() twice in a row should still return true both times since the iterator caches the peeked object once nextObjectSet is true, avoiding re-advancement.
+
+For test09, I'm checking that getPredicate() returns null when the iterator was constructed with a null predicate.
+
+For test10, getListIterator() should return null since no underlying list iterator was ever set.
+
+For test12, calling nextIndex() on an iterator with no underlying list iterator might not throw since there's no try-catch, so I need to figure out what value it defaults to.
+
+For test17, I'm working through a sequence of next(), hasPrevious(), and hasNext() calls to trace the expected state transitions.
+
+test18 likely checks previousIndex() on an empty iterator, expecting -1, similar to test12. Going through the others I'm confident about: test03 asserts false since the predicate looks for object1 but the list has object0; test05 calls previous() without capturing a result, so nothing to assert; test09 confirms getPredicate() returns null when constructed with a null predicate; test10 confirms getListIterator() returns null when no list iterator was set.
+
+For test12, I'm reasoning through nextIndex() on an empty FilterListIterator with a null underlying iterator — since the test expects no exception, the implementation must handle the null case gracefully, likely returning 0 as a default rather than delegating directly to a null iterator.
+
+For test18, I'm considering previousIndex() under similar conditions, guessing it likely returns -1 by default but I'm not certain enough to commit to an answer.
+
+For test07, I'm tracing through the state after next() and two calls to hasPrevious(): the first call scans backward and finds the matching element, setting previousObject and previousObjectSet to true, so the second call would then just check that flag rather than rescan.
+
+For test08, I'm doing the same trace for hasNext() calls—first call sets nextObjectSet to true after finding the match, second call sees the flag already set and immediately returns true, so I'm reasonably confident boolean0 is true.
+
+Now I'm looking at test01, which involves hasPrevious() called after hasNext() on nested filter iterators, tracing how the inner iterator advances when the outer one searches for a matching element.
+
+step backward to object0 at index 0, which matches equalPredicate0. But uniquePredicate0 already marked object0 as seen during hasNext(), so it fails the uniqueness check and hasPrevious() returns false — meaning boolean0 should be false, matching the assertion.
+
+So true, and `assertTrue(boolean0)` should hold for test02.
+
+For test04, I notice filterListIterator0 and filterListIterator1 both wrap the same underlying listIterator0, so operations on one iterator will affect the state seen by the other since they share that single source iterator.
+
+I need to trace through this carefully - hasPrevious() actually advances the shared listIterator0 backward first, setting previousObject to object0 and moving position to 0. Then when filterListIterator1.next() runs, it advances listIterator0 forward again to position 1, consuming that same object0. So when filterListIterator0.hasNext() checks, listIterator0 is now exhausted at position 1, meaning it can't find a next element.
+
+For test17, the sequence is similar but slightly different: next() consumes object0, hasPrevious() scans backward and re-finds object0 (resetting listIterator0 to position 0), then hasNext() needs to call listIterator0 again to check for a next element.
+
+So `boolean0 = true` for test17, and `assertTrue(boolean0)` seems right.
+
+For test05, next() then previous() returns object0 but that value isn't captured, so no assertion is needed there. Similarly test14 (setPredicate) and test16 (setListIterator) return nothing to assert.
+
+Now I'm turning to test12 and test18 - these likely involve nextIndex() or previousIndex() calls on a FilterListIterator without an underlying listIterator set, which would probably throw a NullPointerException.
+
+Since the tests don't wrap these in try-catch, I suspect the constructor initializes with some default empty iterator rather than null, meaning nextIndex() would return 0 and previousIndex() would return -1 on an empty, unpositioned iterator.
+
+I'll abstain on test12 and test18 given the uncertainty around a null underlying iterator. Test05, test16, and test14 involve void-returning operations, so there's nothing to assert there. For test01, I need to re-examine whether filterListIterator1's hasNext() call actually invokes filterListIterator0.next() or just its hasNext(), since that affects the resulting state of both iterators.
+
+The hasNext() logic works by checking if nextObjectSet is already true, otherwise looping through the underlying iterator until it finds an element matching the predicate. So filterListIterator1.hasNext() would actually call filterListIterator0.next() to pull elements and test them against uniquePredicate0, not just call hasNext() directly.
+
+Tracing through the calls: filterListIterator0.setNextObject() pulls object0 from listIterator0, checks it against equalPredicate0 (passes), and stores it. Then filterListIterator1.setNextObject() calls filterListIterator0.next() to retrieve that same object0, checks it against uniquePredicate0 (passes since it's the first occurrence), and stores it as its own nextObject, returning true.
+
+Now I'm tracing hasPrevious() on filterListIterator1, which cascades down through filterListIterator0's setPreviousObject() to listIterator0.previous(), pulling object0 back and checking it against equalPredicate0 again.
+
+However, once uniquePredicate0.evaluate(object0) runs, it returns false since object0 was already seen, so the search continues backward but listIterator0 has no more previous elements. This means filterListIterator1 can't find a valid previous match, so hasPrevious() ultimately returns false.
+
+For test02, tracing through filterListIterator0.hasPrevious() after the earlier hasNext() call: it resets and re-checks listIterator0.previous(), finds object0 again, and this time equalPredicate0.evaluate(object0) returns true, so previousObject gets set and hasPrevious() returns true — confirming assertTrue(boolean0).
+
+Now compiling the expected assertions across all tests: test01 expects assertFalse after hasPrevious(), test02 expects assertTrue after hasPrevious(), test03 and test04 both expect assertFalse after hasNext(), and test07 and test08 expect assertTrue after subsequent hasPrevious() calls.
+
+Continuing this list, test09 checks that getPredicate() returns null, test10 checks that getListIterator() returns null, and test17 expects assertTrue after hasNext(). For test12 and test18 I'm uncertain about the behavior of nextIndex() and previousIndex() with a null underlying iterator, so I abstain on those, but I'm reconsidering since EvoSuite-generated tests must actually run without exceptions, meaning the implementation likely handles null iterators gracefully somehow.
+
+If the tests captured return values without throwing, then nextIndex() must succeed even with no underlying iterator set. I recall that in Apache Commons Collections 4, nextIndex() simply delegates to the wrapped iterator's nextIndex(), which would throw NPE if that iterator is null—so this makes me question whether the no-arg constructor actually leaves the internal iterator null.
+
+Following standard listIterator contract conventions, I'll assume nextIndex() returns 0 and previousIndex() returns -1 for a fresh, uninitialized iterator, and proceed with those values while staying open to correction if they don't hold up.
+
+Actually, given my uncertainty about whether these methods throw NPE instead, I decide it's safer to mark test12 and test18 as abstained rather than risk an incorrect assertion. With that settled, I move on to writing out the full set of oracles.
+

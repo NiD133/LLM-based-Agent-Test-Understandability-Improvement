@@ -1,0 +1,72 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now let me analyze each test to determine what oracles need to be added:
+
+**test00**: Encoding "vyHWF);{" with US_ENGLISH
+- The US_ENGLISH soundex uses `specialCaseHW = true` (from default constructor)
+- H and W are ignored
+- Non-letter chars are stripped, so the effective input is "vyF"
+- First char: V → out[0] = 'V', lastDigit = map('V') = US_ENGLISH_MAPPING['V'-'A'] = US_ENGLISH_MAPPING[21] = '2'
+- Wait, let me look at the mapping string: "01230120022455012623010202"
+- Mapping each letter A through Z gives me the digit codes I need to trace through, so I'm working out the index-to-letter correspondence to pin down exactly what V, Y, and F map to.
+
+Now I'm tracing through the Soundex cleaning process for "vyHWF);{", which strips to "VYHWF" after uppercasing and removing non-letters, then mapping each letter to its digit code using the position table I've built out.
+
+Finishing the digit mapping table, then tracing through the "VYHWF" example character by character, applying the H/W special-case skip rule and tracking the last stored digit as I process each letter.
+
+I see now that lastDigit updates every iteration regardless of the if-block, so tracing through: V stores '1' with lastDigit='1', Y maps to '0' so it's skipped but lastDigit becomes '0', then H and W are both skipped entirely due to specialCaseHW, landing me at F next.
+
+For test01, I'm checking that encoding a null String returns null, but I notice the test captures no result variable to assert against, so I need to look closer at how this test is actually structured.
+
+The test discards the encode result without storing it, so I'd need to capture the return value to assert against it. The removed comment about an unstable assertion on getMaxLength() seems off anyway, since US_ENGLISH defaults to maxLength=4, so I'm reconsidering whether the oracle should instead check that encoding null returns null.
+
+The maxLength assertion also looks unstable since setMaxLength(0) happens later in test09, so I'm leaning toward abstaining on test01's oracle. But I still need to figure out exactly where to place the oracle in the code, since there are no existing placeholders to anchor it to.
+
+For test04, I'm tracing through the cleaning logic on that weird string, filtering out non-letter characters to figure out what actually gets passed to the soundex encoding.
+
+Finishing the clean pass giving "NBHL", now I'm indexing into the mapping string "9^n}]@7bH(,#/L" to find what each letter (N, B, H, L) maps to by position, counting through each character carefully.
+
+For N (position 13), the mapping gives 'L', but that's odd since the soundex algorithm expects digits or the SILENT_MARKER character, not letters — I need to check how the code handles non-digit, non-silent values when building the output, skipping silent markers and avoiding storing vowels or repeated digits.
+
+Tracing through "NBHL": N sets lastDigit to 'L' from the mapping, and since the mapping string doesn't contain the silent marker '-', the special H/W case rule kicks in. Then B maps to '^', which isn't silent either, so it likely gets appended to the output.
+
+H gets skipped since specialCaseHW is true, and L maps to '#', appending again. That would give "N^#0" as the final encoded result, but I want to double-check the exact mapping indices to make sure this calculation is right before trusting it.
+
+'b', but since H is special-cased, that position gets skipped, so the result works out to "N^#0" filling the initial "0000" array. Now I'm moving to test05, which checks the difference function using US_ENGLISH_GENEALOGY's mapping on two strings with special characters that need cleaning first.
+
+After cleaning, ")1XSFmv!V?i#" reduces to "XSFMV" and the apache commons string reduces to "ORGAPACHECOMMONSCODECENCODEREXCEPTION". I'm now tracing through the soundex encoding for "XSFMV", starting with X as the first character mapping to out[0], then working through the mapping table position by position to figure out the digit codes for each subsequent letter.
+
+Continuing through S, F, M, V, I get "X151" as the encoded result for that test string. Now I'm moving to a new test case, "org.apache.commons.codec.EncoderException", and cleaning it to uppercase letters only before starting the encoding process with the first character 'O'.
+
+Since 'O' maps to the silent marker, that becomes the initial lastDigit. Then R maps to digit '6' (different from both '0' and the marker, so it's kept), G maps to '2' (kept since it differs from '6'), and now I'm checking A's mapping value.
+
+Continuing: A maps to the silent marker so it's skipped, then P maps to '1' which differs from '2' so it's kept, giving the final code "O621" for the second string. Comparing "X151" against "O621" position by position, only the last characters ('1' vs '1') match, so the difference score is 1 — matching the test's expectation that a difference of 1 indicates little similarity.
+
+Now looking at test08, which compares two identical strings and expects a difference score. Since the input string "01230120022455012623010202" contains only digits and no letters at all, I need to trace through how the Soundex algorithm handles a string with no alphabetic characters to figure out what code gets produced.
+
+Since "01230120022455012623010202" contains no letters, soundex of that string equals "". Comparing two empty encodings via difference() likely returns 0, which matches the test's expectation that identical strings yield a difference of 0.
+
+That confirms it: with no alphabetic characters, the cleaned string is empty, so the soundex comparison yields 0 matches — difference is 0, matching the comment. For test10, the default Soundex constructor sets maxLength to 4, so getMaxLength() should return 4.
+
+Going through the rest of the tests: test00 expects "V100", test01 is an unstable assertion I'll abstain on, test02 and test03 already have their exception-based oracles in place, test04 expects "N^#0", test05 expects a difference of 1, and test08 expects a difference of 0 as I worked out. Tests 06, 07, 09, and 11 are just instantiation or setter calls without a clear return value to check, so they may only need a not-null check or no assertion at all.
+
+For test11: also using another constructor variant with special characters, so I'll add `assertNotNull(soundex)` too.
+
+Now reconsidering test04 - encoding "9^n}]@7bH(,#/L" with a custom mapping, I need to check whether SoundexUtils.clean uppercases the input before extracting letters, since that affects the expected result.
+
+Tracing through the mapping array with indices for N, B, H, L: N maps to 'L', B maps to '^', H gets skipped due to the special-case H/W handling since there's no '-' marker, and L maps to '#'. So the final encoded result comes out to "N^#0".
+
+Continuing the trace: H at index 7 maps to 'b' but gets skipped due to the special-case rule for H after W, so lastDigit stays '^'. Then L maps to '#', which differs from the silent marker, '0', and the last digit, so it gets appended, giving "N^#0" as the result.
+
+Now moving to test05, I'm re-extracting the letters from ")1XSFmv!V?i#" by walking through each character and checking whether it's a letter, converting matches to uppercase to rebuild the string for comparison.
+
+Cleaned result gives "XSFMVVI" and I'm applying the US_ENGLISH_GENEALOGY mapping "-123-12--22455-12623-1-2-2" to it, tracking each character's digit code and comparing against the last stored digit to decide whether to append it.
+
+Continuing through F, M, V produces out="X151", matching the expected result. Now I'm moving to the next test case, "org.apache.commons.codec.EncoderException", and starting to extract just its letters.
+
+Continuing through A (silent, skipped) and P (digit '1', appended), the encoding finishes as "O621". Comparing this against "X151" digit by digit, only the last position matches, giving a single point of agreement.
+
+Now checking test00's "vyHWF" case: mapping V to '1' as the first letter, then Y maps to '0' which gets skipped since zero digits aren't stored, and H triggers the special HW rule so it's silently skipped too.
+
+Continuing through: W also gets skipped by the special HW handling, then F maps to '1' which differs from the last stored digit, so it gets appended. The final result comes out to "V100", matching what's expected. Now I'm ready to make the edits.
+

@@ -1,0 +1,34 @@
+Let me start by reading the masked test file to understand what tests are there and what oracles need to be added.
+
+Now I need to analyze each test and determine what oracles to add.
+
+**test0**: Creates a BoundedReader with bound=1 and reads 1 character. The source has content "KnLjCdWGnB@(}p3qC". With a bound of 1 and requesting 1 character starting at offset 1, this should read exactly 1 character. So `charsRead` should be 1.
+
+**test1**: Creates a BoundedReader with an empty source and bound=511. After reset(), skip(511), mark(511), reads. Since the source is empty, reading returns -1. 
+
+So `result` should be -1.
+
+**test2**: A BoundedReader with bound=-1 should immediately return EOF on read, so `result` should be -1.
+
+**test3**: With source "@</''" (4 chars) and bound=481, skip(481) can only skip the 4 available characters, so `skippedChars` should be 4. After that, reading returns -1, so `result` should be -1.
+
+Let me reconsider test0: bound=1 with a non-empty source should read exactly 1 character, so `charsRead = 1`. For test1: an empty source with bound=511 should still return -1 from read() after reset, skip, and mark since there's nothing to read.
+
+For test3: source has 4 characters "@</'" with bound=481. Since the source only has 4 characters, skip(481) can only actually skip 4 characters, and afterward mark(1) and read() should return -1 for EOF, with skippedChars equal to 4. I'm now recalling how BoundedReader from Apache Commons IO works — it wraps a reader with a maximum character count, and read() returns -1 once the bound is reached or the underlying source is exhausted.
+
+After reset(), the BoundedReader's counter likely resets to 0 too, so skip(481) then reads char by char until the underlying reader hits EOF, meaning it can only skip 4 characters before stopping since that's all the source contains.
+
+So my oracles land at: test0 expects charsRead=1, test1 and test2 both expect result=-1, and test3 expects skippedChars=4 with result=-1. I need to check whether the test asserts on both variables or just one, since the test currently has no assertions and the docstring only mentions verifying EOF behavior after the read-ahead limit is exhausted.
+
+I'll finalize the assertions: test1 and test2 check `assertEquals(-1, result)`, and test3 checks both `assertEquals(4L, skippedChars)` (noting skip() returns a long) and `assertEquals(-1, result)`.
+
+Now I want to verify whether BoundedReader's reset() actually resets the charsRead counter, so I'm looking at the Apache Commons IO source to check the field definitions and constructor for BoundedReader.
+
+Continuing to trace through the read(), mark(), and reset() methods... the reset() restores charsRead to markedAt, and read() increments charsRead only when a character is successfully returned, stopping once maxCharsFromReader is reached.
+
+I'm second-guessing the initial value of markedAt in the actual Apache Commons IO implementation—whether it starts at -1 or 0 affects how reset() interacts with the char-counting logic.
+
+Rather than trying to reverse-engineer the exact internals, I'm focusing on what the test cases should actually verify per the javadocs: reading 1 char with bound=1 yields 1, an empty source yields EOF, a negative bound yields EOF, and reading past all 4 characters of the source string yields EOF. For the test involving skipping all characters, I'm working through whether reset() brings charsRead back to 0 before the skip happens, which determines whether skippedChars ends up as 4.
+
+I'm now settling on the expected oracle values for each test and moving to write them into the test file.
+

@@ -1,0 +1,75 @@
+Let me start by reading both the test file and the class under test to understand what needs to be tested.
+
+Now let me analyze each test and determine the appropriate oracle for each:
+
+1. **test_solveCbrt_largeInterval_returnsZero**: The comment says "the solver should converge to 0.0 within a generous tolerance." cbrt(x) = x^(1/3), which has a root at x=0. The interval is [-2825.0795928397, 2.7950664235456177E85]. The result should be approximately 0.0. I need to add an assertion like `assertEquals(0.0, root, 1.0E-6)` or similar.
+2. For the max-evaluations test, since it already has a try-catch expecting a RuntimeException, I'm considering whether to add a check inside the catch block confirming the exception type, like verifying it's a TooManyEvaluationsException rather than just any RuntimeException.
+
+I should keep the oracle simple - maybe the try-catch structure itself already serves as the exception oracle without needing an explicit verifyException call, since TooManyEvaluationsException would just propagate up as the RuntimeException being caught.
+
+Without the exact EvoAssertions signature, I'm inclined to leave the catch block structurally intact since the `fail()` call combined with catching the exception already serves as the oracle—if no exception is thrown, the test fails. My real focus should be identifying which locations in the test are missing oracles entirely, not just this catch block.
+
+Going test by test: the first one needs a numeric assertion on `root` since the comment indicates convergence to 0.0, so something like an `assertEquals` with a small tolerance makes sense. The second test's try-catch-fail pattern already provides the exception oracle, so it may not require further changes inside the catch block.
+
+For the remaining cases, the near-zero root test needs a tolerance-based equality check, the zero-polynomial test needs an `assertTrue(Double.isNaN(result))` check, and the upper-bound test needs an exact equality assertion since the comment says the value should be returned unchanged.
+
+Going back over test 1 and test 3, I'm settling on `assertEquals(0.0, root, 1.0E-6)` for the large-interval cbrt case, and I'm still working out the right tolerance for the near-zero root that's around 3.06e-7.
+
+A tolerance of 1e-5 or 1e-6 would work here. Now checking test 4, the zero polynomial case where f(x)=0 everywhere — I'm tracing through the MullerSolver code to see how doSolve() handles min, max, and startValue when there's a single-argument solve call, since that overload doesn't directly pass min/max like the standard doSolve path does.
+
+I'm reasoning that the 3-argument solve variant only sets a start value without explicit bounds, so calling solver.solve with maxEval, the zero polynomial, and a start value near 0.0016 falls into that path. It's unclear exactly how min/max default in this case, but the test comment implies the expected result is NaN, so the oracle checks that the result is NaN.
+
+Moving to test 5, where the upper bound is extremely close to zero (4.8e-220) for a cube root function — the comment indicates the solver should recognize this endpoint itself as the root and return it unchanged, so I'm looking at how that boundary case is handled.
+
+Since the comment specifies the solver returns the upper bound "unchanged," I'm leaning toward asserting exact equality with a delta of 0.0, since that matches the precise wording of the expected behavior.
+
+Now turning to the next test case, involving a solver with a starting point but no bracketing interval—I'm puzzled because ulp(x) for a finite positive number is never actually zero, so it's unclear how the solver would converge to treat the starting point itself as a root without any tolerance for adjustment.
+
+Reconsidering tests 4-6: since only the start value gets set with the 3-arg solve call, getMin() and getMax() likely return NaN, so doSolve() behaves unpredictably depending on the function. Test 4's description suggests NaN is expected, while test 6 suggests the starting point itself is returned essentially unchanged, so I'll write the assertions accordingly.
+
+For test 2's exception case, the catch block structure itself may serve as the oracle since no exception escapes, though I could add a check confirming it's specifically a TooManyEvaluationsException using EvoSuite's typical verifyException pattern.
+
+Going through each test systematically: the unused `root` variable after the solve call suggests a removed assertion there, and I need to figure out where each oracle originally lived before being stripped out.
+
+For the exception test, I'm reasoning that EvoSuite typically wraps the try-catch with a `verifyException` call from `EvoAssertions` inside the catch block, so I should reconstruct what that call would look like based on the exception class and method being tested.
+
+I'm settling on my final decisions: the cube root test expects zero within a tight tolerance, and the exceeds-max-evaluations test expects a TooManyEvaluationsException to be thrown.
+
+Rethinking the instructions, I realize the exception catch block itself likely doesn't need an oracle since the test structure (try/fail/catch) already serves that purpose in EvoSuite's pattern. The real challenge is figuring out where actual assertions were stripped versus where an empty catch was always the intended design.
+
+I recall EvoSuite's verifyException helper typically takes the exception class name and the throwable object, so I'll use that pattern with the fully qualified TooManyEvaluationsException name, and if it doesn't compile I'll adjust. I'm also noting that since fail() already establishes the exception was thrown, the core assertion structure should already be sound.
+
+Now I'm settling on specific oracles for each test case, matching each assertion to the expected numerical result or exception type—things like checking the root equals zero within tolerance, verifying a TooManyEvaluationsException gets thrown, or confirming NaN results where appropriate.
+
+I'm not fully confident about the exact verifyException signature, so I'll try it and adjust based on compile errors. I'm also tracing through what happens when the zero polynomial solver is called without bounds—following how the min/max values default to NaN and how that propagates through the objective function evaluation to determine whether test 4's NaN assertion actually holds.
+
+That confirms `result = NaN` matches the oracle's expectation. Now checking test 5: cbrt(4.8e-220) works out to roughly 1.688e-73, which is far smaller than typical functionValueAccuracy thresholds, so I need to see how that affects the bracketing comparison.
+
+I'm digging into the `doSolve()` logic to see whether the max endpoint check `|f(max)| < functionValueAccuracy` triggers a direct return, and I need to trace where the default functionValueAccuracy value comes from in the solver's constructor chain.
+
+Computing cbrt(4.8e-220) gives roughly 1.68e-73, which is far larger than 1e-15, so this check alone doesn't explain returning max directly—the actual convergence behavior must be more subtle given the asymmetric interval bounds.
+
+Checking the Muller solver's endpoint test: fMax is around 1.68e-73, which exceeds a typical functionValueAccuracy of 1e-15, so it wouldn't return the upper bound directly. The algorithm should then iterate and converge toward the true root near 0, though I'm not entirely certain of the exact returned value given how close the interval already sits to zero.
+
+Since 4.8e-220 sits essentially right at the root, after enough iterations the solver's computed value would converge to something indistinguishable from it within tolerance. I'll trust the test comment's stated expectation and just assert the upper bound equals the root with a very tight or zero delta.
+
+Working through the cube root estimate, cbrt(4.8e-220) comes out to roughly 7.8e-74, which I need to compare against the default functionValueAccuracy to see if the solver would treat this as within tolerance.
+
+Comparing exponents, 7.8e-74 is far smaller than 1e-15 (default accuracy is 10^-15, but this value is 10^-74), so the condition |fMax| < functionValueAccuracy would indeed be true.
+
+This means the solver returns max unchanged, so for test 5 the expected result should equal the upper bound exactly. Now I want to check test 6, involving ulp(x), which has no true root since ulp is always positive — I need to trace what the 3-argument solve overload does when min and max aren't specified.
+
+Working through doSolve() with min=NaN, max=NaN, and initial=1.5902..., the check on fInitial evaluates ulp(1.5902...) ≈ 2.22e-16, which is smaller than the functionValueAccuracy threshold of 1e-15 — so the solver immediately returns the initial value 1.5902118 without ever iterating.
+
+This confirms the solver returns exactly startingPoint, so I can assert equality with zero delta: `assertEquals(startingPoint, result, 0.0)`. Now I need to finish working out the cube root bounds for the first test case with interval [-2825.0795928397, 2.7950664235456177E85].
+
+For test 1, since fMax is far larger than the accuracy threshold and fMin is also nonzero, the root will converge to 0, so the oracle is `assertEquals(0.0, root, 1.0E-6)`. For test 3 with interval [-1321.9, 2331], the root similarly converges near zero, though I'm double-checking whether 1e-6 delta matches the actual convergence value of about 3.06e-7.
+
+For test 2 which throws an exception, I need to use the EvoAssertions verifyException pattern for the catch block oracle.
+
+I'm second-guessing the exact verifyException signature, since that pattern usually applies to mocks rather than direct exceptions here. Given the comment about the max function-evaluation count, I'm considering a minimal oracle that checks the exception's message content rather than just its type, though I'm still unsure which specific assertion matches what was originally there.
+
+I recall that EvoSuite's typical helper method for this pattern is `verifyException`, which takes the exception class name and the caught exception object. Since I'm not fully certain of the exact class name here, I'll reconstruct a plausible call using that helper, matching the standard EvoSuite convention.
+
+If it doesn't compile, I'll rely on the repair loop to fix the signature. Now I'm starting to write out the oracles for each test, beginning with an assertEquals check comparing the root value against zero with a small tolerance.
+

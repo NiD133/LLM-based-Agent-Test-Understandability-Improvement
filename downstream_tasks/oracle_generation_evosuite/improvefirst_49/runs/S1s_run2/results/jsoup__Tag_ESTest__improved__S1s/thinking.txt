@@ -1,0 +1,102 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now I understand the class under test and what each test method does. Let me analyze each test and determine what assertions are needed:
+
+1. **directFieldMutationOfTagNameBreaksEquality** - `original.tagName = "b5 ;cl"` bypasses normalName update. When we clone and call `name("b5 ;cl")`, both tagName and normalName are updated. Original has normalName " |eOx/>T!" (from constructor) but tagName "b5 ;cl". Cloned has both updated to "b5 ;cl". So they're not equal because normalName differs. → `assertFalse(isEqual)`
+2. **tagsWithDifferentNamespacesAreNotEqual** - two tags differ only by namespace (custom vs HTML), so they should not be equal → `assertFalse(isEqual)`
+3. **knownHtmlTagIsNotEqualToCustomUnknownTag** - a known HTML tag has different option flags than an unknown custom tag, so they shouldn't match → `assertFalse(isEqual)`
+4. Moving on to the next test case to figure out its expected assertion.
+
+Cloning a tag should preserve equality with the original, and comparing a tag to itself should also be equal, while comparing to something that isn't a Tag at all should fail. Now I'm digging into the trickier case of comparing a tag returned by `valueOf("I")` against a freshly constructed `new Tag("I")` — since "I" isn't a standard HTML tag, I need to work out whether the `Known` flag differs between the two before deciding what assertion is expected here.
+
+That would make them unequal, so the test should assert false. For the RcData test, it just calls `textState()` without capturing the result, so it seems like a smoke test verifying no exception is thrown rather than checking a specific return value.
+
+Since the test calls `tag.textState()` without capturing the return value, I should add an assertion right after that call comparing the result to `TokeniserState.Rcdata`, since that's the property being verified when the RcData option matches the current state value.
+
+Now I'm going through each equality test method and adding the missing assertion — `assertFalse(isEqual)` for the negative cases like mutated fields, different namespaces, or unrelated objects, and `assertTrue(isEqual)` for cloned tags and self-comparisons.
+
+Continuing on, I'm filling in the remaining tests: text state assertions checking Rcdata, Rawtext, or null depending on tag options, plus form-submittable assertions confirming a tag becomes submittable when the option is set and isn't submittable by default.
+
+Adding more test case assertions...
+
+Then I move to the h6 tests, checking whether h6 counts as inline or block, and puzzling over whether headings carry the InlineContainer flag since h6's "formatAsBlock" test name suggests it should be true despite being a block-level element.
+
+Since I can't verify the internal HtmlTagOptions values directly, I'll trust the test name implying h6 does have that option, so `assertTrue(hasOption)`. For the custom tag test, a fresh Tag has no parser options, so `assertFalse(hasOption)`. For the clearing-option test, I need to check whether calling clear() on an unknown tag's option marks it as known, based on how the clear() method behaves relative to the Known flag.
+
+Since clearing Known when it's the only option won't re-set it, the cleared tag should report `isKnownTag()` as false. Then I'm working through the localName tests: one checks that without a colon prefix, localName returns the full tag name, and the next checks that with a colon-prefixed tag name, localName returns only the portion after the colon.
+
+For the prefix test, I notice `tag.prefix()` is called without capturing the return value, so I need to add an assertion checking that it equals an empty string when the tag has no colon.
+
+For test 38, with tag "Oc2:{", the colon sits at index 3, so the prefix substring before it is "Oc2" -- I add that as the expected assertion.
+
+For test 39, I'm verifying that setting a namespace returns the same tag instance and that the namespace value gets properly updated to match what was passed in.
+
+For test 40, an empty-string namespace tag should simply return an empty string from the getter, so I add that direct equality check.
+
+For test 41, computing the hash code is trickier since it depends on both the tag name and namespace fields together, so I need to figure out how those two values combine into the expected hash.
+
+Without knowing the exact hashCode calculation details, I'm considering safer alternatives like comparing against a freshly constructed Tag with the same name, but I'm not confident that constructor path matches exactly either, so abstaining looks like the safest choice here.
+
+Moving to the toString test, since the tag's name field directly determines the output, I can confidently assert the returned string matches the constructor argument. Same logic applies to the name getter test with an empty string tagName. Now checking the next test involving normal name handling.
+
+Tracing through `valueOf("I")` - since "I" isn't recognized in HTML namespace with preserveCase, it falls back to an unknown tag with options=0, and normalName becomes "i" via ParseSettings.normalName. So both the known-via-valueOf tag and a freshly constructed `new Tag("I")` would end up with identical tagName and normalName, which makes me question whether that test name still holds if their equality actually matches.
+
+I'm checking whether HTML registers "i" (italic) as a known tag, and how case preservation settings affect whether "I" uppercase matches that registered lowercase entry versus creating a fresh unknown tag.
+
+The naming of the test suggests knownTag and unknownTag shouldn't be equal, so I'm reconsidering whether `Tag.valueOf("I")` actually returns a pre-registered "i" tag with different properties than a freshly constructed `new Tag("I")` object, which would explain the inequality.
+
+I'm not fully certain about the TagSet internals here, so I'll lean on the test names as guides instead: the "knownTagCreatedViaValueOfIsNotEqualToNewTagWithSameName" test should assert false for equality. For the h6 parser option test, since h6 is a known HTML block tag and the test name claims it has parser option 128, I'll assert that as true even without full visibility into HtmlTagOptions' internals.
+
+For the "clearingAnOptionOnUnknownTagMarksItAsKnown" case, I'm reasoning that an unknown tag starts with no Known flag, and clearing a different option like FormSubmittable should set the Known flag as a side effect, making isKnownTag() return true afterward.
+
+Now for test 34, clearing the Known flag itself on an already-unknown tag shouldn't re-set it, so the tag stays unknown, and since clear() returns "this," the returned object should be identical to the original tag reference.
+
+Then I want to check `setSeenSelfCloseDoesNotMakeSelfClosing` -- calling setSeenSelfClose() only flips that specific bit, which doesn't factor into isSelfClosing's check (that only looks at SelfClose and Void), so isSelfClosing() should still return false there.
+
+Now I'm looking at the namespace setter test to see how it updates and returns the same tag instance.
+
+Since there's no captured variable, I'll add `assertEquals("", tag.prefix());` after the call. For the `textState` tests—`textStateReturnsRcdataWhenRcDataOptionMatchesCurrentStaticValue`, `textStateReturnsRawtextWhenDataOptionSet`, and `textStateReturnsNullForTagWithNoTextStateOption`—each calls `textState()` without capturing the result, so I'll add matching assertions right after those existing call lines.
+
+TokeniserState lives in the same `org.jsoup.parser` package as the test file, so no extra import is needed there. I'm also verifying the `h6HasFormatAsBlockSet` test: since `formatAsBlock()` checks whether the InlineContainer flag is set and headings like h6 have that flag, `assertTrue(formatAsBlock)` looks like the right assertion for that test.
+
+For `h6HasExpectedParserOption128` I can't see HtmlTagOptions.java directly, but the test name implies h6 should have option 128 (1 << 7) set, so I'll go with `assertTrue(hasOption)`. Now I'm turning to `knownTagCreatedViaValueOfIsNotEqualToNewTagWithSameName`, checking how `Tag.valueOf("I")` behaves for a known tag versus a newly constructed one with the same name.
+
+I recall the EvoSuite comment that predefined tags like P or DIV are `==`, while unknown tags only satisfy `.equals()`. If "I" (uppercase) doesn't match the lowercase "i" italic tag in the TagSet, it would be treated as unknown, meaning `valueOf("I")` and `new Tag("I")` would share the same properties and be equal rather than identical -- though the test's naming ("knownTag") makes me want to double-check that assumption.
+
+That confirms the options are unequal, so `assertFalse(isEqual)` holds for that test. Now checking the RcData textState test, I trace through setting `Tag.RcData` and `tag.options` to 512, which makes `textState()` return `TokeniserState.Rcdata` — I should add an assertion verifying that, though I need to check whether `TokeniserState` is already imported in the test file.
+
+Since both classes live in `org.jsoup.parser`, `TokeniserState` should be accessible without an explicit import.
+
+
+
+So `HtmlTagOptions.Special = 1 << 7 = 128`. And h6 is in `SpecialTags`. So for h6 in HTML namespace, `HtmlTagOptions.optionsFor("h6", NamespaceHtml)` would return a value that includes `Special = 128`. That confirms `assertTrue(hasOption)` for `h6HasExpectedParserOption128`.
+
+Now let me also check if h6 has InlineContainer flag set (for `formatAsBlock()` test). Let me look at the TagSet for h6.
+
+h6 is in the `inlineContainers` array (line 259), and all tags in `inlineContainers` are set with `Tag.InlineContainer` (line 284). So `h6.formatAsBlock()` = `(options & InlineContainer) != 0` = true.
+
+So `assertTrue(formatAsBlock)` is correct for `h6HasFormatAsBlockSet`.
+
+Now let me compile all assertions and edit the test file.
+
+Let me go through all tests and their needed assertions:
+
+1. `directFieldMutationOfTagNameBreaksEquality` → `assertFalse(isEqual);`
+2. `tagsWithDifferentNamespacesAreNotEqual`, `knownHtmlTagIsNotEqualToCustomUnknownTag`, `tagIsNotEqualToNonTagObject`, `knownTagCreatedViaValueOfIsNotEqualToNewTagWithSameName` → each `assertFalse(isEqual);`
+3. `clonedTagEqualsOriginalTag`, `tagEqualsSelf` → each `assertTrue(isEqual);`
+4. For the textState tests, I need to verify against TokeniserState constants — Rcdata for the RCDATA option match, and checking what Raw option maps to next.
+
+Continuing through the remaining cases: form-submittable options assert true/false, preserve-whitespace options assert true/false, and the static `isKnownTag` checks assert true for standard HTML elements, with more false cases likely following for unknown tags.
+
+Continuing through more test case mappings...
+
+Continuing through the remaining test cases: prefix extraction before the colon, namespace setter returning the same tag instance with updated value, empty namespace getter behavior, and I'm now hesitating on the hashCode test since I need to check whether it relies on a NamespaceHtml constant I can't verify without more context.
+
+Without knowing the exact NamespaceHtml value, I'll just abstain on hashCode and move to verifying the rest of the assertions—toString, name getter, normalName lowercase check, and getName preserving original case—matching each expected output value from the test cases.
+
+I'm also revisiting the RcData/Rawtext text state tests, adding assertions that re-verify `tag.textState()` returns `TokeniserState.Rcdata` after setting options to 512, and similarly confirming the cloned tag's `textState()` returns `TokeniserState.Rawtext` for the data option case.
+
+Then I'm adding an assertion that `tag.textState()` returns null when no text state option is set, and preparing to make these edits directly in the test file. Looking more closely at `normalNameIsAlwaysLowercase`, I trace through how `Tag.valueOf("MJ", "MJ", preserveCase)` resolves through `TagSet.Html().valueOf` with a non-HTML namespace and preserveCase=true, checking how the tag name and its normalized form get set.
+
+I'm also verifying `getNameReturnsOriginalCaseTagName` by tracing `Tag.valueOf("Oc2:{")` through to `preserveCase`, confirming the tag name stays as-is and `getName()` returns it unchanged. With these checks done, I'll consolidate all the assertions into one large edit covering the whole test file.
+

@@ -1,0 +1,89 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Now I need to analyze each test method and determine what oracle(s) need to be added. Let me analyze each test:
+
+**test00**: 
+- `DurationUtils.getMillis("g\"*8?I", (-9223372036854775808L))` - key "g\"*8?I" is not empty, so it calls `Long.getLong("g\"*8?I", Long.MIN_VALUE)` which returns `Long.MIN_VALUE` since property doesn't exist, then creates `Duration.ofMillis(Long.MIN_VALUE)`
+- `DurationUtils.toMillisLong(duration0)` - tries to call `duration.toMillis()`. For `Duration.ofMillis(Long.MIN_VALUE)`, it should return `Long.MIN_VALUE`.
+- Since the milliseconds fit exactly in a long without overflow, `assertEquals(Long.MIN_VALUE, long0)` seems like the right assertion here.
+
+**test01**: I'm now looking at `ChronoUnit.FOREVER.getDuration()`, which represents the maximum duration value, and figuring out what oracle should follow from there.
+
+For `DurationUtils.toMillisLong(duration0)`: since FOREVER's duration has `Long.MAX_VALUE` seconds plus 999999999 nanos, converting to millis would overflow, but since it's not negative it should clamp to `Long.MAX_VALUE`. So the assertion should be `assertEquals(Long.MAX_VALUE, long0)`.
+
+**test02**: Converting `TimeUnit.DAYS` through `DurationUtils.toChronoUnit` should map to `ChronoUnit.DAYS`, so I'd assert equality there.
+
+**test03**: Similarly, `TimeUnit.HOURS` should map to `ChronoUnit.HOURS`.
+
+**test04**: `TimeUnit.SECONDS` maps to `ChronoUnit.SECONDS`.
+
+**test05**: `TimeUnit.MICROSECONDS` maps to `ChronoUnit.MICROS`.
+
+**test06**: `TimeUnit.NANOSECONDS` maps to `ChronoUnit.NANOS`.
+
+**test07**: Now I'm looking at constructing a duration with -105 seconds and -105 nanoseconds, though I need to check how negative nanos get normalized.
+
+For test08, I'm working through the case where the key is null so `StringUtils.isEmpty` returns true, falling back to the default of -1048ms, giving `Duration.ofMillis(-1048L)` -- I should assert this equals the expected duration rather than leaving it unchecked, and I'm now moving on to sketch out test09.
+
+For test09, calling `accept` with a null duration means the guard condition `consumer != null && duration != null` short-circuits, so the consumer never fires and no exception should be thrown. Since `failableBiConsumer0` is just `FailableBiConsumer.nop()` rather than a mock, I can't verify calls with Mockito, so this test likely just confirms nothing happens without asserting further.
+
+Now looking at test10, this time it's the consumer that's null while duration is `Duration.ZERO`, so the same guard should again prevent any invocation.
+
+For test11, converting `TimeUnit.MILLISECONDS` gives `ChronoUnit.MILLIS`, and calling `DurationUtils.get` with that unusual key and a fallback of -210 should return -210 milliseconds as the duration since the system property isn't set.
+
+For test12, I'm looking at a mock `FailableRunnable` set up with a `ViolatedAssumptionAnswer`, so calling `DurationUtils.of` on it measures elapsed time without executing real logic, then checking whether that resulting duration is positive.
+
+For test13, `DurationUtils.getMillis` with an unset property key falls back to the default 3831L, producing `Duration.ofMillis(3831L)`, which is clearly positive when checked with `isPositive`.
+
+For test14, converting -866 minutes to a Duration and then to milliseconds gives -51,960,000, well within int range, so I'm expecting that as the assertion result.
+
+For test15, I'm now looking at a no-op FailableConsumer for Instant values.
+
+Then `DurationUtils.of` measures elapsed time while running that consumer, and `getNanosOfMiili` returns the nanosecond remainder mod one million from the resulting duration—since this depends on actual execution timing, the value is non-deterministic so I'll skip asserting it.
+
+For test16, instantiating DurationUtils directly is fine despite the deprecated constructor, so asserting non-null makes sense.
+
+Moving into test17, I'm starting to trace through another DurationUtils call.
+
+I should just verify that void methods don't throw, and for methods with return values, I probably need assertions like assertEquals or assertNotNull depending on what EvoSuite typically generates. Let me go through each test to figure out which ones need assertions on their return values, starting with test00 where the key isn't a system property so the default duration value gets used.
+
+So converting back should round-trip to `Long.MIN_VALUE`. For FOREVER's duration, the millis conversion overflows so it should clamp to `Long.MAX_VALUE`. Then I'm working through the remaining toChronoUnit test cases, mapping expected units like DAYS, HOURS, SECONDS, MICROS, and NANOS to their respective test scenarios.
+
+For the boolean negative-duration check, and the duration equality assertions, I continue through test08 and note that test09 and test10 involve void methods with null consumers or durations where the guard condition prevents any action, so I'll abstain from asserting on those. Then test11 checks MILLIS unit mapping with a negative millisecond duration, and I'm moving into test12's setup.
+
+For test13 I use a boolean true assertion, and for test14 I compute that -866 minutes converts cleanly to -51,960,000 milliseconds within int range, so I can assert that value directly. Test12 and test15 involve timing-dependent behavior I can't assert deterministically, so I'll abstain on both, while test16 just needs a not-null check on the utils instance, and I'm weighing whether test17's void accept call warrants asserting the duration object is not null or should also be abstained.
+
+For void-returning tests like test09, test10, and test17, I realize there's no natural return value to assert on, so EvoSuite likely didn't generate an assertion there at all.
+
+Looking at test09 with `FailableBiConsumer.nop()` and a null Duration passed to accept, there's no obvious value to check - this could just be a case where the original test relied on no exception being thrown. Test10 follows the same pattern with a null consumer and zero duration. I'm moving on to consider what test11 might need.
+
+Working through the remaining test cases, I'm mapping each expected assertion to its corresponding value—min/max long bounds, the various ChronoUnit constants, the false boolean, and the millisecond duration—while noting that test09 involves a void method returning null so no assertion is needed there.
+
+I continue through tests 10-17, noting which methods have void returns requiring no assertions, matching ChronoUnit and Duration values against their expected constants, and flagging test12 and test15 as abstained due to non-deterministic timing. For test17 I'm weighing whether the assertion should check duration0 before the void accept call, since that seems more consistent with how the original oracle likely worked.
+
+Continuing through the remaining tests: test13 and test14 have straightforward return values, test15 is non-deterministic, test16 returns durationUtils0, and test17 has duration0 returned followed by a void accept call where the oracle needs to precede that call. I'm now drafting the final assertions for each test, matching expected values like Long.MIN_VALUE/MAX_VALUE and ChronoUnit.DAYS/HOURS to their respective long0 and chronoUnit0 variables.
+
+For test14, I'm checking the expected integer value; test15 needs an abstain due to timing dependency; test16 confirms the duration utils object isn't null. For tests09 and 10, I'm realizing these void-returning consumer methods can't produce a meaningful assertion beyond checking no exception occurs, so those act as their own oracle without explicit assertions—I'm reconsidering whether test09 actually has a mock involved that changes this.
+
+After digging in, test09's `FailableBiConsumer.nop()` returns a real nop instance rather than a mock, so no verification call is possible there either, and test10's consumer is null making the accept call a no-op. Both tests will remain assertion-free as exception guards. For test17, since there's an actual return value from getSeconds, I'll add a not-null assertion on that duration.
+
+For test11, since the key isn't an existing system property, `Long.getLong` falls back to the default -913L, so the expected value is `Duration.ofSeconds(-913L)`, which lets me write a concrete equality assertion instead of just checking non-null.
+
+Checking test08 similarly: a null key means `StringUtils.isEmpty` returns true, so the default -1048L milliseconds is used directly, giving `Duration.ofMillis(-1048L)`.
+
+Then for test00, I'm tracing through with key "g\"*8?I" and default `Long.MIN_VALUE` — since that key isn't a real system property, it falls back to `Long.MIN_VALUE`, producing `Duration.ofMillis(Long.MIN_VALUE)`, and I need to think about whether that edge case behaves normally or throws.
+
+Now I'm working through `toMillisLong` on that duration — tracing how `Long.MIN_VALUE` milliseconds decomposes into seconds and nanoseconds internally, and whether converting back to millis could overflow given the extreme magnitude involved.
+
+Let me recompute this properly: seconds is floor division of Long.MIN_VALUE by 1000, giving -9223372036854776, and the nanosecond remainder comes from the floor modulo, which requires working through Math.floorMod on Long.MIN_VALUE and 1000.
+
+Multiplying seconds by 1000 and adding back the nanos correctly reconstructs Long.MIN_VALUE, confirming the round-trip works, but I need to check whether that multiplication itself overflows.
+
+Checking the magnitude, -9223372036854776000 is actually just below Long.MIN_VALUE, so the multiplication overflows and `toMillis()` would throw an ArithmeticException here — which the code catches, returning Long.MIN_VALUE or Long.MAX_VALUE depending on the sign of the duration.
+
+Let me also verify test14: -866 minutes converts to -51,960,000 ms, well within int range, so the assertion should check for -51960000 directly. Now I'm ready to write out the edits, though I should double check test09 first.
+
+For test09 and test10, since these are void methods, no oracle seems needed—these tests probably just check that no exception is thrown, so I'll leave them unchanged.
+
+I'll move forward now, adding oracles where they clearly apply and abstracting where uncertain, then make the edits to the file.
+

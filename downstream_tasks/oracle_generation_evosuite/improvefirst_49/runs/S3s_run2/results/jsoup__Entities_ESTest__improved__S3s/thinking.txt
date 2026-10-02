@@ -1,0 +1,96 @@
+Let me start by reading the masked test file to understand what tests are present and where oracles need to be added.
+
+Now I need to analyze each test and add appropriate oracles. Let me go through each test:
+
+1. `test00_escapeEmptyStringReturnsEmpty` - `Entities.escape("")` should return empty string `""`
+2. `test13_escapeNullStringReturnsEmpty` - `Entities.escape((String) null)` - this might return empty string or throw NPE. Looking at the method name "escapeNullStringReturnsEmpty", it should return `""`
+3. `test08_escapeDoubleQuoteAndLessThanInDefaultHtmlMode` - `Entities.escape("^du^X\"w<", settings)` - should escape `"` as `&quot;` and `<` as `&lt;`. Result: `"^du^X&quot;w&lt;"`
+4. For apostrophe/ampersand handling in HTML mode, I expect `'` stays as-is while `&` becomes `&amp;`, giving `"K'?wQt&amp;"`.
+5. For the non-breaking space test in HTML mode, that character should become `&nbsp;`, so the string ends with that entity instead of the raw space.
+6. In XHTML mode, that same non-breaking space instead gets encoded numerically as `&#xa0;` rather than the named entity.
+
+I'm going through more test cases: XML syntax escaping angle brackets and apostrophes as numeric hex entities, plus checking how the section sign § gets converted to a named entity when the ASCII charset is used.
+
+Then I check the case of `≻` (U+227B), which lacks a named entity and falls back to hex form `&#x227b;`. For the appendable tests, I'm verifying that calling the escape method doesn't mutate the original `OutputSettings` object—the syntax should remain at its default HTML value afterward.
+
+test12 and test26 also check syntax and indentAmount defaults similarly. For CoreCharset test01, it seems the test just calls `byName("")` without capturing a result, so it's likely just verifying no exception is thrown rather than checking a specific return value.
+
+I'm looking at the test that calls `CoreCharset.byName("")` without capturing a result, since an empty string falls through to the fallback charset. Since the current test doesn't store the return value, I could add a variable to capture it and assert on the specific charset returned, since we're allowed to modify the test body to include an oracle.
+
+I'm working through each test individually now, figuring out expected escaped outputs based on empty strings, null inputs, and HTML-mode character substitutions like quotes and angle brackets converting to their entity equivalents.
+
+For the apostrophe/ampersand case, I'm noting that jsoup's base HTML escape mode doesn't escape apostrophes but does convert ampersands to `&amp;`. Now I'm checking whether the non-breaking space test actually contains a true NBSP character or just a regular space, since that distinction determines whether it gets converted to `&nbsp;`.
+
+I'm inferring the "yen " string must contain the actual Unicode NBSP character, since the test names reference non-breaking space escaping. So in xhtml mode NBSP maps to `&#xa0;`, while base HTML mode uses `&nbsp;`, and I'll trust the test comments rather than the visual rendering.
+
+Moving to other XML syntax escaping tests: for angle brackets, `<` and `>` become `&lt;` and `&gt;`; for apostrophe and ampersand, they become `&#x27;` and `&amp;` respectively, matching each expected output string.
+
+Then I'm working through ASCII charset encoding cases—checking that non-ASCII characters like § (section sign) map to their named HTML entities like `&sect;`, and unencodable characters like ≻ fall back to numeric hex entities like `&#x227b;` when no named entity exists.
+
+I'm also verifying that after calling escape on various appendable outputs (StringBuilder, Writer, FileWriter), the OutputSettings object itself remains unmutated—confirming the syntax stays HTML and the escape mode is preserved regardless of any negative option flags passed in.
+
+For the empty string case, I'm unsure what fallback the method returns, so maybe no assertion is needed there since the test name only claims it shouldn't throw. If the original test just calls the method without capturing or asserting on the result, that's likely intentional, meaning I shouldn't invent an oracle for it.
+
+Moving to test14, "shy" is itself a known entity name so findPrefix should return "shy" exactly. For test15, the scrambled input has no valid entity prefix, so the expected result is an empty string. Then test16 concerns codepointsForName returning zero for an unrecognized entity name.
+
+For test17 with "QUOT" in uppercase, I need to think about case sensitivity in HTML entities—since HTML5 does define "&QUOT;" as valid, jsoup may recognize this and return a double-quote character.
+
+For test24, the input is clearly gibberish that doesn't match any entity pattern, so it should return an empty string.
+
+Then for the isBaseNamedEntity check with "LQ2" as input, since that's not a recognized base entity, the result is false. Checking "sup2" for isNamedEntity, that's the superscript-2 character in the extended HTML5 entity set, so it returns true. Testing "|TM1yKJ" against isNamedEntity, since it's not a known entity, the result is false.
+
+Moving to the escape mode tests: codepoint 38 (ampersand) through base escape mode should map to "amp", and codepoint 62 (greater-than) through xhtml escape mode should map to "gt". Finally, unescaping "&lt;" should produce the literal "<" character.
+
+I'm also reconsidering the uncertain NBSP cases like test07 and test25 -- whether the output includes a literal space before the encoded non-breaking space depends on the exact input string, and without being able to verify the raw bytes I can't be fully certain which format applies.
+
+I'm second-guessing whether jsoup treats "QUOT" as case-sensitive—since `&QUOT;` isn't a standard HTML5 entity like `&quot;`, the lookup could fail and return an empty string instead. Still, I'll trust the test name "ReturnsDoubleQuoteCharacter" as the best signal and assert the result equals `"\""`.
+
+For the null escape test, since it's a plain `@Test` without an expected exception, jsoup likely handles null input gracefully rather than throwing an NPE, so I'll assert the result equals an empty string based on the test name "escapeNullStringReturnsEmpty."
+
+I also confirm the default syntax is `Document.OutputSettings.Syntax.html` and the default indent amount is 1, which I'll assert directly. Now I need to go through the file test by test and figure out exactly where to insert the missing assertions, starting with the ones I'm most confident about like the empty string result and the specific escaped character sequence.
+
+Continuing through the remaining tests, I'm noting more expected values with lower confidence—entity escaping cases like the section sign and quote conversions, plus one test that just checks it doesn't throw an exception.
+
+For test01, I decide against duplicating the call just to add an assertion since it would call the method twice unnecessarily—the test's existing behavior of not throwing is oracle enough on its own, so I'll mark it as abstained.
+
+Now checking test09 with the apostrophe: in jsoup's base HTML escape mode, only `&`, `<`, and `"` (in attribute context) get escaped, while `'` typically remains unescaped in text nodes.
+
+For test09, the apostrophe stays unescaped while `&` becomes `&amp;`, giving `"K'?wQt&amp;"`. Now I need to find the exact positions to insert these assertions and make the edits.
+
+
+
+I need to read the file again to see the exact content around this test.
+
+I see the issue - the "yen " string contains a special character that looks like a space but is actually a non-breaking space character (NBSP, U+00A0). The Edit tool couldn't find it because it wasn't matching the special character. I need to use the exact byte sequence.
+
+Let me try a different approach - I'll use line-based context to target the right location.
+
+The problem is the non-breaking space character in the string literal. The Edit tool is doing exact string matching, but the file has a special character that can't be typed directly. I'll need to use the Bash tool to make this edit with proper escaping.
+
+Let me try using Bash with `sed` or `python` to do the replacement. Actually, the tool restrictions say I can only run `bash build.sh` for Bash. Let me think about an alternative approach.
+
+Actually wait, I can use the Write tool to rewrite the file entirely. Let me read the full file content first and then write it with the correct assertions.
+
+But wait, there's a problem - if I read the file and try to copy the NBSP character, I'll see it but when I type it in Write, I might not be able to include the exact NBSP character.
+I realize both "yen" strings that look identical actually contain a non-breaking space instead of a regular space, which is why my edits keep failing to match. Since I can only run `bash build.sh`, I can't use sed or python directly, so I need another way to insert the literal NBSP byte sequence (0xC2 0xA0) into my edit string.
+
+Instead I'll try anchoring my edits on unique surrounding context, like the specific method name and the line right after it, so I avoid needing to match the NBSP character exactly.
+
+
+
+I'm restricted to just `bash build.sh`. I need another way to handle the NBSP characters in the Edit tool.
+
+Let me think - the Edit tool does string matching. The file has a NBSP character (U+00A0) in the string. When I type text in the Edit tool, the characters I type are standard ASCII. So to match the NBSP, I need to include the actual NBSP character in my old_string.
+
+Can I include a Unicode character directly in the JSON parameter? Yes! I can include the NBSP character by using the actual Unicode codepoint in the JSON string: `\u00A0`.
+
+JSON supports Unicode escapes like `\u00A0` which represents the non-breaking space character. So if I include `\u00A0` in my `old_string` parameter, it should match the NBSP in the file.
+I'll try writing "yen" followed by that escaped NBSP in my edit call and see if it matches correctly against the file's actual content.
+
+
+
+It worked! The `\u00a0` in the JSON string was interpreted as a NBSP character, matching the file content. Now let me continue with the other edits.
+
+For test07, I need to add `assertEquals("yen&#xa0;", result);` but again with the NBSP character in the "yen " string.
+
+The issue is that the "yen " in the second test also has a NBSP character. And also, the file has been modified since the first edit - I need to use the updated file content. Let me read the file to see the current state.

@@ -1,0 +1,85 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be filled in.
+
+Now let me analyze each test carefully to determine what oracles need to be added. I need to identify tests where behavior needs to be verified through assertions. Let me look through each test:
+
+1. **test00** - `parseWithRequiredOptionGroup_selectedOptionProvided_groupIsMarkedSelected` - The test parses and should check that the group is selected. But there's no assertion here. I could check that the group was selected or that commandLine is not null. But wait, the test doesn't even capture the return value! The code calls `parser.parse(...)` but the result is not assigned. So there's no result to assert on. However, I could assert that the group is selected.
+I'm going through each test one by one, noting that most parse calls don't capture assertions on the returned CommandLine, so I need to add checks like verifying the selected group value or asserting the commandLine isn't null where the result is captured.
+
+Working through the remaining tests, I'm noting which ones check option "c" has value "wt9", which ones just verify commandLine isn't null, and which are exception tests that already have their structure in place.
+
+Now I'm thinking through what oracles make sense to add overall: for tests where a CommandLine result is captured, asserting it's not null is the safe baseline, while test00 could instead check the selected group.
+
+Continuing through the remaining test cases: test07 checks the option value equals a specific special-character string, test10 expects a lone dash as the value, test12 treats a standalone dash as an argument rather than an option, and test13/test14 just verify the command line parsed successfully. Then I'm looking at test16, which involves a long option name containing an equals sign and requiring an argument.
+
+So `-c` becomes the short option with value "wt9" via equals sign. I'm working through several more test cases: unrecognized options with stopAtNonOption behavior, verifying hasOption and getOptionValue checks for options like "s4" and "s" with value "#" parsed from "-s#".
+
+Continuing through similar cases like the "-s-#\"J" concatenated option scenario, more stopAtNonOption checks, and confirming that setDeprecatedHandler returns the same builder instance for chaining. Now I'm about to look at how the exception handling works.
+
+For the exception tests, I realize the catch blocks already contain informational comments like "Missing argument for option: s" but don't need explicit message assertions -- the `fail()` call combined with catching the exception is sufficient proof it was thrown, so these tests already appear structurally complete. Checking whether the commandLine variable assignments in other tests still need their oracle assertions filled in.
+
+Going through tests 01 through 36, I'm identifying which ones parse a commandLine but never assert anything about it afterward -- these all need oracles added. Test00 has no captured result but could assert on group state, test29 is a void call needing no assertion, and test33 assigns a builder without checking it. For the majority where commandLine is returned, asserting it's not null seems like the safest, most broadly applicable oracle to add.
+
+Right, test00's parse result isn't captured, so the oracle should instead check the group state after parsing — `assertEquals("s", groupWithOption.getSelected())` fits the test name about the selected option being marked. I'll go through each test systematically now and write out the corresponding oracle assertion for it.
+
+For the remaining tests, the pattern is similar: check that `commandLine` is not null, then for cases where the option "s" should be recognized, assert `commandLine.hasOption("s")` is true, and where a value is expected, assert the specific value returned by `getOptionValue("s")`. Tests involving `stopAtNonOption=true` just need the null check since unrecognized options get silenced.
+
+Continuing through the remaining tests, I'm checking each for stopAtNonOption behavior and option matching, adding null checks and hasOption/getOptionValue assertions where relevant like test20's "s4" long option match and test25's "s" option with "#" value.
+
+Now I'm reconsidering test12 more carefully: a lone dash "-" gets treated specially in handleToken since it equals the DEFAULT_OPT_PREFIX rather than a real option, so it falls through to handleUnknownToken and ultimately gets added as a plain argument via addArg. With stopAtNonOption set to STOP mode, I need to verify what getArgs() should return in this case.
+
+For test13, "--" matches the DEFAULT_LONG_OPT_PREFIX exactly, which triggers skipParsing rather than adding it as an argument, so getArgs() should come back empty for that case.
+
+Now I'm looking at test00, which calls parse with an empty Properties object alongside an options group, so I expect nothing from the properties to affect the parsing outcome.
+
+For test15's scenario with `-s` selecting a required group, I expect groupWithOption.getSelected() to equal "s" after parsing.
+
+Moving to test16, I'm tracing through how "-c=wt9" gets parsed - stripping the leading hyphen, finding the equals sign position, and extracting "c" as the single-character option before it processes the value portion.
+
+For that option "c" the value "wt9" gets picked up since it accepts an argument, so I'm checking that hasOption returns true and getOptionValue returns "wt9" correctly.
+
+Now for test20, I'm tracing a required option with no argument being matched via a long option prefix "--s" and working through how getMatchingLongOptions resolves that partial token against the registered options.
+
+I don't have direct access to `Options.getMatchingOptions`, but the test name suggests that "--s" stripped to "s" partially matches "s4" since it starts with "s", so the match succeeds and `commandLine.hasOption("s4")` becomes true. Moving to test25, this one uses `-s#` where option "s" takes an argument.
+
+Tracing through the parsing logic: the token "s#" isn't a direct short or long option match, isn't a Java property since "s" only takes one arg, so it falls into concatenated option handling. There the "s" character matches the known option, and since the token length exceeds where the option character sits, the remainder "#" gets processed as the option's value.
+
+Now checking test26 with "-s-#\"J" where "s" is a boolean flag: it isn't a direct match either, so it goes through concatenated option handling. Since "s" has no argument, currentOption ends up null after processing, meaning the remaining characters don't get treated as a value despite the length mismatch.
+
+Following forward, it hits the "-" character which isn't a recognized option, so it falls into handleUnknownToken. Since stopAtNonOption is true and we're past index 1, it takes the substring starting there and treats it as a non-option argument, then flags parsing as stopped. So "s" ends up set, and I should be able to assert that hasOption("s") is true.
+
+Now I'm tracing through test04 with the argument "-=R};SP'-". Since it starts with a single hyphen but not double, it goes into handleShortAndLongOption, and after stripping the hyphen and locating the equals sign at position 0, the option name comes out empty which isn't valid as either a single-character or long option, so it falls through to handleLongOptionWithEqual for further parsing.
+
+For the exception tests, since the catch blocks already rely on `fail()` calls to verify the exception was thrown, I don't think we need extra assertions there unless we want to check the exception message content too.
+
+Since both throw broad `Exception` types like `MissingArgumentException`, the existing `catch (Exception e)` structure is sufficient without adding EvoSuite-style verification helpers.
+
+For the NullPointerException test, I notice the comment hints the message is "options" — matching how `DefaultParser.parse` uses `Objects.requireNonNull(options, "options")` — but since the catch block already targets `NullPointerException` specifically, that's adequate verification on its own. I'll move forward with writing the oracles now.
+
+Confirming test33: since `setDeprecatedHandler` returns `this`, the builder instance is unchanged, so `assertSame(builder, builderWithHandler)` holds. Now I'm going through each test one by one, adding specific assertions — checking selected options, verifying the command line is non-null and has the expected flags, and so on for each case.
+
+Adding more test assertions...
+
+Now I'm digging into test16's option parsing more carefully—tracing how the short and long option combo "-c=wt9" gets handled when passed as a single argument.
+
+After stripping leading hyphens and locating the equals sign, the parser recognizes "c" as the short option and processes "wt9" as its value, so `hasOption("c")` and `getOptionValue("c")` should both come back correctly. That confirms the expected oracle assertions here.
+
+Now I'm turning to test00, which calls the parser with a required group containing option "s", empty properties, and args set to just "-s".
+
+I realize the masked test file has no assertions at all in the test bodies, so I need to add them one by one to the end of each method with targeted edits. I'll work through the file methodically, adding assertion statements like checking that the required group's selected option equals "s" for test00, then move on to the next test.
+
+Adding more assertions...
+
+I'm checking test07 and test10 separately since they use different args arrays but the same parse call pattern, confirming they won't conflict with each other's assertions.
+
+After the `-s` option is parsed, the next token `-` needs to be checked: I trace through `isArgument` and `isOption` logic to confirm a lone dash is treated as a valid value rather than mistaken for an option prefix, since it fails the length checks for both long and short option detection.
+
+So the value ends up being "-" itself, unstripped of anything meaningful, confirming `getOptionValue("s")` returns "-" safely. Then I check the `--` and lone `-` test cases separately: `--` triggers skip-parsing with no leftover args, while a standalone `-` falls through to `handleUnknownToken` since it doesn't match option prefixes exactly.
+
+Looking at `handleUnknownToken` more closely, the first branch only throws for tokens starting with "-" that are longer than one character with THROW behavior, so a bare "-" doesn't match that and instead falls to the second condition where `token.equals("-")` makes it true, so it gets added as an arg. With `nonOptionAction` set to STOP, parsing halts and `getArgs()` returns `["-"]`, which is safe.
+
+This confirms `commandLine.getArgs()` returns `["-"]` for test12.
+
+Now checking test36, where an unrecognized short option "-s" is passed with stopAtNonOption enabled: since it starts with "-" but isn't ".", the addArg condition needs the length check to trigger, and I'm tracing through the length being greater than 1 to see if it gets added as an arg.
+
+With everything traced through, I'll now write the edits, making sure the surrounding context I use for each is large enough to be unique across similar test patterns.
+

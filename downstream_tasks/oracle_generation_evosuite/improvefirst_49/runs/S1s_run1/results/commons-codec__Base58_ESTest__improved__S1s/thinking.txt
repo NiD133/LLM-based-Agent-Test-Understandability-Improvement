@@ -1,0 +1,107 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Now I need to analyze each test and determine what oracles should be added.
+
+Let me go through each test:
+
+**test00_encodeAsString_withNegativeFirstByte_returnsString**: The comment says `// Unstable assertion: assertEquals("(jM", encoded);` - this was already marked as unstable, so it's commented out. No oracle needed here - the existing comment already handles this case. Actually wait, there is no oracle here - the test just verifies no exception is thrown. The comment says it's unstable. I should check if we need an oracle. Since it was commented out as unstable, I'll leave it or add `// ABSTAINED`.
+Actually looking closer, the double-comment format suggests this assertion was already flagged as non-deterministic, so the test just checks the method doesn't throw. Since oracles were stripped from all the tests, I need to go through each one systematically and figure out what assertion belongs based on the method being tested and its expected behavior.
+
+Going through each test without assertions, I'll decide where to add oracles. For test00, since I can't reliably recompute the exact encoded value and the original comment marks it unstable, I'll settle on adding a safe `assertNotNull(encoded)` check instead of guessing the exact string.
+
+For test01, the exception is already caught and verified with `fail`, so no extra assertion is needed. For test02 with a negative length, I'm reasoning through the encode logic — a single zero byte should produce "1" as leading-zero encoding, so I'll add that as the expected result.
+
+I'm tracing through `convertToBase58` with an empty byte array and questioning whether constructing a BigInteger with signum 1 but zero-length magnitude is actually valid in Java, since that combination seems contradictory and might throw a NumberFormatException.
+
+Following the encode path with offset -20 and length -20, I trace how the negative length triggers an early return with EOF set true and an empty accumulate buffer, which then feeds into that same potentially-throwing BigInteger construction.
+
+A zero-length magnitude array yields a BigInteger of 0, so the loop that extracts digits never runs and the StringBuilder stays empty, meaning the encoded result is an empty byte array. So I should assert that the result is non-null but empty.
+
+For test02 through test04, I'm working through the oracles: test02 should check `assertNotNull(result)` or `assertEquals(0, result.length)`; test03 already has its oracle via the try/catch expecting ArrayIndexOutOfBoundsException; and test04 verifies that after an EOF signal, a subsequent decode call is a no-op since `context.eof` becomes true, so no assertions on the result are needed there, just confirming no exception is thrown.
+
+For test05, I'm computing the expected decoded bytes for "Dt2" by working out the Base58 value character by character, converting the sum to hex, and getting the resulting byte array {-87, 63}.
+
+Now I'm double-checking the decode table mappings by re-verifying each character's index against its expected value, since I want to make sure '1', '2', 'D', and 't' resolve correctly.
+
+Still mapping decode table values...
+
+I'm verifying that 't' maps to index 51 in the base62-style alphabet, then starting to decode "Dt2" by checking for leading '1's and processing the trailing digit.
+
+Working through the weighted sum for the three characters, I get a total value of 43327, or 0xA93F, which decodes into the two bytes 0xA9 and 0x3F — that is, -87 and 63 as signed values.
+
+I'll add assertions checking the decoded array isn't null, has length 2, and matches these two byte values.
+
+Now I'm working through test06: decoding "t2" gives value 2959, and converting to bytes yields a two-element array since the leading byte isn't zero.
+
+For test07, the exception test already has a complete try/catch/fail structure with expected message comments, so the oracle pattern looks solid there.
+
+Moving to test08: decoding "11" has two leading ones and nothing after, so the value stays at zero and the result is a two-byte array of zeros. Then I'm starting to look at test09's builder setup.
+
+For test09, `setEncodeTable` should return the builder itself for chaining, so `assertSame(builder, returnedBuilder)` is the right assertion. For test10, I'm uncertain about the exact constant being tested since I don't have the precise value for something like MIME_CHUNK_SIZE, so the assertion there is less clear.
+
+For test11, the string being checked contains characters like '%', '0', and 'x' that aren't valid Base58 characters, so `isInAlphabet` should return false, making `assertFalse(result)` the correct oracle.
+
+For test12, encoding 18 zero bytes should produce 18 leading '1' characters since each zero byte maps to '1' in Base58. So the oracle checks `assertNotNull(encoded)`, `assertEquals("111111111111111111", encoded)`, and `assertEquals(18, encoded.length())`.
+
+Test13 just verifies that `Base58.builder()` returns a non-null builder with `assertNotNull(builder)`. Now I want to track down where MIME_CHUNK_SIZE is defined in BaseNCodec to finish the earlier test properly.
+
+
+
+Good. `MIME_CHUNK_SIZE = 76`. The test is named "verifyMimeChunkSizeConstant" so it likely checks that `BaseNCodec.MIME_CHUNK_SIZE == 76`.
+
+Now let me also look at the `isInAlphabet(String)` method in BaseNCodec to confirm behavior.
+
+The `isInAlphabet(String)` method calls `isInAlphabet(byte[], boolean)` with `allowWhitespacePad = true`. It returns `true` if all characters are valid characters in the alphabet OR whitespace/PAD. 
+
+The string is "Invalid character in Base58 string: 0x%02x". Let's check:
+- 'I' (0x49=73) - look at the DECODE_TABLE: position 73 is 'I' which is excluded from Base58. DECODE_TABLE[73] = -1. So 'I' is NOT in alphabet. Whitespace? No. 
+
+So the method returns false, meaning `assertFalse(result)` fits.
+
+For the builder chaining test, I'm reasoning that `setEncodeTable` should return `this` so it supports fluent chaining, meaning `assertSame(builder, returnedBuilder)` is the right check—I want to verify the type hierarchy for `Builder` and `AbstractBuilder` to confirm this holds.
+
+For the MIME chunk size test, I'm expecting `assertEquals(76, BaseNCodec.MIME_CHUNK_SIZE)` alongside a not-null check on the codec.
+
+For the all-zeros encoding test, I'm working through why 18 zero bytes should produce a string of eighteen '1' characters, since each leading zero appends a '1' and there's no remaining value to encode—so the expected result is `assertEquals("111111111111111111", encoded)`.
+
+Now I'm going through each remaining test method one by one, adding the specific assertion each needs: null and length checks for decoded byte arrays, an EOF flag check, and confirming which tests already have their fail() patterns covered without needing more oracles.
+
+I'm reconsidering test04 more carefully though—tracing through what happens when decode is called with a negative length signaling EOF, followed by a subsequent no-op decode call, to figure out what state the context should be in afterward.
+
+Since the test title implies checking that eof becomes true and the second decode is a no-op, I'll place the oracle after both calls, but I need to verify whether the `eof` field on Context is actually accessible for assertion.
+
+
+
+`Context` is a `static class Context` (package-private, not public) and `eof` is a package-private field. Both the test and the context are in the `org.apache.commons.codec.binary` package, so it should be accessible.
+
+Wait, the test file is in the package `org.apache.commons.codec.binary` and Context is a static class in BaseNCodec also in `org.apache.commons.codec.binary`. So `context.eof` should be accessible from the test.
+
+Now let me also verify the eof check is in the decode method:
+```java
+void decode(final byte[] array, final int offset, final int length, final Context context) {
+```
+
+I see the method returns early if `context.eof` is already true, which means after the first call with negative length (-98), `context.eof` gets set to true, making the second call with `(buffer, 88, 71, context)` effectively a no-op. So the oracle checking `assertTrue(context.eof)` after both calls should hold. Let me trace through the first call more carefully: with length negative, it should set eof to true right away.
+
+Confirmed: when context.buffer is null initially, it defaults to EMPTY, giving length 0 and no conversion, so context.pos stays 0 and context.buffer is empty — the eof assertion should pass. For test05 decoding "Dt2", I expect a 2-byte result of [-87, 63], so I'll add assertions checking decoded isn't null and has length 2. Now I'm working through test06 with "t2", starting with the character at index 0.
+
+With two leading '1's, the loop condition becomes false immediately, so value stays 0 and decoded is empty, giving result {0, 0}. So I can assert the decoded array equals a two-byte zero array. Now I want to gather all these oracles together and start editing the file, but first let me double check test02 since encode uses the BaseNCodec method with offset and length parameters.
+
+
+
+Let me look at the encode method with offset/length parameters more carefully.
+
+For test02: `codec.encode(input, -20, -20)` where `input = new byte[1]` (single zero byte).
+
+Looking at `encode(byte[], int, int)`:
+1. `BinaryCodec.isEmpty(array)` - array is `new byte[1]`, so not empty (length 1). Returns false.
+2. `encode(array, -20, -20, context)` - this calls the 4-arg encode with length=-20 (negative)
+   - length < 0: true
+   - context.eof = true
+   - accumulate = EMPTY (context.buffer is null)
+With an empty byte array, the BigInteger conversion yields zero with no leading zeros, so the base58 encoding loop never executes and produces an empty string, resulting in a zero-length encoded byte array with no position change in the buffer.
+
+The follow-up call with EOF simply returns immediately since context.eof is already set, and reading from the buffer yields nothing—so the final result is an empty byte array. I'll verify with assertEquals(0, result.length) since that check alone guarantees non-null.
+
+Now I'm working through the remaining test assertions one by one: checking non-null and length for decoded arrays across several tests, confirming eof flags get set properly, verifying builder identity is preserved, validating the MIME chunk size constant, and checking boolean and string return values for the later cases.
+

@@ -1,0 +1,85 @@
+Let me start by reading both the masked test file and the CUT (class under test) to understand what needs to be done.
+
+Now I need to analyze each test and determine what oracle to add:
+
+**test00**: `encodeAsString` with negative first byte - the comment says `// Unstable assertion: assertEquals("(jM", encoded);` - since it's marked unstable, I should abstain.
+
+**test01**: Exception test - already complete with `fail()` and catch. No oracle needed.
+
+**test02**: `encode(input, -20, -20)` - negative length signals no data (EOF). Looking at the encode method, when `length < 0`, it sets `context.eof = true` and calls `convertToBase58`. But here the public `encode(byte[], int, int)` method is called - let me check if that's from the parent class `BaseNCodec`. Let me look at the parent class.
+Since `Base58` extends `BaseNCodec`, I'm considering that a negative length in `encode(byte[], offset, length)` likely yields an empty result array, based on typical codec behavior where no actual data means nothing gets encoded.
+
+With no bytes and no leading zeros, the BigInteger value is zero, the loop never executes, and nothing gets appended, so the result collapses to an empty byte array. That matches the test case calling encode with negative offset and length, which triggers EOF handling and produces an empty output since convertToBase58 receives an empty buffer.
+
+I don't have the BaseNCodec source in front of me though — I should track that down to confirm the method signature.
+
+
+
+Now I have a complete picture. Let me analyze each test and determine what oracle to add:
+
+**test00**: `encodeAsString` with data[0] = (byte)(-115). The comment says `// Unstable assertion: assertEquals("(jM", encoded);` - since it's marked unstable, I should abstain.
+
+Actually, looking at the test more carefully - the comment says "Unstable assertion" which means the original oracle was there but was marked as unstable. Since I cannot determine the oracle with confidence (it could change based on encoding), I should abstain.
+
+Wait, but let me think about this. data[0] = (byte)(-115) = 0x8D, data[1] = 0x00. 
+
+Trying to manually compute the base58 encoding of these bytes, converting to BigInteger and dividing by 58 repeatedly to get the digits, but I'm not confident my manual result matches the expected "(jM" from the comment.
+
+Since that test case is marked unstable with a possibly variable value, I should abstain there rather than assert an oracle. Moving to test02, which calls encode with a negative length -20, triggering the EOF path — buffer stays empty, and convertToBase58 processes an empty byte array where the BigInteger value is zero with no leading zeros, which I need to trace through the encoding loop.
+
+Tracing through the second call with EOF=-1, it sets eof true and calls convertToBase58 on empty bytes, which since context.eof is already true, returns immediately without advancing pos. So buf ends up sized zero, confirming the empty byte array result.
+
+For test02, I should add a real assertion like checking result is empty rather than just storing it unused. test03 already covers the exception case properly, and test04 seems to complete without needing explicit assertions since neither operation throws.
+
+For test04, since the decode method sets context.eof to true when it encounters a negative length, then the second call should be a no-op because eof is already true - I could add assertTrue(context.eof) as a meaningful oracle here. Now I'm moving to test05, computing what decode("Dt2") should produce by converting the string to its byte representation and working through the decoding logic.
+
+Continuing with 'D', the digit 12 contributes 40368, giving a total value of 43327, which equals 0xA93F. Converting that to bytes yields [0xA9, 0x3F] since it fits neatly in two bytes.
+
+After stripping the leading zero byte, decoded becomes [0xA9, 0x3F], two bytes total, so I expect the test to assert a decoded length of 2. Moving to test06 with "t2", I'm tracing through the leading-ones count and digit accumulation to work out the expected value.
+
+For test06 I compute the total as 2959, verify its byte representation doesn't need a leading zero pad since it fits without the high bit set, and conclude decoded should also be 2 bytes long with an assertEquals(2, decoded.length) oracle. Test07 is already complete as an exception test, so I'm moving on to test08's decode case.
+
+For decode("11"), both characters are leading ones so leadingOnes=2 and the main loop range is empty, giving value=0 and an empty decoded array; the result becomes a zero-filled byte array of length 2, so the oracle checks length equals 2 and the first byte equals 0. Then for test09 I'm tracing that setEncodeTable returns the Base58.Builder itself, so returnedBuilder should be the same object as builder.
+
+For test10, get() returns a Base58 codec instance, checked with assertNotNull, and possibly the MIME_CHUNK_SIZE constant of 76 is verified too. Then I'm moving into test11 which checks codec.isInAlphabet.
+
+Checking the test string with mixed valid and invalid characters, I'm tracing through the decode table to determine which characters like 'I' map to valid Base58 positions versus invalid ones.
+
+For the 18-zero-byte encoding test, I'm confirming that with 18 leading zeros and a zero value, the result should be 18 consecutive '1' characters.
+
+Moving to the builder test, calling Base58.builder() should return a non-null Builder instance.
+
+For test00, I notice an unstable assertion comment suggesting the original assertion value may be unreliable, so I need to decide whether to abstain or compute the actual BigInteger value from the byte array [0x8D, 0x00] to verify what encoded string it should produce.
+
+I'm tracing through the base58 encoding algorithm, computing 141*256=36096, then dividing repeatedly by 58 to find the remainder digits and mapping them against the encode table characters.
+
+Continuing the division, I get 10 rem 10 → 'B', giving the reversed string "BjM" -- but that doesn't match the expected "(jM" from the comment, so I need to double-check my byte-to-unsigned conversion for the signed value -115.
+
+Since '(' isn't even a valid Base58 character, this expected value might come from a different implementation or input entirely, possibly from an unreliable EvoSuite-generated assertion. I'm leaning toward abstaining on this test case and instead tracing through the actual encode method logic, starting with its empty-array check.
+
+Tracing the call chain: encode(array,0,2) accumulates the two input bytes [0x8D, 0x00] into the context buffer, then the EOF call triggers conversion to Base58 by first constructing a BigInteger from those bytes, which comes out to zero given the byte pattern.
+
+Working through the Base58 conversion of 0x8D00 (36096), I get repeated division by 58 yielding remainders that map to characters 'M', 'j', 'B', which reversed gives "BjM" as the final encoded string. This contradicts the comment claiming the result is "(jM", so I suspect the comment is simply incorrect and lean toward abstaining rather than trusting it.
+
+The double-slash pattern in "unstable assertion" comments indicates it was already disabled, meaning there's no reliable oracle to check against. Since my computed value doesn't match the commented one and the test is explicitly flagged as unstable, I'll abstain on this case and move on to compiling the rest of the oracles.
+
+Working through the remaining tests, I'm assigning assertions where I have confidence—checking null/empty results, decoded array lengths, exception completion, EOF flags, encoded string values, and builder/codec object identities—while continuing to build out this list test by test.
+
+Tracing through test04's decode calls, both invocations end up setting context.eof to true since the length is negative and buffer stays empty, so no actual accumulation happens. I can assert context.eof is true afterward, since the test lives in the same package and Context's fields should be accessible.
+
+For test05, I'm manually tracing convertFromBase58 on the bytes for "Dt2" — checking leadingOnes count and looking up each character in the decode table to figure out the expected output.
+
+Continuing the base58 decode... digit=51, then value updates to 2959 with power 3364; next byte 'D' decodes to 12, updating value to 2995.
+
+I'm converting the final accumulated value to bytes: 43327 becomes 0xA93F, but since BigInteger's toByteArray adds a leading zero byte for sign purposes, I need to strip that leading zero to get the correct two-byte result [0xA9, 0x3F].
+
+Then I trace through test06 with "t2": computing leadingOnes as 0, then accumulating digit values to get 2959, which converts cleanly to [0x0B, 0x8F] without needing a sign-stripping step since the first byte is already under 0x80.
+
+For test08, decoding "11" (both leading '1' characters) gives leadingOnes=2 and an empty decoded value, producing a two-byte zero-filled result — matching the expected length and zero-byte assertions.
+
+Now I'm checking test11, which verifies the error message format for an invalid character in the Base58 string.
+
+For test12, encoding 18 zero bytes: the BigInteger value is 0, leadingZeros equals 18, so the loop appends '1' eighteen times, producing a palindromic string of all '1's for the encoded output.
+
+Now I'm ready to write up the edits.
+

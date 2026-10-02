@@ -1,0 +1,91 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Now I understand the code. Let me analyze each test and determine what oracles need to be added.
+
+**test00** - Creates a PipedReader connected to PipedWriter, creates ReaderInputStream, closes it. No oracle needed - this just tests that close() doesn't throw an exception.
+
+**test01** - Creates a Builder, sets a byte array, calls get(). No oracle needed - tests that build succeeds.
+
+**test02** - Creates StringReader with "{/", creates ReaderInputStream with null CharsetEncoder, reads one byte. No explicit oracle. The read() method reads from the stream. Since the string is "{/", this should return the byte value of '{' (which is 123). However, with null CharsetEncoder it defaults to a default encoder. 
+
+With null CharsetEncoder defaulting to UTF-8, reading "{/" byte by byte should give 123 for '{'. But there's no assertion in the test as written - it just calls read() and stores the result without checking it, so no oracle appears needed here either.
+
+For skip: "t" is one character/byte, so skip(1884) should skip 1 byte and return 1, suggesting the oracle should be assertEquals(1L, long0). Now looking at another test with two operations involving skip(727L) on an empty stream.
+
+For test04, skipping in an empty stream returns 0, and reading afterward returns -1, so the oracles are likely assertEquals(0L, long0) and assertEquals(-1, int0).
+
+For test05, reading into a 6-byte array from "3t8FoIT,\",/" should return 6, and then I need to check what available() returns afterward by looking at its implementation checking for remaining bytes in the encoder buffer.
+
+I'm tracing through the fillBuffer logic to figure out how much data remains after the first read call.
+
+I'm re-checking the fillBuffer logic: it reads chars, sets endOfInput on EOF, flips encoderIn, compacts encoderOut, then calls encode with the current endOfInput flag—only flushing once endOfInput is actually true.
+
+So 6 bytes get copied out, leaving encoderOut with 5 remaining bytes, meaning available() should return 5. That gives int0=6 and int1=5, matching what I'd expect for this trace.
+
+**test06**: The catch block already handles the IllegalArgumentException case, so no oracle is needed there.
+
+**test07**: Since `setCharset` returns `this`, `readerInputStream_Builder1` should be the same object reference as `readerInputStream_Builder0` — the oracle here would be an assertSame check on those two builder variables.
+
+**test08 & test09**: Both check that `getCharsetEncoder()` returns a non-null value for a freshly created builder and stream respectively — straightforward `assertNotNull` oracles.
+
+**test10**: I'm working through the `available()` logic for a stream that hasn't been read yet — since `encoderOut` starts empty right after being flipped, I need to determine whether `hasRemaining()` is true or false to know what `available()` returns.
+
+Since flipping a newly allocated buffer sets both position and limit to zero, `hasRemaining()` is false, so `available()` correctly returns 0 — oracle: `assertEquals(0, int0)`.
+
+**test11**: `setCharsetEncoder` returns `this` from the builder, so the oracle should be `assertSame` confirming the returned builder is identical to the original. I'm checking how `setCharsetEncoder` processes the new encoder internally to confirm this behavior.
+
+**test12**: Constructing a `ReaderInputStream` with a null charset name defaults to the platform default charset — this test just verifies construction succeeds without needing an oracle.
+
+**test13**: Calling `read(byte[], int, int)` with a zero-length array short-circuits to return 0 immediately, since the implementation explicitly checks for `len == 0` before attempting any read.
+
+Now I'm reconsidering test03, where a one-character string "t" is read through a `StringReader`, and `skip(1884L)` is called on the stream. Since `ReaderInputStream` extends `AbstractInputStream`, I need to figure out how `skip()` behaves there — typically it reads and discards bytes up to the requested count or until the stream is exhausted.
+
+Since only 1 byte is available, `skip(1884)` should return 1, so the oracle should be `assertEquals(1L, long0)`.
+
+For test02, with input "{/" and a null charset encoder (which should default to `CharsetEncoders.toCharsetEncoder`'s default), calling `read()` should return the first byte, '{' (123), giving the oracle `assertEquals(123, int0)`. Now I want to revisit test04 with similar scrutiny.
+
+With an empty string input, `skip(727L)` should hit EOF immediately since there's nothing to skip, returning 0, and a subsequent `read()` call should return -1. So the oracles would be `assertEquals(0L, long0)` and `assertEquals(-1, int0)` -- though I want to double check how `skip()` actually behaves internally, since it relies on filling the buffer and checking whether any bytes were produced before hitting end of input, to make sure this reasoning holds up against the real implementation.
+
+
+
+OK, so `AbstractInputStream` doesn't override `skip()`, so it uses `InputStream.skip()`. The default `InputStream.skip(n)` implementation:
+- Creates a byte array of size min(n, 2048)
+- Calls `read()` on it
+- Continues until n bytes are skipped or EOF
+
+For test03 with "t" (1 byte in UTF-8):
+- `skip(1884)` will try to skip 1884 bytes
+- Creates skip buffer of 1884 bytes (or 2048, whichever is smaller)
+- Actually `InputStream.skip()` in Java 11+ may use different sizes, but typically 2048 is the max skip buffer size
+- Reads 1 byte then hits EOF, so it returns 1 for that call.
+
+For test04 with an empty string, skip(727) reads zero bytes immediately due to EOF, so I'm tracing through how the default skip implementation accumulates and returns that remaining count.
+
+Given the loop logic, remaining stays at 727 and the method returns 727 - 727 = 0, so long0 is 0L for test04, while test03 gives long0 = 1L since one byte ("t") gets skipped before EOF.
+
+Now for test02 with "{/", using a null encoder, I'm working through how ReaderInputStream falls back to the default charset encoder and reads the first byte from '{'.
+
+That first byte comes out to 123, matching ASCII for '{'. For test05, I'm tracing through reading "3t8FoIT,\",/" into a 6-byte buffer, expecting read() to return 6 filled bytes, then working through what available() reports based on the internal encoder buffer state after that first fill.
+
+Continuing to trace through: the reader pulls all 11 characters from the input string, then the buffer gets flipped and compacted before encoding begins with `endOfInput` still false.
+
+The encoding converts those 11 ASCII characters to 11 bytes with an UNDERFLOW result, then flips the output buffer so the read loop can pull 6 bytes into the destination array, leaving `read=6` and returning that count since we're not yet at EOF.
+
+Checking `available()` afterward: the encoderOut buffer still has 5 bytes remaining (position 6, limit 11), so it returns 5.
+
+For test10, right after construction and before any reads, encoderOut starts empty (position=0, limit=0 after flip), so `available()` correctly returns 0.
+
+Now I'm working through which tests need explicit oracles versus which just verify construction/close behavior without exceptions.
+
+Still writing oracles...
+
+For test12, no oracle is needed since it just tests construction. Test13 checks that reading into an empty array returns 0.
+
+I'm reconsidering test01 - since a byte array is set via setByteArray but ReaderInputStream needs a Reader, the builder should still handle creating one internally, and since the result isn't used for assertions, no oracle is needed there either. I want to double back and reconsider test02 before finalizing.
+
+Looking closer at test02, the constructor passes a null CharsetEncoder, which gets converted to the default charset encoder via CharsetEncoders.toCharsetEncoder rather than staying null. Since the underlying string starts with "{/", reading the first byte in UTF-8 should return 123 for '{', so the oracle should be assertEquals(123, int0).
+
+Now I'm going through the remaining tests to figure out which assertions are deterministic: test03 expects 1 byte read for "t", test04 expects 0 bytes with -1 returned, test05 expects 6 and 5 for two reads, test10 expects 0 available bytes before any read occurs, and I'm checking test13's expected value too.
+
+For the less certain ones - test02's '{' character maps to 123, test07 and test11 use assertSame since Builder methods return `this`, and test08/test09 just verify the charset encoder isn't null since it's initialized from the default charset internally.
+

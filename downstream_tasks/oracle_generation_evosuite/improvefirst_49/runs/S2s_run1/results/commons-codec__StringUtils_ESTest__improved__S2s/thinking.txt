@@ -1,0 +1,117 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Now I understand the CUT (StringUtils) and the test file. Let me analyze each test method and determine what oracles need to be added:
+
+1. `newString_nullBytesAndNullCharset_returnsNull` - calls `StringUtils.newString((byte[]) null, (String) null)` - when bytes is null, returns null. Need `assertNull(result);`
+
+2. `newStringIso8859_1_nullBytes_returnsNull` - calls `StringUtils.newStringIso8859_1((byte[]) null)` - when bytes is null, returns null. Need `assertNull(result);`
+3. `getBytesUnchecked_nullString_returnsNull` returns null for a null string input, needing `assertNull(result);`
+
+4. `getBytesUnchecked_unsupportedCharset_throwsIllegalStateException` already has a try/catch with fail, so the exception itself serves as the oracle -- no additional assertion needed.
+
+5. `getByteBufferUtf8_nullString_returnsNull` returns null for a null string input, needing an assertNull check as well.
+
+Going through the equals tests now: comparing a CharBuffer of two null chars against a different string should be false, comparing a string against a CharBuffer wrapping the same content should be true, comparing a CharBuffer with spaces between characters against the ASCII input should be false, and comparing a non-null charBuffer against null should also return false -- each needs the corresponding assertTrue or assertFalse.
+
+I'm also mapping out several more cases: null versus non-null is false, comparing the same reference is true, and empty string versus a non-empty string is false. For the UTF-16LE-to-UTF-8 decoding test, I'm working through how each ASCII character becomes a byte pair with a null byte when encoded as UTF-16LE, producing an interleaved string when misread as UTF-8.
+
+I notice the test just assigns `decodedAsUtf8` without an assertion, so I need to figure out what check the test name "producesNullByteInterleavedString" implies—likely verifying the string is non-null and has the expected doubled length of 34 characters with null bytes interleaved between each original ASCII character.
+
+Confirming the math: 17 ASCII characters each become two bytes in UTF-16LE (char byte + 0x00), giving 34 bytes total, which decode as UTF-8 into 34 characters alternating between the original ASCII chars and null characters. So `assertNotNull(decodedAsUtf8)` seems like a safe minimal assertion, though the test name suggests something more specific about the null-byte interleaving pattern.
+
+Since UTF_16LE doesn't add a BOM, I'll confirm the assertion as `assertEquals(34, decodedAsUtf8.length());`.
+
+Now moving to the empty string UTF-16 test — since Java's UTF_16 charset does prepend a BOM even for empty input, encoding "" should yield just those 2 BOM bytes rather than zero bytes, so I need to check what the test name actually expects before asserting anything.
+
+The test name conflicts with actual Java behavior though—it's likely mislabeled, since the real output is a 2-byte BOM array, not an empty one.
+
+I'm weighing options: trust the misleading test name and assert zero length, assert non-null safely, assert the actual 2-byte BOM result, or just abstain given the uncertainty. Since this is likely an EvoSuite-generated test, it may just check a basic property rather than the exact byte count, so I lean toward figuring out what assertion pattern is most consistent with typical EvoSuite output for this method.
+
+The test name suggests the expected result is empty, so I'm double-checking the implementation—it's just a thin wrapper calling `getBytes` which delegates straight to `string.getBytes(charset)`, confirming there's no special-casing for empty strings that would produce a zero-length array.
+
+In Java, encoding an empty string with UTF-16 actually returns the byte order mark, `[0xFE, 0xFF]`—two bytes, not zero. Given this mismatch with the test name, I'll go with the safest assertion, `assertNotNull(result)`, since I want something that's guaranteed true regardless of the naming discrepancy.
+
+So for an empty string, the result would just be the 2-byte BOM, meaning the test name "returnsEmptyByteArray" is actually misleading since the array isn't truly empty. Given this uncertainty about whether EvoSuite's naming reflects a bug or just poor labeling, I'll play it safe with a minimal assertion like `assertNotNull(result)` rather than asserting a specific length I'm not fully certain about.
+
+Moving on to test 15 for `getByteBufferUtf8_nonNullString_returnsHeapByteBuffer` with a sample string input, I just need `assertNotNull(result)` since the method returns a non-null ByteBuffer. Now looking at test 16 for `getBytesUtf8`.
+
+For `getBytesUtf8_emptyString_returnsEmptyByteArray`, an empty UTF-8 string produces 0 bytes, so `assertEquals(0, result.length);` matches the test name correctly. Test 17, `constructor_deprecatedInstantiation_succeeds`, needs no oracle since it just checks the constructor doesn't throw. Test 18 involves `getBytesIso8859_1_thirteenCharString_returnsThirteenBytes` with a thirteen-character input string.
+
+For test 19, `newStringUtf16_fourZeroBytes_returnsTwoNullCharString`, I'm reasoning through how four zero bytes get decoded as UTF-16 - since [0,0] isn't a valid BOM, Java defaults to big-endian, which turns [0,0,0,0] into two null characters.
+
+The same logic applies to tests 20 and 21 for UTF-16BE and UTF-16LE explicitly - four zero bytes still decode to two null characters in each case, so all three need assertions checking the length is 2 or that the result equals two null characters. I'm now moving on to the next test about encoding a seventeen-character string as US-ASCII bytes.
+
+26. `getBytesUtf16Le_thenDecodeAsUtf8_producesNullByteInterleavedString` - the test builds 34 bytes from the 17-char ASCII input, encoding each char as UTF-16LE then decoding as UTF-8, which interleaves each original char with a null char. I'll assert the decoded result has length 34.
+
+For `getBytesUtf16_emptyString_returnsEmptyByteArray`, I'm second-guessing the name versus actual behavior -- in Java, encoding an empty string as UTF-16 actually returns 2 bytes for the BOM rather than zero bytes, so the test name may be misleading relative to what EvoSuite actually observed at runtime.
+
+Java's standard library guarantees the BOM for UTF-16 encoding, so I'll settle on `assertEquals(2, result.length);` there. For the constructor test, it just calls `new StringUtils()` with no result variable, so no assertion is needed—the test verifies it doesn't throw. Now I'm compiling my full list of oracle additions: null checks for the byte/charset methods, null returns for ISO-8859-1 conversions, and similar assertions for the unchecked byte methods.
+
+Continuing through the equals tests, I'm adding assertTrue/assertFalse assertions for each CharBuffer comparison scenario—same reference, matching content, null vs non-null, and empty vs non-empty strings.
+
+Then I move to encoding tests, verifying byte array lengths and null-handling across UTF-16LE, UTF-16 (with BOM), UTF-8, and ISO-8859-1 conversions, checking both empty-string and non-empty-string cases produce the expected byte counts.
+
+Checking the four zero bytes case more carefully: with no BOM present, UTF-16 decoding defaults to big-endian, so four zero bytes become two null characters, confirming the length-2 assertion is correct.
+
+Similarly for the US-ASCII case, two zero bytes decode to two null characters. But I'm reconsidering the empty-string UTF-16 encoding test — since Java always writes a BOM when encoding UTF-16, the "empty byte array" result should actually be 2 bytes, not 0, so I need to check whether that expectation in the test name is accurate before finalizing the oracle.
+
+Since compile-check only verifies compilation and not runtime behavior, I'll go with the safer, non-contradictory option: `assertNotNull(result)` for the empty-string UTF-16 test, avoiding committing to a specific byte count that conflicts with the misleading test name.
+
+Now I'm working through the UTF-16LE-to-UTF-8 decoding test, examining how the byte array is being constructed for that scenario.
+
+Since the ASCII input has 17 characters, encoding to UTF-16LE produces 34 bytes (each ASCII char followed by a null byte). Reading those 34 bytes back as UTF-8 gives a 34-character string alternating real characters with null characters, so the correct oracle is asserting the decoded string's length equals 34.
+
+Now I'm ready to work through each remaining edit: adding null assertions after calls like `StringUtils.newString`, `newStringIso8859_1`, `getBytesUnchecked`, and `getByteBufferUtf8` when passed null inputs, confirming each should assert the result is null.
+
+For the `equals` comparisons, I need to add the appropriate boolean assertion based on whether the CharSequence inputs actually match — asserting false for mismatches and true when the values are equal, continuing this pattern across each test case.
+
+Adding more assertions...
+
+Adding more assertions...
+
+I'm also verifying the 13-character ISO-8859-1 test string counts out correctly, and planning to make the edits individually rather than as one big replacement, though I want to double-check the UTF-16 byte-length oracle before finalizing.
+
+Reconsidering, "Empty" in the test name likely refers to the input string being empty, not necessarily the output byte array. With that reading, `assertEquals(2, result.length)` fits UTF-16's BOM behavior. For the UTF-8 case though, `"".getBytes(UTF_8)` truly produces a zero-length array, so `assertEquals(0, result.length)` is correct there.
+
+I'm confident in this analysis now and ready to proceed with the edits.
+
+
+
+The issue is likely a Unicode character. Let me look at the exact bytes in the file. The "Ú " string contains a non-ASCII character. I need to use the exact bytes when editing.
+
+Let me try a different approach - I'll read the file and check the exact characters there.
+
+Actually, the issue is that the "Ú " string likely uses a different Unicode representation. Let me try to match using different surrounding context.
+
+The Bash tool is restricted. Let me try a different approach to edit the file. The issue is with the Unicode character "Ú". Let me try to work around this by using a broader context match or by editing a different part.
+
+Let me try replacing from the line before to include the line before and the line after the problematic character.
+
+Actually, the `Edit` tool note says it "tried swapping \uXXXX escapes and their characters; neither form matched". This suggests there's something else different in the file vs what I'm providing as old_string. 
+
+Maybe the issue is with the whitespace or the string content around "Ú ". 
+
+I wonder if line 61 actually has a trailing space after "Ú" that I'm not accounting for correctly, so I should try matching on the surrounding braces and structure instead of that exact character sequence.
+
+I'll try matching on the surrounding unique lines instead, using the CharBuffer.wrap reference and the closing brace to anchor the edit.
+
+
+
+The issue is not just the Ú character - it seems even the surrounding context is not matching. Let me re-read the whole file to get the exact current state.
+
+I can see the current state of the file. The issue is that the "Ú " might have special Unicode characters that don't get matched correctly. Let me try a different approach - I'll rewrite the entire file using the Write tool.
+
+Looking at the file:
+- Lines 24-28: newString_nullBytesAndNullCharset_returnsNull - DONE, has assertNull
+- Lines 30-34: newStringIso8859_1_nullBytes_returnsNull - DONE, has assertNull
+- Lines 36-40: getBytesUnchecked_nullString_returnsNull - DONE, has assertNull
+- Line 42+: several more test cases still need their assertion statements filled in (assertFalse, assertTrue, assertEquals, assertNotNull) for equals and byte-encoding tests, while a few others like getBytesUnchecked_unsupportedCharset and getByteBufferUtf8_nullString are already complete.
+
+Now I'm suspecting the Edit tool is failing because of encoding mismatches with special characters, so I'm considering switching to a different matching strategy since I can't blindly overwrite with Write without reading first.
+
+Since I've already read the file, I realize I can safely use Write to add all the missing oracles at once, being careful to preserve the special "Ú" character exactly as it appears. I'll rewrite the entire file in one pass rather than continuing with individual Edit calls that keep failing.
+
+I bet the mismatch is because the line boundaries I was targeting for the replacement don't actually align with the real file content — the closing brace and test method declaration around lines 62-65 don't match what I assumed was there.
+
+Since the Edit tool isn't matching either version, it's probably simplest to just rewrite the whole file with Write, since I already have its contents from reading it.
+

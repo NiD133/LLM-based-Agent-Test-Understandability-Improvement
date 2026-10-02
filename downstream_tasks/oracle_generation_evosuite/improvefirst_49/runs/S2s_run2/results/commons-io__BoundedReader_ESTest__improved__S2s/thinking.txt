@@ -1,0 +1,36 @@
+Let me start by reading both the test file and the class under test to understand what needs to be verified.
+
+Now I need to analyze each test and determine the correct oracle:
+
+**test0:**
+- Creates a `StringReader` with "KnLjCdWGnB@(}p3qC" (17 chars)
+- Creates a `BoundedReader` with bound=1
+- Calls `read(buffer, 1, 1)` — reads 1 char starting at offset 1
+- Since bound is 1, we can read at most 1 character; trying to read 1 char should succeed
+- The `read(cbuf, off, len)` method loops `len` times (1 time here), calls `read()`, and if it returns a char, puts it in the buffer and returns `len` (=1)
+- Since charsRead starts at 0 and the bound is 1, the first read succeeds and charsRead increments to 1, giving oracle `assertEquals(1, charsRead)`
+
+**test1:**
+- Creates `StringReader` with "" and `BoundedReader` with bound=511
+- Calls `reader.reset()`, which resets charsRead and markedAt to -1 before delegating to super.reset()
+
+Then I trace through skip(511), which bumps charsRead to 510 since the underlying empty reader has nothing to skip, followed by mark(511) setting readAheadLimit to 1 and markedAt to 510. Checking the subsequent read() call, both bound conditions evaluate false, so charsRead increments to 511 before delegating to the underlying reader's read.
+
+Now I'm reconsidering the reset() behavior: since markedAt starts at INVALID (-1), charsRead resets to -1, and I'm working out whether StringReader.reset() without a prior mark defaults back to position 0 rather than throwing.
+
+Tracing through, skip(511) pushes charsRead to 510 even though the empty reader itself skips nothing, and then mark(511) sets markedAt to 510 with a readAheadLimit of 1. Checking the subsequent read() call against these bounds, neither the max-chars condition nor the read-ahead-limit condition triggers, so charsRead simply increments to 511.
+
+Working through test1's final read(), calling super.read() on the empty StringReader returns -1, so the expected result is -1.
+
+For test2, I'm setting up a PipedReader with no connected writer, wrapping it in a BoundedReader with bound=-1, then calling read(buffer, 1, 1) — since maxCharsFromTargetReader is -1, the very first read() call immediately hits EOF, so the loop returns -1 right away.
+
+Now for test3, I'm setting up a StringReader containing a short string, wrapping it with a BoundedReader bound at 481, and then calling reset() on it.
+
+After reset, calling skip(481) pushes charsRead well past the bound even though the underlying StringReader only had a few characters to actually skip. Then mark(1) is called, setting up a negative readAheadLimit relative to the already-inflated charsRead. When read() is called next, both the bound check and the mark/readAheadLimit check end up triggering EOF, so the result should be -1 again, matching what the test's comment seems to be verifying about EOF behavior once the bound is exceeded.
+
+So skippedChars should be 4, matching the test's expectation of skipping past all available characters. The test hasn't added an assertion for this value yet, but the comment about "skipping past all 4 characters" confirms this reasoning. I need to trace through BoundedReader's skip logic again to verify this against the actual implementation.
+
+Tracing test0's loop, charsRead ends at 1 after reading one character, so that oracle should be `assertEquals(1, charsRead);`. That gives me all four oracles: test0 checks charsRead=1, and tests1-3 check result=-1, though I'm considering whether test3 also needs the skippedChars=4 assertion.
+
+I'll add assertions for both `skippedChars` equaling 4L and `result` equaling -1, since the comment confirms that after skipping past all 4 characters and marking with a limit of 1, reading one more exceeds the read-ahead limit.
+

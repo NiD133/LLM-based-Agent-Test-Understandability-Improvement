@@ -1,0 +1,119 @@
+Let me start by reading the masked test file to understand what needs to be filled in.
+
+Now I need to analyze each test method and determine what oracle (assertion) should be added. Let me go through each test:
+
+1. `previous_throwsNoSuchElementException_whenIteratorIsEmpty` - This is an exception test, already complete with try/catch pattern.
+
+2. `next_throwsNoSuchElementException_whenIteratorIsEmpty` - Same, already complete.
+
+3. `add_throwsUnsupportedOperationException` - Same, already complete.
+
+4. `remove_throwsUnsupportedOperationException` - Same, already complete.
+
+5. `set_throwsUnsupportedOperationException` - Same, already complete.
+6. For `hasNext_returnsFalse_whenNoElementsMatchPredicate`, I need `assertFalse(hasNext)` since no elements match. For `hasNext_isIdempotent_whenCalledTwice`, the name implies calling it twice should return the same true result, so `assertTrue(secondHasNext)`. For `hasNext_returnsFalse_afterForwardAndBackwardTraversal`, I'm working out what assertion the test name implies about traversal state.
+
+Going through the remaining test names methodically: `returnsFalse` after forward/backward traversal with a single-element list exhausted via `next()` calls means `assertFalse(hasNext)`. Similarly, `hasPrevious_returnsFalse_afterHasNext_whenElementIsBufferedForward` needs `assertFalse(hasPrevious)`, `hasPrevious_returnsTrue_afterNextFollowedByHasPrevious` needs `assertTrue(hasPrevious)`, and `hasPrevious_returnsFalse_afterHasNextOnNestedFilterIterator` needs `assertFalse(hasPrevious)`. I'm continuing to infer the expected assertion directly from each test's descriptive name.
+
+The test name suggests hasPrevious reverses the buffered position, so after next() then hasPrevious(), the iterator has effectively moved backward past the single element, meaning hasNext() would find nothing ahead in the underlying iterator and return false.
+
+The `FilterListIterator` state machine tracking buffered next/previous objects is genuinely intricate, but given the test's explicit name asserting that `hasNext()` returns false after `hasPrevious()` reverses the buffered position, I'll just trust that description and go with `assertFalse`.
+
+index should presumably be 0, but there's no captured variable for assertion in that test — it likely just checks no exception is thrown, or perhaps should assert `nextIndex()` equals 0.
+
+14. `nextIndex_returnsZero_forNewEmptyIterator` - needs `assertEquals(0, nextIndex)`.
+
+15. `previousIndex_returnsNegativeOne_forNewEmptyIterator` - needs `assertEquals(-1, previousIndex)`.
+
+16. `setListIterator_updatesIter...` - still working through this one.
+
+For the remaining cases: `previousIndex` should stay -1 after `setListIterator`, so the oracle is likely `assertEquals(-1, iterator.previousIndex())`. `getPredicate_returnsNull...` needs `assertNull(predicate)`, and `getListIterator_returnsNull...` needs `assertNull(listIterator)`. For `setPredicate_doesNotThrow_andNextIndexRemainsZero`, since nothing's captured, the oracle should be `assertEquals(0, iterator.nextIndex())`.
+
+Now I'm finalizing decisions across the hasNext/hasPrevious test cases, matching each to its appropriate assertTrue/assertFalse oracle based on the traversal scenario described.
+
+I'm less confident about tests 7 and 8, so I'm working through the one-element list scenario carefully to figure out what state the filter iterator is in after calling next() to determine the correct assertion.
+
+I'm puzzling over the contradiction: after buffering backward, `hasNext()` scanning forward should find the same element and return true, but the test name claims it returns false. This suggests either the test name is misleading or there's a buffering mechanism in FilterListIterator that marks that element as already "consumed" so `hasNext()` won't re-match it until `next()` is actually called again.
+
+Tracing through further, `previous()` matches the element and sets it as found, then `hasNext()` calls the underlying `next()` again, which also matches and returns true — contradicting the test name suggesting `hasNext()` should return false. I'm second-guessing whether I'm misreading the test name, since the logic keeps pointing to `hasNext()` returning true in this scenario.
+
+I'm torn between trusting the test name versus my own analysis, since they conflict on whether hasNext should return true or false here. Given the uncertainty, I should abstain on this particular oracle rather than guess wrong, and move on to evaluate my confidence on the next test case involving forward and backward traversal.
+
+Iterator.hasNext()` scans forward from position 1, finds nothing after the single element, and returns false as expected for that test.
+
+For the hasPrevious test, though, after next() and hasPrevious() the underlying position should be back at 0, so hasNext scanning forward would find the element and return true - which contradicts the test name suggesting it returns false. That's a discrepancy I need to reconcile.
+
+Thinking about the ListIterator contract more carefully: if next() returns element E, then previous() should return that same E again, and a subsequent next() should also return E again - not skip past it. Given this uncertainty about how the implementation actually buffers and tracks the returned element, I think it's safer to abstain on this particular test case rather than guess wrong.
+
+The second iterator consumed the only shared element, so the underlying iterator is exhausted and `hasNext()` correctly returns false — I'm confident in `assertFalse(hasNext)` here. That settles all four test cases: `assertFalse` for the no-match case, `assertTrue` for idempotent double-calling, and `assertFalse` for the forward-backward traversal case, with the fourth still pending.
+
+I'm continuing through the remaining test cases, resolving `hasPrevious` assertions for buffered-forward and nested-iterator scenarios, though one case around reversing buffered position after `hasPrevious` I'll leave abstained since I'm uncertain. Then I move into `nextIndex`/`previousIndex` cases, confirming these should reset or start at zero for empty and fresh iterators.
+
+For test 7, I'm revisiting how the internal state of FilterListIterator tracks the returned element after `next()` and how `hasPrevious()` checks backward against that buffered object.
+
+I'm leaning toward marking test 7 as abstained since I can't be certain whether the implementation clears its buffered object when `hasPrevious()` runs. This makes me want to compare it against test 5, which follows a similar `next()` + `hasPrevious()` sequence.
+
+Comparing test 5 and 7: if `hasPrevious()` is true after `next()` + `hasPrevious()`, but `hasNext()` is false, that would mean the element sits in a previous-buffer while nothing is in the next-buffer, and forward scanning finds nothing — which only makes sense if the underlying cursor sits past the element rather than before it.
+
+Maybe `hasPrevious()` peeks backward temporarily, then restores position by calling `next()` again, buffering the found element as `previousObject`. This would explain both why `hasPrevious()` returns true and why `hasNext()` returns false afterward, since the underlying position stays at 1 with nothing ahead.
+
+Now I'm tracing test 4: starting with the underlying iterator at position 0 with no buffers, `hasNext()` scans forward, matches an element at position 1, and buffers it as `nextObject`.
+
+So the buffering convention seems to be: `nextObject` means the underlying has already passed that element (position after it), while `previousObject` means the underlying has scanned backward past it (position before it). When `hasPrevious()` runs after this, it calls `previous()` on the underlying, moving from position 1 back to 0 and returning that same element, which matches the predicate and gets set as `previousObject` -- but now the underlying sits at position 0 again.
+
+That contradicts the "returnsFalse" test name, and I keep flip-flopping on the reasoning. I'll just abstain on test 7 since I can't pin down confident behavior. The test names likely come from EvoSuite-generated tests capturing actual runtime behavior, later made more descriptive, so they should reflect what really happens -- but the name could still be subtly misleading about which state it's really testing.
+
+Tracing through `setPreviousObject()`, it scans backward via `iterator.previous()` until the predicate matches, setting `previousObjectSet` and `previousObject` if found, otherwise returning false. So the position of the underlying iterator after this call depends on where the matching element was found relative to the start.
+
+Looking at `setNextObject()`, it mirrors this by scanning forward via `iterator.next()` until a match is found. If `hasPrevious()` already left the underlying iterator at position 0, then calling `hasNext()` afterward would scan forward and correctly find the element, returning true -- so by this analysis `hasNext()` should indeed return true.
+
+But I'm second-guessing whether `next()` alone (without a prior `hasNext()` call) affects the underlying iterator state differently, since in that path `nextObjectSet` starts false and the method has to search for the next match itself.
+
+Tracing it out: `next()` scans forward, moving the underlying iterator to position 1, and returns the match, leaving both `nextObjectSet` and `previousObjectSet` false. Then `hasPrevious()` scans backward, moving the underlying iterator back to position 0, and sets `previousObjectSet` true. A subsequent `hasNext()` call finds `nextObjectSet` false, so it scans forward again, moving the underlying iterator to position 1.
+
+The predicate matches, so `nextObjectSet` becomes true and `hasNext()` returns `true` -- but the test name claims it should return false, which is confusing given the logic doesn't seem to consume anything during `hasPrevious()`. I'm wondering if there's some subtlety in how the state is set up after `next()` that I'm not accounting for.
+
+Let me trace through the actual `next()` implementation to see how `nextObjectSet` gets toggled...
+
+Without the actual source available, I'm reasoning about what fits the test name semantically: `hasNext_returnsFalse_afterHasPreviousReversesBufferedPosition` suggests that calling `hasPrevious()` reverses whatever forward position `next()` had buffered, which would explain why a subsequent `hasNext()` finds nothing.
+
+But following the state through, going backward past the element and then forward again should logically re-encounter it and return true—unless the implementation intentionally avoids re-yielding an element right after a direction reversal to prevent confusion. Given this genuine 50/50 uncertainty in my analysis, I'm inclined to abstain on this one, though let me take one more pass at the test setup with fresh eyes before deciding.
+
+Maybe `hasPrevious()` uses a peek-and-restore pattern: it calls `previous()` to find the candidate element, buffers it, then calls `next()` again to restore the original position. That would leave the underlying iterator sitting past the element, explaining why a subsequent `hasNext()` finds nothing and returns false.
+
+Checking with underlying at position 0 trying to go backward, `hasPrevious()` returns false since it can't retreat further -- that matches test 4 where hasPrevious returns false after buffering forward.
+
+But then I realize `next()` actually advances iteration rather than just peeking, so a simple peek-and-restore model can't be right for it. I need to reconsider the buffering approach entirely.
+
+Since `previousObjectSet` is false, it tries scanning backward with `iterator.previous()`, which fails at the boundary and returns false, matching test 4's expectation. For test 5, calling `next()` directly moves position to 1 without buffering, then `hasPrevious()` scans backward to verify a previous element exists.
+
+Tracing test 7 next: after `next()` then `hasPrevious()` leaves position at 1 with `previousObjectSet = true`, calling `hasNext()` afterward scans forward from position 1, finds no more elements, and correctly returns false.
+
+This confirms the "peek-and-restore" model — both `hasPrevious()` and `hasNext()` search past the underlying position but restore it afterward, leaving the buffered flags to drive subsequent calls. Now I want to double-check this holds for test 3 as well.
+
+Tracing through test 3: after `filterIterator.next()` advances the underlying iterator, `filterIterator.hasPrevious()` peeks backward and restores, so the underlying position stays put. But wrapping a second `FilterListIterator` around that same `listIterator` and calling `next()` on it would scan forward from that position — and if there's nothing left, it should throw a `NoSuchElementException`, which contradicts the test expecting no exception. So I need to reconsider whether the peek-and-restore model actually holds here, or if something else is happening with how the underlying iterator's state is shared between the two wrappers.
+
+Trying the restore model instead: if `hasPrevious()` peeks backward and restores position, test 7 checks out — after `next()` to position 1, `hasPrevious()` peeks to 0 and restores to 1, so `hasNext()` correctly returns false. But this breaks test 3, where `secondIterator.next()` from position 1 should have nothing to return yet the test expects success, so something about this restore assumption still doesn't fit.
+
+Testing this against test 7 breaks it though — hasNext() from position 0 would find an element and return true, contradicting the expected false. So this model doesn't work either.
+
+Let me reconsider by introducing a buffered state: maybe hasPrevious() scans backward without restoring, but marks that a previous element was just found, and hasNext() checks that flag first before scanning forward.
+
+That speculation isn't quite working, so let me reconsider the natural model: FilterListIterator buffers a next element and a previous element separately, where `setNextObject()` scans forward leaving the underlying iterator past the found element, and `setPreviousObject()` scans backward leaving it just before the element, with `next()` using the buffered next value when available.
+
+Tracing through `hasPrevious()` then `hasNext()`, I find the underlying iterator lands on position 1 with `nextObjectSet = true`, meaning `hasNext()` evaluates to true for test 7 — yet the test name implies it should be false, so I'm stuck reconciling that contradiction.
+
+That element finding means it returns true, which contradicts the expected `returnsFalse`. So the two test names only make sense if `hasNext()` checks `previousObjectSet` and treats it as a signal to return false when set. I'm trying to recall Apache Commons' actual FilterListIterator implementation—it tracks `nextObject`/`nextObjectSet` and `previousObject`/`previousObjectSet`, and after scanning backward the underlying cursor sits before the buffered element, with `hasNext()` checking `nextObjectSet` first before scanning forward.
+
+Since I can't verify the exact interaction between `previousObjectSet` and `hasNext()` without the source, and both interpretations have some justification, I'm leaning toward abstaining rather than guessing. Let me also trace through test 3 under my "natural" model to see if it holds up consistently.
+
+Working through it, test 3 checks out under that model. But when I apply the same reasoning to test 7, it predicts `hasNext()` returns true right after a `hasPrevious()` call — yet the test name implies it should be false, which contradicts my model.
+
+I'm speculating that `hasNext()` might explicitly return false whenever `previousObjectSet` is true, since alternating `next()`/`previous()` calls could otherwise return the same element repeatedly, risking infinite loops in typical usage patterns.
+
+Let me finalize my answers for each test based on the descriptive test names, trusting they reflect actual runtime behavior: hasNext returns false when nothing matches the predicate, hasNext is idempotent on repeated calls, hasNext returns false after forward-then-backward traversal, and hasPrevious returns false after hasNext when an element is buffered forward.
+
+Continuing through the list, hasPrevious returns true after next followed by hasPrevious, hasPrevious returns false after hasNext on a nested filter iterator, hasNext returns false after hasPrevious reverses the buffered position, previous after next resets nextIndex to zero, nextIndex returns zero for a new empty iterator, previousIndex returns negative one for a new empty iterator, and setListIterator updates the iterator's previousIndex accordingly.
+
+For test 7, since the name says "returnsFalse" and that's consistent with a peek-and-restore implementation for hasPrevious, I'll assert false for hasNext. Now I'm adding these oracles to the file.
+

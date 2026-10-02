@@ -1,0 +1,54 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be tested.
+
+Now I understand the structure. Let me analyze each test case and determine what oracles should be added:
+
+**test00**: Sets MILLI_OF_SECOND to 0. No obvious return value to check. The test just checks that it doesn't throw. I could check the instant after calling set, but we don't know the exact value easily. Since it starts at epoch, setting MILLI_OF_SECOND to 0 shouldn't change anything. We could assert `assertEquals(Instant.EPOCH, mutableClock0.instant())` - yes, EPOCH already has 0 ms, so it stays the same.
+
+**test01**: Creates a clock with `MockInstant.ofEpochSecond(-1034L, -1034L)` and zone MIN, then sets with adjuster (the instant itself). When you call `set(TemporalAdjuster adjuster)`, it does `ZonedDateTime.now(thisClock).with(adjuster).toInstant()`. Since the adjuster is an `Instant`, using `with(
+
+Instant)` on a `ZonedDateTime` adjusts directly to that instant, so the result should just be instant0 itself - I could assert `assertEquals(instant0, mutableClock0.instant())`.
+
+Now I'm working through how Java normalizes the negative nanosecond value in that epoch-second/nano pair, since -1034 nanos isn't a valid range and needs to roll back into the seconds component to get the actual normalized instant.
+
+Since the clock was constructed as `MutableClock.of(instant0, zoneOffset0)`, it already holds instant0 as its value, so calling `set((TemporalAdjuster) instant0)` on it is essentially setting it back to the same value it started with - meaning the operation should be a no-op and the clock's instant should remain unchanged.
+
+For the second test with `add(-1, ChronoUnit.DECADES)`, I'm considering how EvoSuite typically generates oracles for void methods - it usually asserts on the resulting object state rather than a return value, so I'd need to think about what state assertion makes sense here given the complexity of computing the exact resulting instant.
+
+For the third test involving `withZone(ZoneOffset.MIN)` called twice, I'm working through the equals logic - since both derived clocks share the same instantHolder and use the same zone, they should be equal according to the equals contract.
+
+For subsequent tests: two separately created `epochUTC()` clocks should be unequal since they have distinct instantHolder references; comparing a clock to a plain Object should be false; comparing a clock to itself should be true; and calling `withZone(ZoneOffset.UTC)` on a clock already using UTC should return the same reference since no zone change occurred.
+
+**test08**: `withZone(ZoneOffset.MIN)` produces a new clock that shares the same `instantHolder` but has a different zone, so equals returns false since the zone comparison fails even though the instantHolder reference matches.
+
+**test09**: `toString()` formats as `"MutableClock[instant,zone]"`, so for an epoch UTC clock that'd render as `"MutableClock[1970-01-01T00:00:00Z,UTC]"`.
+
+**test10**: after `setInstant(instant0)`, calling `instant()` should return the same value, so I could assert equality there.
+
+**test11**: `hashCode()` returns an int, but since it likely depends on identity hash, I can't assert a fixed value—only that it's consistent across calls.
+
+**test12**: adding `Duration.ZERO` shouldn't change the instant, so the clock should remain at `Instant.EPOCH`.
+
+For test00, setting `MILLI_OF_SECOND` to 0 on epoch leaves the instant unchanged since epoch already has zero milliseconds. For test01, setting an `Instant` directly as the adjuster should make the clock return that same instant. For test02, subtracting a decade from epoch requires figuring out the resulting date using `ZonedDateTime` arithmetic in UTC starting from 1970-01-01.
+
+Counting leap years between 1960 and 1969 (1960, 1964, 1968), I get 3653 total days, or 315,619,200 seconds before epoch, but I'm not confident enough in this calculation to commit to it, so I'll abstain on that assertion. For test03 checking clock equality, the boolean should be true, so I'll assert that directly.
+
+For test04, comparing clocks built from different `epochUTC()` calls means different instant holders, so equality should be false. Test05 checks inequality against a plain Object, test06 confirms a clock equals itself by reference, and test07 verifies that calling `withZone` with the same UTC zone returns the same instance via `assertSame`.
+
+Moving on, test08 checks that clocks with different zones aren't equal, test09 verifies the toString format for an epoch UTC clock, and test10 confirms that after setting an instant, `instant()` reflects that value. Test11's hashCode output is unpredictable so I'm abstaining from asserting on it, and test12 checks that adding a zero duration leaves an epoch clock unchanged.
+
+For test01, since the clock starts at `instant0` and gets set to `instant0` again via the temporal adjuster interface, `instant()` should still equal `instant0`. For test07, I'm checking whether `withZone(ZoneOffset.UTC)` behaves as expected given that `epochUTC()` already uses UTC, so `ZoneOffset.UTC` and the clock's zone should be equal.
+
+I'm now confirming that since these zones match, `withZone` should return `this`, making `assertSame` pass. I'll abstain from test02 since computing the exact instant seems too risky, and for test00 I'm walking through how `set(MILLI_OF_SECOND, 0)` transforms the epoch datetime step by step.
+
+Since the epoch already has 0 milliseconds, setting it again leaves the instant unchanged, so `mutableClock0.instant()` should still equal `Instant.EPOCH`, and I'm checking whether the test relies on any mocked non-determinism that could affect this.
+
+For test09, I'm working out that `epochUTC()` yields `Instant.EPOCH` with `ZoneOffset.UTC`, so `toString()` should produce `"MutableClock[1970-01-01T00:00:00Z,UTC]"`.
+
+Wait, actually `ZoneOffset.UTC.toString()` returns `"Z"` not `"UTC"`, so I need to correct the expected string to `"MutableClock[1970-01-01T00:00:00Z,Z]"` instead. Now I'm turning to test11 for hashCode, which combines an identity hash of the instant holder with the zone's hash via XOR.
+
+Since identity hashCode is non-deterministic, I should be cautious there depending on whether EvoRunner mocks it.
+
+For test02, I need to manually compute the epoch instant after subtracting one decade — working through leap years from 1960 to 1970 to figure out the exact day count.
+
+Confirming 3 leap years (1960, 1964, 1968) and 7 non-leap years gives the same 3653 days and -315,619,200 epoch seconds. I'll include this assertion for test02, checking that 1960 divides evenly by 4 to verify it's a leap year.
+

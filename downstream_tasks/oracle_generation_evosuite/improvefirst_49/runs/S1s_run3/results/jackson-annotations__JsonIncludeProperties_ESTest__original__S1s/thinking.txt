@@ -1,0 +1,96 @@
+Let me read the masked test file and the class under test to understand what needs to be done.
+
+Now let me analyze each test method and determine what oracles should be added:
+
+**test00**: Creates a `Value` from a mock `JsonIncludeProperties` with `OptBoolean.FALSE` and empty string array. `src.order().asBoolean()` for `OptBoolean.FALSE` should return `Boolean.FALSE`. `_asSet(new String[0])` returns `Collections.emptySet()`. So the value should have empty set and `Boolean.FALSE`. What assertion could be there? Possibly checking some property of the resulting value. Let me think... The test just creates the value. There's nothing after the creation line. So there's no oracle needed unless one was removed at the end. 
+
+Since EvoSuite tests typically don't leave a variable unused, I'm guessing there's an `assertNotNull` on the resulting Value object, and possibly a check tied to the `OptBoolean.FALSE` behavior affecting the resulting boolean field.
+
+For test01, this test seems designed to trigger a `NullPointerException` from a null `order()` result, with the failure handling already wrapped in a catch block using `verifyException`.
+
+For test02, I'm tracing through the equals comparison: Value.from(null) yields ALL with null included/ordered fields, while the other Value has an empty set and null ordered field. I'm working through the equality checks step by step - class match succeeds, then comparing the ordered fields which are both null so that check passes.
+
+For test03, I'm setting up two JsonIncludeProperties.Value objects using the same LinkedHashSet but different boolean flags - one built from a string that parses to false, the other from Boolean.TRUE - then comparing them for equality.
+
+Since the `_ordered` flags differ (false vs true), equals should return false, so the oracle is `assertFalse(boolean2)`.
+
+For test04, both Value objects share the same set and same boolean, so equality holds - `assertTrue(boolean1)`. Then I'm starting test05 by setting up another boolean comparison.
+
+**test05**: Comparing against a null object hits the null check in `equals`, returning false, so `assertFalse(boolean1)`.
+
+**test06**: Comparing the value to itself hits the identity check first, returning true, so `assertTrue(boolean0)`.
+
+**test07**: Comparing against a plain `Object` fails the class-type check since the classes don't match, returning false, so `assertFalse(boolean1)`.
+
+**test08/test09**: Removing an element from an empty `LinkedHashSet` returns false in both cases since nothing was ever added.
+
+**test10**: I'm now working through `withOverrides` where the base value has an empty (non-null) `_included` set and looking at the `_ordered` field's state.
+
+Tracing through `withOverrides` with `overrides` being the same value: since `otherIncluded` is empty, the loop adds nothing, and `ordered` takes on `overrides._ordered`, so the result is a new `Value` with an empty set and `_ordered = false`. For the oracle, I'm considering asserting the result isn't null, or checking that its included set comes back empty.
+
+Moving to the next case, this one involves `withOverrides` where the base value comes from a mock with `OptBoolean.DEFAULT` and a single-element `String[]` array containing a null.
+
+I'm tracing through the merge logic: since `DEFAULT.asBoolean()` resolves to null and the included set becomes `{null}`, I need to check whether the other value's included string is found within that null-only set, which it won't be.
+
+So `toInclude` ends up empty, and since neither overrides object has a non-null `_ordered`, the result stays null too, producing a Value with an empty set and null ordering. I'm unsure what the exact test assertion should check here, but I'll go with `assertNotNull` on the resulting value as a safe bet, then move on to test12 where I'm examining another `withOverrides` call using a value with `_included = {"U 6?8|"}` and `_ordered = null`.
+
+For test13, value1 has `_included = null` (ALL), and value0 has an empty included set. Since `_included == null` in withOverrides, it returns overrides directly, so value2 is literally the same object as value0 — I should assert that with assertSame.
+
+For test14, I'm now checking the reverse case where value0 calls withOverrides on value1, with value0 having the empty set and value1 being ALL.
+
+For test15, calling withOverrides(null) simply returns `this`, so value1 equals value0 — another assertSame case.
+
+**test16**: toString() on value0 with an empty included set and null ordered gives "JsonIncludeProperties.Value(included=[],ordered=null)".
+
+**test17**: with _ordered set to false, getOrdered() returns Boolean.FALSE, so the oracle checks assertFalse(boolean1).
+
+**test18**: valueFor() returns JsonIncludeProperties.class, so the oracle compares against that class value.
+
+**test19**: The empty LinkedHashSet's contains() call returns false since no elements were added.
+
+For the remaining uncertain tests, I should lean toward assertNotNull as the safer oracle choice when I'm unsure of the original assertion, and I need to check whether OptBoolean.FALSE.asBoolean() has accessible source for test00.
+
+
+
+Now I have a complete picture. Let me analyze all tests:
+
+**test00**: 
+- `OptBoolean.FALSE.asBoolean()` returns `Boolean.FALSE`
+- `_asSet(new String[0])` returns `Collections.emptySet()` (length 0, returns emptySet)
+- So `value0` has `_included = emptySet, _ordered = Boolean.FALSE`
+- What oracle? `assertNotNull(jsonIncludeProperties_Value0)` seems safe. But EvoSuite might check something more specific.
+
+Actually, looking at this more carefully, `_asSet` with length 0 returns `Collections.emptySet()`. So the value has an empty set. 
+
+Without more context on what's being asserted, `assertNotNull` seems the safest bet for that case. For test02, I'm tracing through an equals comparison: value1 is ALL with null included/ordered fields, while value0 has an empty set for included and null for ordered, so comparing null to null gives true but null to an empty set gives false — meaning the overall equals call should return false.
+
+For test03, I check that constructing a Boolean from that garbage string yields false since it's not "true", and comparing two values with differing `_ordered` flags (false vs true) also yields false, so both oracles assert false. For test04, both values share the same empty LinkedHashSet reference for included and both have `_ordered = false`, so the equals comparison returns true, and the oracle should assert that.
+
+Moving to test05 through test09: I trace through the equals contract checks—comparing against null returns false, comparing against itself returns true, comparing against a plain Object with a different class returns false, and removing an element from an empty LinkedHashSet returns false in both cases (test08 and test09), so each oracle matches these boolean outcomes accordingly.
+
+For test10, I'm working through `withOverrides` where both the base value and overrides have an empty, non-null included set and `_ordered = false`. Since the loop produces no elements to add, the result is a new Value instance with an empty set and `_ordered = false`—not the same object as the original, but equal in content, so `assertEquals` between the two Value instances should hold true.
+
+For test11, since the result is hard to pin down precisely, `assertNotNull` seems like the safer oracle. For test12, the result keeps the same included elements and `_ordered = null` as the original, so `assertEquals` between the two Value instances again seems like the right check.
+
+For test13, since `_included` on value0 is null, `withOverrides` returns the overrides object directly, meaning value2 should be the exact same reference as value0, so `assertSame` is the right oracle there.
+
+For test14, since ALL's included set is null, the method again returns `this`, giving the same same-reference relationship between value0 and value2.
+
+For test15, calling `withOverrides(null)` short-circuits to return `this`, so value1 is the same reference as value0.
+
+For test16 I'm now looking at what `toString()` produces when `_included` is an empty set.
+
+For test17, `getOrdered()` evaluates to false since the constructed Boolean value is false.
+
+For test18, `valueFor()` returns the JsonIncludeProperties class.
+
+For test19, checking whether an empty LinkedHashSet contains a given value correctly returns false.
+
+Now I need to work through tests 00, 10, 11, and 12.
+
+For test00, I'll settle on a simple assertNotNull check on the created Value object rather than asserting specific property states, since that's the more likely oracle here. Tests 10, 11, and 12 follow the same pattern - each just verifies the resulting Value objects aren't null. Then I move on to considering tests 02, 03, and 04.
+
+For tests 05 through 09, each has a boolean result variable that's clearly true or false, making these straightforward oracle cases. Looking at tests 13-15, assertSame seems like the right approach since withOverrides returns the same reference when _included is null - I verify test13 works since value1 (ALL variant) has null _included, so applying withOverrides to value0 just returns value0 itself, confirmed by reference equality.
+
+For test14, since ALL.getIncluded() is null, the code returns `this` (value0), so again value2 references value0 - assertSame confirms this. Test15 follows the same pattern where withOverrides(null) also returns `this`, so value1 equals value0 by reference. Now I'm ready to compile the complete list of oracles to add.
+

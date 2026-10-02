@@ -1,0 +1,40 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Now let me analyze each test and determine what oracles to add:
+
+**test0**: `parametric.value(2.0, params)` where params=[0.0, 0.0, 2.0]
+- norm=0.0, mean=0.0, sigma=2.0, x=2.0
+- result = norm * exp(-diff^2 * i2s2) = 0.0 * exp(...) = 0.0
+- Oracle: `assertEquals(0.0, result, 0.0);`
+
+**test1**: Gaussian (mean=0, sigma=1) at very large DS value (12^12 ≈ 8.916e12)
+- This is far from the mean, so the Gaussian's coefficient falls under Precision.SAFE_MIN, meaning the value and all derivatives get zeroed out. The value should be 0.0, so I'll add `assertEquals(0.0, gaussianResult.getValue(), 0.0);`
+
+**test2**: Gaussian (mean=0,
+
+Computing the value at x=12: norm ≈ 0.3989422804, exponent term exp(-72) ≈ 5.38×10^-32, giving coeff ≈ 2.15×10^-32, which is well above Precision.SAFE_MIN (2.225×10^-308), so this should evaluate to the actual computed value rather than zero.
+
+I think a looser oracle is safer here—just asserting the value is positive and below some small bound like 1e-30, rather than pinning down the exact figure, since computing norm times exp(-72) precisely is error-prone.
+
+Without running the code I can't be certain of the exact value, so I should be more cautious and just verify positivity instead. Going through the tests one by one now: test0 has params where value simplifies to 0.0, so I'll assert that directly; test1 uses a huge x value where the Gaussian should underflow toward zero, so I need to check how the coefficient behaves against the safe minimum threshold.
+
+For the gradient test at x=1530 with params [0.0, 0.0, 1530.0], since norm is 0, the whole gradient computation collapses to zero regardless of the exponential terms, so the expected value should just be 0.0.
+
+With mean and norm zero, the mean and sigma gradient terms vanish, leaving gradient[0] equal to the Gaussian value at diff=1530 with i2s2=1/(2*1530²), which simplifies to exp(-0.5). So the full gradient confirms [exp(-0.5), 0.0, 0.0], matching the expected oracle values.
+
+For the remaining tests, test4 through test7 already have exception-catching setups so their oracles are implicit. Test8 needs a numeric oracle for a Gaussian with mean=0, sigma=1 evaluated at a point far from the mean, where the value should be extremely close to zero.
+
+Since -2892.35172268 is so far from the mean, computing the squared distance times the exponential term gives essentially 0.0, so the oracle should be `assertEquals(0.0, result, 0.0)`. I want to verify this against the actual value computation formula, which multiplies the normalization constant by the exponential of the negative squared distance scaled by the inverse variance term.
+
+Now I want to revisit test1 and test2 with the same level of scrutiny.
+
+For test1, a DerivativeStructure representing 12^12 (a huge value like 8916100448256) is fed into the Gaussian, so the coefficient calculation drives it below SAFE_MIN and the array gets filled with zeros, meaning the result is 0.
+
+For test2, using x=12 directly, u=12 gives coeff = norm * exp(-72) ≈ 2.15e-32, which is above SAFE_MIN so it shouldn't be zeroed out this time.
+
+Given uncertainty about the exact decimal value, I'll go with `assertTrue(gaussianResult.getValue() > 0.0)` as the safer oracle rather than an exact equality check.
+
+Now I'm putting together the edited test file, inserting these assertion oracles right after each computed result line for test0, test1, and test2.
+
+For test3 I need gradient array assertions, and for test8 the result should equal 0.0 exactly. The exception-based tests (test4-7) already have their oracles baked into the try/catch logic, so no changes needed there. Time to write out the actual edits.
+

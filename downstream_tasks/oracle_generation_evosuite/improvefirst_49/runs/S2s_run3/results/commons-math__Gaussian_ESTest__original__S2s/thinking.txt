@@ -1,0 +1,66 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now let me analyze each test method and figure out what oracles to add:
+
+**test0**: 
+```java
+Gaussian.Parametric gaussian_Parametric0 = new Gaussian.Parametric();
+double[] doubleArray0 = new double[3];
+doubleArray0[2] = 2.0;
+double double0 = gaussian_Parametric0.value(2.0, doubleArray0);
+```
+- x = 2.0, param[0] = 0.0 (norm), param[1] = 0.0 (mean), param[2] = 2.0 (sigma)
+Computing this out: diff is 2.0, i2s2 is 0.125, so value = 0.0 * exp(-0.5) = 0.0. So double0 should come out to 0.0.
+
+Now moving to test1, which creates a plain Gaussian instance.
+
+For this test, I construct a constant DerivativeStructure of value 12 with 0 free variables and order 12, raise 12 to that power giving 12^12, and then feed it through the gaussian's value function. Without running it, I'd need to work through the derivative chain to pin down an exact result.
+
+For the second test, I set up a standard normal Gaussian and evaluate it at a constant value of 12, tracing through the formula with u = 12 and computing the exponential coefficient from there.
+
+For test3, I trace through the Parametric gradient calculation with x=1530 and sigma=1530, computing diff, i2s2, and the exp term, but since norm=0.0 it makes the m term vanish to zero regardless.
+
+So the resulting array should be exp(-0.5), 0.0, 0.0 — that gives me a concrete oracle value to assert against, matching what the original test likely checked before its assertions were stripped out.
+
+Going through each test, the exception-throwing ones (test4-7) already have their fail/catch structure and don't need value oracles, while the others need concrete assertEquals or similar checks based on what values would actually be produced.
+
+For test8 with an extreme x value like -2892.35, the Gaussian density calculation underflows to essentially 0.0 due to the huge negative exponent, so the oracle should be `assertEquals(0.0, double0, 1e-15);`. I'm second-guessing myself here, since these EvoSuite-generated tests likely had simple assertions that got stripped out as oracles.
+
+For each computed-but-unused value, I'm trying to infer the most plausible replacement assertion: doubles near zero probably get `assertEquals(0.0, ..., 1e-15)`, while object references like `DerivativeStructure` instances likely just get `assertNotNull(...)` checks.
+
+That squared value makes the exponent underflow to zero, so `assertEquals(0.0, double0, 1e-15);` should hold there too.
+
+For test1 and test2, the outputs are DerivativeStructure objects, so a plain `assertNotNull` isn't very informative. Working through test2 specifically: with 0 free variables and order 12, the derivative structure's value is 12, so u becomes 12 and the gaussian evaluates exp(-0.5 * 144), which is an extremely tiny number near exp(-72).
+
+I'm computing this out: with the normalization constant 1/sqrt(2*pi) times that tiny exponential term, the coefficient comes out to roughly 2.24e-32, which is still comfortably above Precision.SAFE_MIN (Double.MIN_NORMAL, about 2.225e-308), so it doesn't underflow — meaning derivativeStructure1's value should equal that coefficient directly.
+
+For test1, I'm working through DerivativeStructure.pow(12, derivativeStructure0) where the base value is 12, giving 12^12 = 8916100448256, then evaluating the gaussian at that enormous input.
+
+Given how huge that exponent is, the Gaussian value collapses to exactly 0.0 due to underflow, so derivativeStructure2.getValue() should be 0.0. Now I'm considering how EvoSuite typically constructs its assertions — usually assertEquals with a delta for doubles, assertNotNull for objects, or specific property checks — and trying to reason about what oracle pattern would apply here given the described setup.
+
+For test8, since x is far from zero, exp underflows and the result should be 0.0, so I'll assert that with tight precision. Looking back at test0, I can actually trace through the math: with params 0.0, 0.0, 2.0, the diff and exponent calculation works out so the value multiplies by zero anyway, giving 0.0 as the exact expected result.
+
+For test3, I compute the Gaussian value at x=1530 with mean 1530 giving exp(-0.5)≈0.6065, but since norm=0 the other outputs collapse to 0.0, so I can assert on the array's first element or its length. For test1 and test2 I'll check whether I can pin down exact values or need to abstain, then move on to finalizing the assertion for test0.
+
+I'm confident the gradient array has length 3, with the first element equal to exp(-0.5) and the other two equal to zero since the norm is zero. For test1 and test2 I'll just add assertNotNull since the DerivativeStructure values are too complex to pin down exactly.
+
+Actually, reconsidering test1 and test2 - EvoSuite typically wouldn't just assert not-null on these DerivativeStructure results since the call would've already thrown if it failed; it more likely generates specific field-level assertions instead.
+
+For test2 I'm working through the actual gaussian computation by hand: with a DerivativeStructure of 0 free variables, order 12, and constant value 12, and gaussian0 having mean=0, sigma=1, norm≈0.3989, I trace through t=12, u=12, u2=144 to figure out what value the assertion should actually check.
+
+So getValue() lands around 2.235e-32, though I'm not fully confident in that exact figure. For test1, I trace through: the constant 12 raised via pow gives 12^12 = 8916100448256, which then feeds into gaussian0.value as t, producing u = 8916100448256 and u2 as its square, roughly 7.95e25.
+
+With such a massive u2, coeff = norm * exp(-0.5*u2) underflows to essentially zero, falling below SAFE_MIN, so all the f array values get set to 0.0 -- meaning derivativeStructure2.getValue() should come out to exactly 0.0. I'm fairly confident in this result, but I want to double check that calling getValue() on the composed DerivativeStructure is the right way to verify this before asserting it.
+
+Given my confidence levels, I'll go with assertEquals(0.0) for test0, test1, and test8, but I should hold off on test2 since I'm not certain about that ~2.235e-32 value, and I need to work out what test3's array assertions should look like -- particularly reconsidering how the DerivativeStructure(0, 12, 12) constructor sets up zero parameters, order 12, and value 12 before calling gaussian0.value on it.
+
+Since SAFE_MIN is roughly 2.225e-308, my computed coeff of 2.235e-32 is comfortably larger, so the zero-fill threshold doesn't trigger and the result value stays at that coefficient. I'll set test2 aside without a precise assertion and move to test1, starting with computing 12^12.
+
+Continuing the calculation, u2 comes out to around 7.9497e25, making exp(-0.5*u2) essentially zero since it's far below SAFE_MIN, so coeff and all f values collapse to zero — I can confidently assert derivativeStructure2.getValue() equals 0.0 within a tight tolerance. Moving to test3, I compute doubleArray1[0] as exp(-0.5) ≈ 0.6065306597126334 with the remaining entries at zero, and I'm writing assertions checking the array is non-null with length 3.
+
+Now I'm finalizing which assertions to keep across tests: test0 and test1 both confidently assert 0.0 values, test2 I'll abstain from since I'm not sure of the exact DerivativeStructure value, and test3 gets the array length and value checks. I'm still working out test8's assertion.
+
+Writing more assertions...
+
+For test2 I'll abstain from adding an oracle, and for test3 I'm verifying the Gaussian value calculation once more—norm=1, diff=1530, i2s2=1/(2*1530²), giving exp(-0.5)≈0.6065, which confirms my earlier assertion. Now I need to figure out exactly where each oracle statement should be inserted within the test method bodies.
+

@@ -1,0 +1,158 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now let me analyze each test case and determine what oracles to add:
+
+**test00**: 
+```java
+BHSDCodec bHSDCodec0 = Codec.BYTE1;
+RunCodec runCodec0 = new RunCodec(1825, bHSDCodec0, bHSDCodec0);
+int[] intArray0 = CodecEncoding.getSpecifier(runCodec0, runCodec0);
+```
+`getSpecifier` for a RunCodec with k=1825. 
+- k=1825: 1825 <= 4096, so kb=1, kx = 1825/16 - 1 = 114 - 1 = 113 = 0x71
+Since aCodec and bCodec are both BYTE1 while defaultForBand is the RunCodec itself, neither equals the default, so abDef ends up as 0, giving first = 117 + kb.
+
+With kx actually equal to 113 rather than 3, first works out to 122. Since kx isn't 3, the specifier needs both codec representations, and since BYTE1 is a canonical codec at index 1, both aSpecifier and bSpecifier reduce to just [1].
+
+So the specifier array becomes [122, 113, 1, 1] with a total length of 4. Now I need to double check that formula against the actual condition for kb and kx - it seems kb=0 and kx=k-1 only applies for k<=256, which doesn't match k=1825, so I need to look at the right branch for larger k values.
+
+This is getting complex, and I notice these tests actually have no assertions at all—the oracle was stripped out entirely. Since test00 returns a non-null int array, I could go with something simple like assertNotNull, but let me try to verify the specific values by working through the k=1825 case more carefully—it falls in the range where kb=1 and kx = 1825/16 - 1.
+
+Working through the bytecode specifier logic: first = 122, kx = 113, and both a/b specifiers resolve to canonical index 1 since BYTE1 is a canonical codec, giving specifier = [122, 113, 1, 1]. So the assertion should be assertArrayEquals(new int[]{122, 113, 1, 1}, ...).
+
+Now I want to double-check that kx doesn't interact with kb differently than I assumed -- re-examining how kb and kx are derived depending on whether k is under or over 256, since only certain kx values act as flags in the first-byte formula.
+
+So k equals (kb+1) times 16 to the power kx, and I need to figure out which kx value gives an integer kb for k=1825. Testing kx=0 gives kb=1824 which exceeds the byte range, kx=1 gives a non-integer, so I'm now checking kx=2 where kb+1 should equal 1825/256.
+
+Looking at the actual encoding logic instead, it seems k=1825 doesn't fit cleanly into any bucket boundary—but the real code branches differently: for k≤256 it's one formula, for k≤4096 it's kb=1 with kx=k/16-1=113, which seems too large for the kx field, so I suspect this value is actually meant for a different specifier position, not the same kx bits I was assuming.
+
+For k=1825, computing kb=1 and kx=113 gives specifier[1]=113, which doesn't line up with the decoding scheme where kbflag only controls a single extra byte read for kb. I need to go back to the getCodec decoding logic to reconcile this mismatch.
+
+So the encoding isn't exact but that's just how the code works. Since these test methods lack assertions, I need to figure out the right oracle to add - likely something like assertNotNull for the result array, or assertArrayEquals/assertEquals if I can pin down the exact values, since EvoSuite typically generates one of these depending on the return type.
+
+For test00, tracing through the RunCodec logic with the given parameters, I can work out that the specifier array should be [122, 113, 1, 1] with length 4, though I'm not fully certain of these exact values without executing the code myself.
+
+For test01, with bCodec=DELTA5 matching defaultForBand, abDef=2; aCodec is PopulationCodec(DELTA5, 4, DELTA5) with k=4, giving kb=0, kx=3, so first = 117 + 0 + 0 + 16 = 133. Now I'm working out the specifier length by adding up the components including the nested aSpecifier's length.
+
+I recall the getSpecifier logic pulls tokenCodec, favouredCodec, and unfavouredCodec from a PopulationCodec, so the constructor call with (bHSDCodec0, 4, bHSDCodec0) likely means the favoured and unfavoured codecs are both DELTA5 while the middle argument represents either the token codec value or a count parameter—I need to check which.
+
+Rather than untangling every constructor variant, I'm better off scanning the whole test file to see which tests already have assertions (like exception checks) versus which ones compute a result without ever checking it. Test00 and test01 both look like they need oracles added since they just call getSpecifier and return values without verification.
+
+More test cases follow similar patterns, with test19 just instantiating a new CodecEncoding object. I'm trying to figure out what CHAR3 actually resolves to in the Codec class for test06, since that determines the expected specifier index, but without checking that file I can't be fully sure. For test11, I'm working through what getCodec returns when given a canonical codec index of 13.
+
+Pinpointing the exact CHAR3 codec value and its index without executing the code is proving too uncertain, so I'll lean toward using assertNotNull for cases I'm not fully confident about, reserving specific computed values for the ones I can verify.
+
+I don't recall CHAR3's exact encoding parameters well enough to compute the specifier precisely, so I'll abstain there. For test11 and test19, assertNotNull on the returned codec objects seems like the safest, correct oracle given the uncertainty around value-based equality checks.
+
+For test02, I'm working through the RunCodec math with k = Integer.MAX_VALUE, computing kb=3 and kx=524286, giving first=124 and a specifier array of [124, 524286, 1, 1] — though that large value makes me want to double check the formula before committing to it as an assertion.
+
+Moving to test03 with k=13 and identical codecs for a, b, and the default band, I find aCodec equals defaultForBand so abDef=1, and since k≤256 I get kb=0 and kx=12.
+
+With kx≠3, first = 129. Since abDef=1, aSpecifier is empty and bSpecifier comes from bCodec against the default, which for the canonical codec at index 13 gives just [13]. So the total specifier length is 3, with specifier[0]=129.
+
+Filling in the rest: specifier[1]=kx=12, specifier[2]=13 from bSpecifier, giving a final result of [129, 12, 13].
+
+Now I'm setting up test04: creating a BHSDCodec of CHAR3, a 9-byte array with the first byte set to 93, and reading through CodecEncoding.getCodec with value 116 to trigger a BHSD codec read from the stream, then calling getSpecifier with the resulting codec against itself.
+
+Decoding byte value 93 (binary 01011101): the d flag equals 1, s equals 2, and I'm computing b as ((93>>3)&7)+1, working through the bit shifts to land on 3+1=4.
+
+Then reading the second byte, 0, giving h=1, so the resulting codec would be BHSDCodec(4,1,2,1) -- but I'm second-guessing whether h=1 is actually valid here, since that would trigger an exception the test doesn't seem to expect. Let me redo the bit breakdown for 93 more carefully.
+
+I'm working through getSpecifier(codec0, codec0), tracing how the specifier array gets built for this unusual BHSDCodec, computing values like isDelta, s, and b-1 to fill in specifiers[0] and specifiers[1].
+
+My computed value of 29 doesn't match the original byte of 93, so I need to recheck the decoding logic directly—extracting d from bit 0, s from bits 1-2, and b from bits 3-5 of the code value 93 (01011101 in binary) to see where my formula went wrong.
+
+That gives 29, so the specifier encodes to 29, not 93, meaning getSpecifier returns [116, 29, 0] with specifiers[2] = h-1 = 0. I'm checking whether this BHSDCodec (b=4, h=1, s=2, d=1) matches any canonical codec, but since canonical codecs tend to have high h values, this likely isn't canonical and goes through the regular BHSDCodec path, confirming the result [116, 29, 0].
+
+I'm unsure whether BHSDCodec(4, 1, 2, 1) is even valid under the pack200 spec, which might require h >= 2, but since this is an EvoSuite-generated test with no expected exception, it probably works fine. Rather than trying to compute every value with full confidence, I think the better strategy is to use assertNotNull for cases I'm less certain about, and focus my precise calculations on tests like getSpecifierForDefaultCodec(CHAR3), which returns getSpecifier(CHAR3, null)[0] and depends on whether CHAR3 is a canonical codec.
+
+Since I don't know CHAR3's exact canonical index, I'll abstain there and fall back to safer assertNotNull checks for tests like test11 and test19. For tests where the result isn't captured (test01, test05, test09, test13, test17), no assertion is needed since they only verify no exception occurs. Now I'm going through each test case to identify which ones actually store a result that needs an assertion versus which ones can be left as simple no-exception checks.
+
+test19 also needs an assertion for the CodecEncoding constructor call. Now I'm computing the expected array values for test00 by working through the RunCodec encoding logic with k=1825, deriving first=122 and the resulting specifier array [122, 113, 1, 1], then moving on to compute test02's values with Integer.MAX_VALUE and BYTE1.
+
+For k=Integer.MAX_VALUE, I calculate kb=3, then kx by dividing by 4096 and subtracting 1, giving kx=524286 since integer division truncates. With kx != 3, first becomes 124, so the array is [124, 524286, 1, 1] and I add that assertion, double-checking the division truncation is correct in Java before moving on to test03 with a canonical codec.
+
+For test03 with RunCodec(13, canonicalCodec[13], canonicalCodec[13]), I work out that canonicalCodec[13] is BHSDCodec(4, 256), giving k=13, kb=0, kx=12 which differs from 3. Since aCodec equals defaultForBand here, abDef becomes 1, making first=129, aSpecifier empty, and bSpecifier equal to [13], so I'm building the expected result array of [129, 12, 13]...
+
+Moving to test04, I check codec0 = BHSDCodec(4, 1, 2, 1) and compute getSpecifier for it against itself since it's not canonical, working through the BHSDCodec branch to get specifiers 116, 29, and 0. I'm now questioning whether this particular BHSDCodec configuration is actually valid according to pack200's constraints.
+
+Since the test has no failure handling, I assume the constructor succeeds even with h=1, and I go back to verify my byte parsing of byteArray0[0] = 93, breaking it into its binary components to extract the d, s, and b-1 bit fields.
+
+So b=4, and byteArray0[1] = 0 gives h = 1, meaning codec0 = BHSDCodec(4, 1, 2, 1) -- an odd case since h=1 would only encode the value 0, but since the test proceeds to call getSpecifier without expecting an exception, this combination must be valid.
+
+Computing the specifier bytes: specifiers[0] = 116, specifiers[1] = 29 (combining delta flag, s, and b-1), specifiers[2] = 0 (h-1), giving intArray0 = [116, 29, 0]. After getCodec reads its 2 bytes, the input stream still has 7 bytes remaining out of the original 9.
+
+Moving to test06, I need to figure out what CHAR3 represents in the Codec class -- likely a BHSDCodec with specific parameters, though I'd need to verify the exact definition to compute its expected specifier output.
+
+I'm scanning further indices but BHSDCodec(3, 128, 2, 1) doesn't seem to match the standard canonical array positions. Let me instead try recalling common named codec constants like UNSIGNED5 or BYTE1 to identify CHAR3's definition.
+
+I'll abstain on test06 since I can't pin down that behavior confidently. For test11, casting to BHSDCodec should succeed, so assertNotNull is safe there. For test15, I'm tracing through code that gets the canonical codec at index 13, wraps a single-byte array in an input stream, decodes a codec from value 128 using that stream, and then extracts its specifier against UNSIGNED5.
+
+Tracing the bit math for the Run codec offset calculation...
+
+k = 16384, and both A and B codecs resolve to the default BHSDCodec(4, 256), since reading the next stream byte (0) maps back to the default codec. This constructs a RunCodec(16384, canonicalCodec[13], canonicalCodec[13]), and I'm now moving into getSpecifier for that RunCodec using UNSIGNED5 encoding.
+
+Working out the specifier length gives a result array of [123, 63, 13, 13], which I'll assert against intArray0, and test19 just checks codecEncoding0 isn't null. Now I'm checking through the remaining tests (01, 05, 09, 13) to see which ones only call methods without storing results, needing no assertions beyond exception-free execution—though test01 does assign its result to intArray0.
+
+Actually I need to re-verify test01's setup: it builds DELTA5, then a PopulationCodec and RunCodec using that codec as default, and calls getSpecifier on them, so I need to trace through the encoding logic to determine what specifier array gets returned.
+
+The kb/kx calculation gives first=133, bSpecifier is empty since it matches the default, but the aSpecifier depends on PopulationCodec's internal structure which I can't verify without reading that file, so I should abstain on test01. I'm also realizing I should double-check my other computed test values for edge cases rather than assuming they're correct.
+
+For test04, I'm working through whether BHSDCodec(4, 1, 2, 1) with h=1 is even a valid codec construction - if it throws an exception, the test would fail unexpectedly, so either h=1 is actually valid or I've misidentified codec0. Recomputing: b comes out to 4 (93 shifted right 3 bits gives 11, masked with 7 gives 3, plus 1 equals 4), and h equals byteArray0[1]+1, which is 0+1=1.
+
+That's an odd combination since h=1 with b=4 means h^b=1, so the codec could only encode zero, but it's likely still valid from a construction standpoint. I'll proceed with assertArrayEquals for array comparisons and assertNotNull for the simpler cases, while double-checking test04's byte values more carefully.
+
+This codec doesn't appear in canonicalCodecsToSpecifiers, since h=1 is such an unusual value, so the BHSDCodec branch is what applies here. If h=1 were invalid, the constructor would throw, but since the test lacks a try-catch and has a timeout expecting success, it must complete without exception — meaning there may be no meaningful assertion to add beyond checking that it runs cleanly.
+
+For assigning byte 93 into the array, since 93 is under 128 it stays positive regardless of Java's signed byte behavior. Now I'm deciding on the right assertion style: assertArrayEquals with specific values seems most fitting here, following EvoSuite's typical conventions, with assertNotNull reserved for non-deterministic cases.
+
+Going through each test case, I'm working out the expected array values for tests 00, 02, 03, 04, and 15, while flagging tests 01 and 06 as needing more internal knowledge I don't have, and using assertNotNull for test11 as a safer bet.
+
+For test05, the getSpecifier result isn't stored anywhere, so no oracle assertion is needed there. Now checking test09's setup with the CHAR3 codec.
+
+For test13, the codec results from getCanonicalCodec and getCodec calls aren't stored for assertions either, so no oracle is needed. Test17 involves exception handling tests, which similarly don't need oracles since the exceptions are already caught.
+
+For test11, I'm working through the case where getCodec(2, ...) returns the canonical codec at index 2, which after casting to BHSDCodec should be non-null, giving me a straightforward assertNotNull assertion.
+
+Now I'm cross-checking test03 by mentally tracing through the canonicalCodec array indices to verify getCanonicalCodec(13) resolves correctly, counting through the sequence of BHSDCodec entries one by one.
+
+Working through the getSpecifier logic for runCodec0, I trace k=13 with kx=12 giving first=129, then combine with bSpecifier [13] to get result [129, 12, 13], which checks out. Now I'm moving on to examine test15, starting to set up a new BHSDCodec instance for that case.
+
+For getCodec(128, stream, BHSDCodec(4, 256)), I'm working through the Run codec branch since 128 falls between 117 and 140, computing the offset as 11 and decomposing it into binary to extract the kx and other bit fields.
+
+From there, k works out to 16384 with kb=3, adef=true, bdef=false, so aCodec becomes the default BHSDCodec(4, 256), and I need to derive bCodec by reading the next byte from the stream (which is 0) and recursively calling getCodec with that value.
+
+Working through getCodec(0, ...) gives back the default BHSDCodec(4, 256), so both aCodec and bCodec end up being the same BHSDCodec(4, 256), producing a RunCodec(16384, BHSDCodec(4,256), BHSDCodec(4,256)).
+
+Now I'm computing getSpecifier for this RunCodec against UNSIGNED5: with k=16384 falling in the 4096–65536 range, kb=2 and kx=63; since neither aCodec nor bCodec matches UNSIGNED5, abDef=0, and since kx isn't 3, the first specifier value comes out to 117+2+4+0=123.
+
+I need to figure out what UNSIGNED5 actually is here — recalling that in pack200 it's typically BHSDCodec(5, 64, 2) or similar, which is distinct from BHSDCodec(4, 256), so the aCodec/bCodec specifiers should be canonical values of [13], giving a final result of [123, 63, 13, 13].
+
+Now I'm confident enough in these calculations to write out the test oracles for each case, matching expected array outputs like {122, 113, 1, 1} and {124, 524286, 1, 1} to their respective test methods.
+
+Tests 05, 09, and 13 don't store results, so no oracle is needed there, and tests 07, 08, 10, 12, 14, 16, 17, 18 are exception tests already handled. Now I'm double-checking test04's expected array by manually tracing the byte decoding: byteArray0[0] is 93 with the rest zeros, and I'm working through the bit extraction (d, s, b values) from that first byte to verify [116, 29, 0] is correct.
+
+I trace out that this yields BHSDCodec(4, 1, 2, 1), which isn't in the canonical codec map since none of those have h=1, so the specifier calculation falls into the delta/scale/bits formula branch.
+
+Computing that gives specifiers[1] = 1+4+24 = 29 and specifiers[2] = 0, so result = [116, 29, 0], matching the expected assertion. I pause to consider whether BHSDCodec's constructor might actually reject h=1 as invalid, but since this is an EvoSuite-generated test, it likely means the constructor does permit that value.
+
+With h=1, the math becomes strange since every byte value would effectively act as a terminator, but the object construction itself should still succeed, so I'll go with [116, 29, 0] for test04. I also verify that codec0 isn't treated as canonical, so getSpecifier correctly falls into the BHSDCodec branch rather than any early-return path.
+
+Now let me trace through test00 more carefully. It creates a RunCodec with k=1825 using BYTE1 for both sub-codecs and calls getSpecifier on it — since RunCodec isn't canonical either, I need to work through the RunCodec branch's calculation for k in the 256-4096 range to determine kb and kx.
+
+With kx computed as 113 and neither codec matching the default for band, abDef comes out to 0, giving a first byte value of 122.
+
+The specifier length works out to 4 bytes total: 122, 113, and then 1,1 for the BYTE1 sub-codec indices, so the final result [122, 113, 1, 1] matches expectations. Now I'm moving to test02, setting up a BHSDCodec BYTE1 instance and beginning construction of a new RunCodec for that test case.
+
+That confirms the specifier is [124, 524286, 1, 1], so I'm ready to write the edits. But first let me verify the stream state for test15 by tracing through getCodec with offset 128 against a BHSDCodec(4, 256), computing offset = 11 and continuing the derivation.
+
+Actually, tracing further, the byte read is 0, so getCodec(0, stream, defaultCodec) resolves to the same defaultCodec, giving codec0 = RunCodec(16384, BHSDCodec(4,256), BHSDCodec(4,256)). Now I need to compute getSpecifier(codec0, UNSIGNED5), which should yield something like [123, 63, 13, ...].
+
+Let me double-check that k = (kb+1)*16^kx = 4*4096 = 16384 is correct, and reversing it back: for k=16384 which falls in the range (4096, 65536], kb=2 and kx = 16384/256 - 1 = 63, confirming the encoding matches.
+
+I'm also noting that in test01, the intArray0 variable from getSpecifier is declared but unused, so EvoSuite likely wouldn't add an assertion checking its value directly.
+
+Since I can't confidently determine what an assertion for that value would be without knowing PopulationCodec's internals, I'll mark it as ABSTAINED rather than guess. Similarly, in test06, the getSpecifierForDefaultCodec result depends on CHAR3's exact definition in pack200's Codec class, which I'm not fully certain about, so I need to think carefully about whether I can pin down that value.
+
+This is getting too complex to verify manually, so I'll abstain on test06. I'll add the oracle as a separate statement on the next line after the variable declaration, then move on to writing the actual edits.
+

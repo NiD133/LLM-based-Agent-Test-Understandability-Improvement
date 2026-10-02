@@ -1,0 +1,71 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now I understand the code. Let me analyze each test to determine the correct oracle:
+
+**test0**: Comparing 2-char null-char buffer vs 6-char null-char buffer. The comment says "approximately 0.822". Let me calculate:
+- twoNullChars: "\0\0" (length 2)
+- sixNullCharsBuffer: "\0\0\0\0\0\0" (length 6)
+- All chars are '\0' (null char)
+
+For matches():
+- min = twoNullChars (length 2), max = sixNullCharsBuffer (length 6)
+- range comes out to 2, so I'm tracing through each character position in the shorter string, checking which positions in the longer string fall within the allowed window, and marking matches as they're found.
+
+mi=1 also matches, giving prefix=2. With mtp=[2,0,2] and m=2, computing Jaro similarity gives j≈0.7778, which is above the 0.7 threshold, so applying the Winkler prefix boost still yields roughly 0.7778 for the final result.
+
+Confirming j = 7/9 ≈ 0.7778, so since j ≥ 0.7, the result becomes 7/9 + 0.2*(2/9) = 37/45 ≈ 0.82222222222. So I'll assert against that precise decimal with a tight delta.
+
+Now moving to test1, which compares an empty buffer against a two-null-char buffer, expecting 0.0. Tracing through apply(): match count is 0 since the empty buffer has nothing to compare, prefix length is also 0 since the min-length string is empty, so the match tuple comes out as all zeros.
+
+For test2, comparing an 8-char null buffer against a 1772-char null buffer with an expected result near 0.668, I'm working through the matches() calculation where the range is huge (885) so every character in the short buffer matches against the long buffer.
+
+All 8 characters match (all null), giving matches=8 with zero half-transpositions, and I need to check the prefix calculation which caps at 4 characters compared between the two sequences.
+
+With mi from 0 to 3, first and second both have '\0' at each position, so all four match and prefix=4. That gives mtp=[8, 0, 4] and m=8.
+
+Computing the Jaro similarity: j = (m/|left| + m/|right| + (m-halfTranspositions/2)/m)/3, plugging in 8/1772 + 8/8 + 8/8, divided by 3, comes out to roughly 0.6682, which is below the 0.7 boost threshold, so the result stays as that raw Jaro value rather than getting the Winkler prefix bonus.
+
+Doing long division, 296/443 comes out to roughly 0.66816..., which matches the oracle's expected value closely enough. Now I'm moving on to test4, looking at a shorter buffer of 6 characters and its index.
+
+For matches(shorterBuffer, longerBuffer), the second argument (8 chars) is longer, so it becomes max and the first (6 chars) becomes min, giving a range of 3, and initializing a matchIndexes array of six -1 entries.
+
+Continuing this trace, I'm walking through each null character comparison, finding sequential matches at indexes 0, 2, and 3 in the longer buffer as the algorithm searches within its window for each character in the shorter buffer.
+
+For mi=3, I find the 'f' character matches at index 1, and for mi=4 and mi=5, the remaining null characters match at indexes 4 and 5 respectively—completing all 6 matches. Now I need to construct the match sequence from these results.
+
+Finishing ms2 as ['\0', 'f', '\0', '\0', '\0', '\0'], I then compare it position by position against ms1 to count mismatches, finding the first mismatch at index 1 where ms1 has '\0' but ms2 has 'f', giving halfTranspositions=1.
+
+Continuing through the remaining positions, I find another mismatch at index 3 (ms1='f' vs ms2='\0'), bringing halfTranspositions to 2. Then computing the common prefix by comparing shorterBuffer and longerBuffer up to min(4, length) characters, I find only the first character matches before they diverge, giving prefix=1. So the final result triple is [6, 2, 1].
+
+Now moving to test5, I'm tracing what happens when writing "X19l5(mgJ" into a CharBuffer backed by a 12-element char array, tracking how the position advances after the put operation.
+
+Then a fresh buffer wraps that same underlying array from position 0, so it should read back the full 12 characters including the written string and whatever remains uninitialized.
+
+But the test comment claims there are no remaining characters to compare, which makes me recount the length of "X19l5(mgJ" carefully to see if it actually consumes all 12 slots rather than just 9.
+
+So I need to check how SimilarityInput.input() handles a CharBuffer, since the matching behavior depends on that implementation rather than my assumption about remaining capacity.
+
+For length(), a CharBuffer reports remaining characters (limit minus position), so a buffer that's been written to with 9 characters out of 12 capacity would report length 3, while a fresh buffer would report the full 12 — but the test comment claiming zeroed-out results makes me want to double check SimilarityInput's actual handling before trusting my math.
+
+Working through the actual char arrays now: freshBuffer sees "X19l5(mgJ" followed by null chars (length 12), while bufferAfterWrite only sees the trailing three nulls (length 3) since its position advanced past the written data. I'm stepping through the similarity algorithm's matching window, comparing characters at each offset between the longer freshBuffer and the shorter bufferAfterWrite to find where they align.
+
+So none of the positions checked contain a null character, meaning matches comes out to zero, giving mtp = [0, 0, prefix]. Now I need to trace the prefix calculation separately, comparing the original first and second arguments character by character up to min(4, min.length())=3: at index 0, freshBuffer's 'X' versus bufferAfterWrite's corresponding character.
+
+This gives mtp = [0, 0, 0], matching the expected comment, so the oracle should assert that array equals [0, 0, 0].
+
+For test6, comparing twoNullChars with itself, since it's the same object reference, equality returns true and similarity is 1.0, so the oracle asserts that result.
+
+For test3 and test7, these tests already have try/catch/fail blocks checking for exceptions, so I'm considering whether they need an additional assertion inside the catch block, like verifying the exception isn't null.
+
+Looking at the code, the catch block just has a comment noting the expected exception type, not an actual assertion, so the `fail(...)` call before catch already serves as the oracle and no additional assertion is needed for these two tests.
+
+Now I'm computing the expected double values for each test case: test0 gives 37/45 ≈ 0.8222..., test1 gives exactly 0.0, and test2 requires working through the division to get 296/443, using a small delta like 1e-10 for the assertEquals comparisons.
+
+For test4 and test5, I'll use assertArrayEquals with the expected int arrays, and test6 checks for a result of exactly 1.0. I need to be careful with the boxed Double return type when applying the assertEquals(double, double, double) overload.
+
+Let me re-verify test0's expected match count by tracing through the algorithm carefully: with a 2-character null buffer against a 6-character null buffer, max is the 6-length buffer and min is the 2-length one, giving a range of 2. Walking through the matching loop position by position, I'm checking each character against the allowed window to count how many matches occur.
+
+Continuing that trace, I find matches=2, transpositions=0, and a prefix of 2 shared leading characters, which produces j ≈ 7/9. Since j exceeds the 0.7 threshold, the Winkler boost applies and gives a final result of 37/45 ≈ 0.822, matching the expected value in the comment, so I can move on to writing the oracle for test2, which per its comment settles around 0.668 (296/443) with no Winkler bonus since j stays below 0.7.
+
+I'm now confirming the exact assertion values to use for each test case: 37.0/45.0 for test0, 0.0 for test1, 296.0/443.0 for test2, the match-count arrays for test4 and test5, and 1.0 for test6, all with a tight epsilon. These look solid, so I'll go ahead and edit the file with these oracles.
+

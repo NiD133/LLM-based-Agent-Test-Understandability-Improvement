@@ -1,0 +1,47 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Now I need to analyze each test to determine what oracle (assertion) should be added.
+
+Let me analyze each test:
+
+1. **testLengthAfterClose_returnsAggregatedLength**: 
+   - The test creates 8 sources from a 6-byte array, but the `buildEightSources` creates sources sharing the same `base` array. The actual length of the grouped source depends on the sources.
+   - `base` = ArrayRandomAccessSource with 6-byte data → length = 6
+   - `buffered` wraps `base`
+   - `independent` wraps `buffered`
+   - All 8 sources have length 6, so the total grouped length is 8 * 6 = 48, and this total should hold even after the sources are closed, which is what this test is verifying.
+
+With 8 sources each of length 6, the total works out to 48, and since `size` is a final field set at construction time and `length()` just returns it, `grouped.length()` should still return 48L even after `close()` is called.
+
+The test currently just creates the source and closes it without an assertion—I need to add `assertEquals(48L, grouped.length())` right after the close() call, since the point of the test is verifying the length persists post-close.
+
+For the next test, testGetBulk_positionBeforeWindowStart_returnsMinusOne, I'm setting up a WindowRandomAccessSource with an offset and length of 807.
+
+The window covers positions 807-1613 in the base source, but the underlying array only has 6 bytes, so any read attempt in that range returns -1. Since 196 falls within the window's own coordinate range (0-806), that's the relevant position to test.
+
+So position 196 maps to base position 1003, which is way out of bounds, confirming the expected read should return -1.
+
+Next, for the negative buffer offset and length case, since len is -43 the while loop's remaining>0 check fails immediately, so it falls through to the return branch where remaining equals len, giving -1 as the expected result.
+
+For the negative position test, calling get(-1L) triggers getSourceEntryForOffset(-1). Since -1 isn't >= size and doesn't fall within the current source entry's range, it triggers sourceReleased and searches via getStartingSourceIndex, which returns index 0 since -1 is less than the current entry's firstByte.
+
+Searching from index 0, none of the sources have a firstByte that's <= -1, so no match is found and get(-1L) correctly returns -1.
+
+For the next test case, reading a single zero byte at position 0 should locate the first buffered source (the zero-filled array) and return byte value 0 as expected.
+
+For the bulk read test at negative position -1, the same null-lookup logic applies, so it returns -1 for bytesRead.
+
+I'm also checking that a WindowRandomAccessSource constructed with a negative length correctly reports that negative value (-645L) through the grouped source's length() method.
+
+For the read-beyond-end case, I'm tracing through a 6-byte array where reading 4 bytes starting at position 4 only has 2 bytes actually available, so the underlying source returns 2, advancing the position to 6, at which point getSourceEntryForOffset(6) returns null since 6 is out of bounds.
+
+With that loop exiting, the returned value works out to 4 - 2 = 2, matching the expected assertion of 2 bytes read.
+
+Now I'm checking the exception test case for reads spanning past the array end—it already has the try/catch and fail() structure in place, so it's complete. Next I need to figure out which oracles are missing and where to insert them, starting with adding a length assertion after grouped.close() for the aggregated-length test.
+
+Continuing through the remaining test cases, I'm adding the appropriate assertEquals oracles for each: -1 for various negative position and negative offset/length scenarios, 0 for the zero-position single-byte read, and -645L for the negative-length window test.
+
+Now I'm working through the length calculation for the aggregated-sources test, tracing how a 6-byte base array gets wrapped into eight sources via buffering and independent wrapping, each preserving length 6, to determine the expected aggregated length after close.
+
+Since `length()` on `IndependentRandomAccessSource` just returns a cached size rather than touching the underlying source, closing it shouldn't affect the result -- the grouped source should still report 48L after close, confirming my expected oracle values before moving to check the negative-length window test case.
+

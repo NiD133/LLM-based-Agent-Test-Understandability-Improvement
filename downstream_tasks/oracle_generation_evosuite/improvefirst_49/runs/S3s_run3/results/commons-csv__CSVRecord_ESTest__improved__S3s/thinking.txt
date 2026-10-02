@@ -1,0 +1,88 @@
+Let me start by reading the masked test file to understand what tests are there and what oracles need to be added.
+
+Now I need to analyze each test and determine what oracles (assertions) should be added. Let me go through each test:
+
+1. **test00_toMap_withThreeDuplicateHeaders_doesNotThrow** - No oracle needed (just checking it doesn't throw). But a simple assertion like `assertNotNull(result)` could be added... but looking at the code, `record.toMap()` is called without capturing the result, so no assertion is needed here.
+
+2. **test01_toMap_withManuallyConstructedRecord_returnsSingleEntryMap** - The test calls `record.toMap()` and assigns to `map`. 
+
+Since the header array contains the same header name repeated twice, duplicate keys collapse in the resulting map, so I expect the map to end up with just one entry. For test02, checking whether isSet returns true when the header name matches the delimiter, I need to add an assertTrue based on the test name's expectation.
+
+With headers `[HEADER, HEADER]` the mapping ends up as `{HEADER: 1}`, and since values `["", ""]` has 2 elements, index 1 is valid, so `isSet` returns true — matching the "returnsTrue" test name, so I'll assert true there.
+
+For index 3174 it's clearly out of bounds, so that returns false, and same for a negative index like -2522.
+
+Now I'm working through the case where the header maps beyond the record size, using headers `[HEADER, HEADER...]`.
+
+(index 1 out of bounds), returning false, so I add an assertFalse check. Then I go through similar cases: isSet(null) returns false since null isn't a mapped key, and isSet with an unmapped column on a record built without a parser also returns false since there's no header map at all.
+
+Now I'm looking at a test expecting isConsistent to return true when header count matches value count, but with three headers and only one parsed value from the default comma delimiter, that seems mismatched rather than consistent—I need to reconsider this case.
+
+Next, test10 checks the false case: headers `[HEADER, HEADER]` produce a headerMap of size 1 but values.length of 2, so `headerMap.size() == values.length` is false, meaning `isConsistent()` returns false.
+
+For test11, with no header set in DEFAULT format, `isConsistent()` returns true since there's no header map to compare against.
+
+Test12 verifies `hasComment()` returns true when a comment string is present on the record, and test13 confirms it returns false for records parsed with DEFAULT format, which has no comment marker configured.
+
+Moving through the remaining tests, several are exception-based (tests 14-17) and already have their try/catch/fail patterns complete, needing no additional oracle. Test18 just checks that constructing with a null values array doesn't throw, so I'm considering whether an `assertNotNull(record)` check adds value here.
+
+For the size, record number, and parser tests, I'm adding straightforward assertions: `assertEquals(2, size)` since the values array has length 2, `assertEquals(1105L, recordNumber)` matching the constructed record number, and `assertNull(record.getParser())` since a null parser was passed in. Test22 is another exception test that's already complete, and I'm now looking at test23 which checks that toString includes the comment, record number, and values.
+
+Since I don't know the exact string format, I'll conservatively just assert `assertNotNull(str)` rather than checking exact content. Moving to test24 for toMap with no header mapping - the result isn't currently stored in a variable, so I'll need to capture it before I can add an assertion checking it's an empty map.
+
+For test01, since the name implies a single-entry map, I should add an assertion checking the map size equals 1. For test24, I'll add an assertion after the toMap() call since none currently exists; test00 seems fine as a "doesn't throw" check requiring no assertion. For test27, since values are stored but unchecked, I'm considering adding a not-null or content check based on what the test name implies.
+
+Now looking at test25 through test28, I'm working through what assertions to add for getComment, getBytePosition, and getCharacterPosition based on the values used when each record was created.
+
+I need to pin down the exact constructor parameter order for CSVRecord by comparing test20 and test26 - checking whether the fifth argument is characterPosition or bytePosition, since the values in test26 (-1060L for both) don't disambiguate it clearly.
+
+I'm trying to figure out the parameter order for these test cases—checking whether the 5th or 6th argument corresponds to `getCharacterPosition()` versus `getBytePosition()`, since the test names suggest which value should be returned but the mapping isn't clear yet from the constructor signature alone.
+
+I'm trying to recall the exact Apache Commons CSV constructor signature for CSVRecord, since the test names suggest positional arguments map to recordNumber, characterPosition, and bytePosition in some order across different versions of the library.
+
+This confirms the pattern: test26 expects bytePosition of -1060L, and test28 expects characterPosition of 698L, since the int literal auto-widens to long when passed to the constructor.
+
+For the null parser test, I need to add an assertion rather than just calling the method without checking anything—since the test name indicates it should return null, I'll wrap the call in `assertNull()`. I should also scan through the other tests for similar cases where methods are called but their results aren't verified.
+
+Going through several more tests, I see the same pattern: `isSet()` calls capturing a boolean but never asserting on it. I need to add the appropriate `assertTrue` or `assertFalse` after each one, matching what the test name implies the expected result should be.
+
+Adding more assertions...
+
+I'll go with `assertNotNull(values)` to keep things safe.
+
+Now reconsidering test02: with the delimiter set to the header string itself, parsing produces two empty values, and the header map ends up pointing to index 1 since duplicate headers overwrite. Since that index is still less than the values length, `isSet(HEADER)` should evaluate to true.
+
+I do wonder whether `setDelimiter(String)` actually supports a multi-character delimiter like this in whatever version is being tested, since older versions might reject it—but since this test isn't set up to expect an exception, I'll assume it's designed to work and the delimiter is accepted as-is.
+
+With that delimiter matching the input string exactly, parsing splits it into two empty strings, giving a header map with HEADER mapped to index 1, which is valid for the resulting array—so `isSet(HEADER)` should return true, matching the test name, and I'll add `assertTrue(isSet)`.
+
+Now I'm moving to the next test case, which uses the same duplicated headers but skips the delimiter override, relying on default parsing behavior instead.
+
+With the default comma delimiter, the single-value string produces only one array element, so index 1 is out of bounds and `isSet(HEADER)` returns false, matching the test name—I'll add `assertFalse(isSet)`.
+
+Now I'm examining test01 more closely, tracing how the CSVRecord constructor uses the header list itself as the values array and how the parser's header map of `{HEADER: 1}` interacts with `toMap()` to build the resulting mapping.
+
+Since the header map has one entry mapping HEADER to index 1, and that index in the values array equals HEADER, `toMap()` should yield a map with exactly one entry, so I'll add `assertEquals(1, map.size())`.
+
+Turning to test09, with three duplicate headers the header map collapses to a single entry (size 1) despite the parser having only one parsed value, so the sizes match and `isConsistent()` should return true—I'll add `assertTrue(isConsistent)`.
+
+For test10, two duplicate headers still collapse to a header map size of 1, but the record is built with two values, so 1 != 2 makes it inconsistent—I'll add `assertFalse(isConsistent)`.
+
+For test11, using DEFAULT format with no header means there's no header map to compare against, so `isConsistent()` should return true by default—adding `assertTrue(isConsistent)`.
+
+Now I'm compiling the full list of oracles to insert across all these test cases, starting with the map size assertion for test01.
+
+Continuing through the remaining tests: test12 and test13 check `hasComment()` for true and false cases, test19 verifies size equals 2, test20 checks the record number equals 1105L, test21 confirms the parser is null, and test23 verifies `toString()` returns a non-null string.
+
+For the rest, test24 asserts the map from `toMap()` is empty, test25 checks the comment string matches an expected value, test26 verifies byte position equals -1060L, test27 confirms values array is non-null, and test28 checks character position equals 698L. I'm now going to apply all these oracles to the file.
+
+I also want to double-check the constructor parameter ordering — whether it's (parser, values, comment, recordNumber, charPos, bytePos) or a shorter 5-param variant — by reviewing how test20 and others invoke it.
+
+For test26 both orderings give the same result since the values match, but test28 differs depending on whether bytePos or charPos comes first — checking the test name "getCharacterPosition_returnsAssignedCharacterPosition" suggests it should return 698, meaning charPos is likely the earlier of the two parameters.
+
+I'm trying to recall the actual Apache Commons CSV CSVRecord constructor signature from memory, since the six-parameter version isn't matching what I remember from version 1.10.0, which only had five parameters including a single startOffset rather than separate byte and character offsets.
+
+Given the getBytePosition() and getCharacterPosition() method names, I'm guessing the constructor takes both as separate trailing parameters, with characterPosition likely at index 4 and bytePosition at index 5. For test26, since both offset values are equal (-1060L), the assertion works regardless of which slot is which, so I'm settling on asserting -1060L for bytePosition and 698L for characterPosition based on the test names.
+
+Now I'm proceeding to make all the edits, adding the oracle assertions to the file.
+

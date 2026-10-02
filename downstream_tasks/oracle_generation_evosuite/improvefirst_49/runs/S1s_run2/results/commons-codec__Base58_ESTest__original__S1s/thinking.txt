@@ -1,0 +1,97 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Now let me analyze each test to determine what oracles are needed:
+
+**test00** - Already commented out as unstable assertion, no oracle needed.
+
+**test01** - Tests that an `ArrayIndexOutOfBoundsException` is thrown when encoding with offset 64 on a byte array of length 1. The try/catch already handles this - no additional oracle needed.
+
+**test02** - Calls `base58_0.encode(byteArray0, (int)(byte)(-20), (int)(byte)(-20))` with a 1-byte array. `(byte)(-20)` is -20. Since length is negative (-20), it should signal EOF. 
+
+Since the length is negative, it triggers EOF and converts the accumulated empty buffer, returning an encoded byte array despite the odd offset — I need to check how BaseN handles this three-argument call more carefully.
+
+Since the while loop doesn't execute for an empty array, the resulting StringBuilder and encoded string stay empty, so encodedBytes ends up as an empty byte array too, and the buffer returned reflects that. So the 3-arg encode likely just wraps a call to the 4-arg version with a fresh context, signaling EOF, and for empty input this converts to an empty result.
+
+I'm not fully confident about the exact return value without checking BaseNCodec's implementation, so I'll abstain from asserting the precise byte array for test02. For test03, the exception-throwing behavior is already covered by the try/catch, so no extra oracle is needed. For test04, since the first decode call has a negative length it sets eof=true and tries to convert an accumulated buffer that starts null (treated as empty), producing nothing, and the second call just returns immediately since eof is already set—so again no additional oracle is needed there.
+
+I need to double-check the actual base58 decode table values rather than assuming standard positions, since I want to verify which character maps to which digit before trusting my computation.
+
+Still mapping character codes...
+
+Still mapping character codes...
+
+Now I'm tracing through decoding "Dt2" digit by digit, computing values and powers of 58 as I iterate from the end of the string backward.
+
+Adding up the contributions, I get value = 43327 decimal, which is 0xA93F in hex. Converting to a byte array gives [0xA9, 0x3F], and since the first byte isn't zero, there's no trimming needed—so the result ends up as [0, 0].
+
+Then I start reconsidering whether these tests actually need assertArrayEquals or simpler assertNotNull checks, since they look EvoSuite-generated—maybe the oracle is just a length or non-null check for test05 and test06. For test06, decoding "t2" gives leadingOnes = 0, and I'm working through the same value accumulation with the digits for '2' and 't'.
+
+Continuing the calculation, I get value 2959, which converts to a two-byte array of [11, -113].
+
+For test08, decoding "11" makes leadingOnes reach 2, so the loop range collapses to nothing and value stays zero — meaning the result array ends up as two zero bytes.
+
+Then I move through several more oracle checks: test09 sets an encode table and returns a Builder; test10 calls get() to produce a non-null Base58 instance; test11 checks that a string with invalid characters like spaces and '%' correctly returns false for isInAlphabet; and test12 starts encoding an 18-byte array of all zeros, which should produce 18 leading zero characters.
+
+For test13, calling Base58.builder() should return a non-null Builder. Now I'm trying to pin down the exact return value for test02's 3-argument encode method, which requires digging into the BaseNCodec source since the call uses negative byte values cast to ints as offset/length parameters, and I need to understand how those get handled.
+
+Since convertToBase58 with an empty buffer produces an empty encoded result, the position stays at zero. Now I need to trace what the 3-arg encode method actually returns in this scenario by checking the BaseNCodec source further.
+
+
+
+Now I understand the full picture. Let me analyze each test:
+
+**test02**: 
+`base58_0.encode(byteArray0, (int)(byte)(-20), (int)(byte)(-20))`
+- `byteArray0 = new byte[1]` (1 element, value 0)
+- offset = -20, length = -20
+- Looking at `encode(byte[], int, int)` in BaseNCodec:
+  - First checks `BinaryCodec.isEmpty(byteArray0)` - it has 1 element, so not empty
+  - Creates context
+- Since length is negative, eof is set true and the buffer stays empty, so the conversion routine runs on an empty buffer and produces empty output. The second encode call then hits an already-true eof flag and returns immediately, leaving the result buffer sized to whatever pos/readPos ended up being after processing the empty buffer.
+
+ensureBufferSize returns EMPTY since no growth is needed, so no bytes get copied and context.pos stays at 0. Following this through, the final buffer read is a zero-length array, so byteArray1 should end up empty, meaning the test just needs to assert its length is 0 or that it's non-null.
+
+Since readPos stays at 0 without a reset, I'll settle on asserting the result is not null rather than guessing an exact value. Moving to test05, I'm decoding "Dt2" as Base58 and computing its numeric value from each character's index.
+
+This resolves to 43327, which as a BigInteger byte array becomes {-87, 63} with no leading zero to trim, so byteArray0 should equal that two-byte array -- though given EvoSuite's typical pattern, I suspect the actual oracle just uses assertNotNull here too.
+
+Working through the other decode tests similarly: "t2" decodes to [11, -113], "11" decodes to [0, 0], and each would get either exact array assertions or simple length checks depending on which style EvoSuite chose.
+
+For the builder tests, `setEncodeTable` returning the builder itself suggests an oracle checking it's non-null or identical to the original builder instance, and `get()` producing a Base58 instance just needs a not-null check. Then I'm looking at `isInAlphabet` being called with a weird format string full of special characters like spaces, percent signs, and colons, which should return false since none of those match Base58's alphabet.
+
+For test12, encoding an 18-byte all-zero array should just produce 18 leading '1' characters since the BigInteger value is zero, giving "111111111111111111". Test13 simply checks that Base58.builder() returns a non-null Builder instance. Now I want to double-check my earlier calculations for test06.
+
+For decoding "t2", I compute the ASCII values, find zero leading '1' characters, then process the base58 digits: '2' maps to digit 1, then 't' maps to digit 51, giving a final value of 2959.
+
+Converting 2959 to a byte array gives [0x0B, 0x8F] since it's positive and fits in two bytes, with no trimming needed since the first byte isn't zero, yielding [11, -113].
+
+Now moving to test05, decoding "Dt2": mapping 'D' to 12, 't' to 51, and '2' to 1, with zero leading ones, then working through the base58 positional values starting from the rightmost digit.
+
+I compute the accumulated value up through 'D' as 43327, which in hex is 0xA93F. Then I realize I need to check whether the high bit of the leading byte is set, since BigInteger's toByteArray would need to prepend a zero byte to keep the number positive in two's complement if so — so I'm re-verifying the binary representation of 43327 to check that high bit.
+
+Since both characters are '1', leadingOnes is 2, so the loop from i=1 doesn't execute, and value stays zero, meaning decoded is empty per the special-case zero handling. That gives result = [0, 0], matching the expected assertion.
+
+Now checking test12's encode path with an 18-byte all-zero array: since length is 18, accumulate is empty and the new accumulated buffer becomes 18 zero bytes stored in context.buffer.
+
+Then in the EOF pass, accumulate pulls those 18 zero bytes from context.buffer, and convertToBase58 builds a BigInteger from them — since the magnitude is all zeros, the resulting value is BigInteger.ZERO regardless of the positive signum.
+
+So all 18 zero bytes give base58 "111111111111111111" (18 ones), matching the expected oracle value.
+
+Moving to test06: 2959 in binary is 0000_1011_1000_1111, and since the high bit of the first byte is 0, toByteArray() gives exactly two bytes [11, -113] without needing a padding zero.
+
+For test09, the Builder's setEncodeTable call returns the same Builder instance, so the oracle should assert that base58_Builder1 is the same object as base58_Builder0. For test10, calling get() on the Builder produces a new Base58 instance, so the oracle just needs to confirm it's not null.
+
+For test13, calling Base58.builder() returns a fresh Builder instance, so I'll assert that it's not null. Now I'm consolidating all the oracles across these tests: array equality checks for the byte array results, not-null checks for the builder instances, and same-instance checks where the builder returns itself.
+
+For test02 specifically, I need to trace through what happens when encode is called with negative offset and length - since length is negative, eof gets set to true and it converts an empty array, producing an empty result array on the second call.
+
+Since eof is already true on the second encode call, it returns immediately with an empty byte array of length 0, so byteArray1.length equals 0 — I can safely assert either that it's not null or that its length is 0. For test09, I'm now looking at how setEncodeTable on the Builder delegates to the raw decode table setter.
+
+For test11, checking character 'I' (0x49) against the decode table to see if it maps to -1, which would indicate an invalid character in the Base58 alphabet.
+
+Tracing through the condition: for 'I', it's not in the alphabet and not whitespace/pad, so the overall expression evaluates to true, meaning `isInAlphabet` returns false for the string — confirming my expectation that a non-base64 character like 'I' alongside whitespace fails the check unless allowWhitespacePad logic treats it differently.
+
+For the encode test, I'll assert the returned byte array is not null, since the encoding method always constructs a buffer internally.
+
+Checking test09 next: setting the encode table with a 3-byte all-zero array triggers a builder chain that resets the decode table and clones the new encode table, but ultimately returns the same builder instance since asThis() is called—so base58_Builder1 and base58_Builder0 should be the same object.
+

@@ -1,0 +1,83 @@
+Let me start by reading both the test file and the CUT (class under test) to understand what oracles need to be added.
+
+Now I understand the CUT. Let me analyze each test and determine what oracles are needed:
+
+1. **directFieldMutationOfTagNameBreaksEquality** - `original.equals(cloned)` should be `false` because `original` has tagName="b5 ;cl" but normalName=" |eOx/>T!" (since tagName was directly mutated), while `cloned` had `name("b5 ;cl")` called which updates both tagName AND normalName.
+   - `assertFalse(isEqual)` → `assertFalse(isEqual)`
+
+2. **tagsWithDifferentNamespacesAreNotEqual** - Two-arg constructor uses second arg as namespace ("t"), one-arg defaults to HTML namespace ("http://www.w3.org/1999/xhtml"). 
+
+Going through the remaining cases: known HTML tag vs unknown custom tag are not equal, a cloned tag equals the original, a tag equals itself, and a tag is never equal to a plain Object instance — each just needs the corresponding assertTrue/assertFalse call.
+
+For the known-tag-via-valueOf case, since the known flag is set differently than on a freshly constructed Tag with the same name, they shouldn't be equal even though the names match.
+
+For the RcData text-state test, I'm checking that when the tag's options bitmask matches the RcData flag, textState() returns TokeniserState.Rcdata — the existing test calls the method but never asserts on it, so I should add that assertion.
+
+Since the oracle was stripped out entirely, I need to capture the result of that call and add an assertion verifying its value, rather than just invoking the method with no check.
+
+Going through each test case one by one, I'm identifying where a boolean result needs an assertFalse or assertTrue added right after it's captured.
+
+For the seventh test, I need to check whether a known tag created via valueOf differs from a newly constructed unknown tag with the same name, since one carries the Known flag and the other doesn't.
+
+For the eighth test, textState() returns TokeniserState.Rcdata since the tag's options match RcData, but the current test doesn't capture the result. I should change it to assert the returned value equals TokeniserState.Rcdata directly.
+
+Since both TokeniserState and Tag live in the same package, no import should be needed for the assertion to reference TokeniserState.
+
+I'll settle on the simplest fix for each test: adding an assertion right after the existing `tag.textState();` call comparing it against `TokeniserState.Rcdata`, even though this calls the method twice—it's the least invasive change. I'll apply this same pattern across all the similar tests I need to fix.
+
+Adding more assertions for the remaining tests...
+
+I'm checking that a manually-constructed Tag isn't known, and verifying self-closing behavior—plain tags default to non-self-closing, while setting SelfClose/Block/Void options correctly flips isSelfClosing to true.
+
+For setSeenSelfClose, I notice the test doesn't actually assert the expected false result, so I need to add `assertFalse(tag.isSelfClosing())`. Then I'm covering isEmpty behavior: Void option makes a tag empty by default, while custom tags aren't empty unless explicitly configured.
+
+Moving to inline/block checks, tags without the Block option should be inline by default, while h6 should return false since it has Block set. Then for formatAsBlock, I'm reasoning through whether h6 has InlineContainer set based on how headings are typically categorized in the HTML spec.
+
+I'm not confident enough without seeing the TagSet definition, so I'll abstain on h6HasFormatAsBlockSet despite the test name suggesting the expected result is true. For customTagDoesNotFormatAsBlockByDefault, a fresh custom tag has no options configured, so formatAsBlock should return false.
+
+For h6IsABlockTag, h6 is clearly a block-level HTML element, so isBlock should be true, while a custom tag defaults to false for the same check. On the parser option tests, I can't verify option 128 for h6 without HtmlTagOptions, so I'll abstain there too, but a custom tag's parser options come from HtmlTagOptions.optionsFor with empty strings, which I'd need to check for the specific bit.
+
+For the clear-option tests, clearing FormSubmittable on an unknown tag also sets it as Known, so I should assert isKnownTag() becomes true. Clearing the Known flag itself removes the Known bit without re-setting it, since the option being cleared is Known itself.
+
+Tracing valueOf on the string "3urw0GS^ `H" — this is not a standard HTML tag, so TagSet returns a new tag without Known set initially. Clearing Known on it just leaves it unknown, so I'd assert isKnownTag() is false after that clear.
+
+Now for localName tests: with no colon in the tag name, localName() should just return the full string; with a colon present, it should return the substring after the colon. I'm setting up assertEquals checks for both cases using sample tag names like "<KN-^%U" and "8:<KN-^%U".
+
+For prefix, I need to check that it returns an empty string when there's no colon, and the substring before the colon when one exists—like "Oc2" from "Oc2:{". Then for the namespace setter, I'm verifying that calling namespace() returns the same Tag instance with the updated namespace value, so I'll add an assertSame check to confirm identity.
+
+For the empty namespace getter, I'm confirming that a fresh Tag with empty name and namespace returns an empty string. For hashCode, I'm stuck trying to figure out the exact expected value since I don't know what namespace Tag.valueOf("Oc2:{") actually produces internally, so I can't construct a precise assertion without tracing through the parsing logic.
+
+Given that risk, I decide to abstain from asserting a specific hashCode value. For toString I just assert it returns the raw tag name string, same for the name getter with an empty tagName. I'm now moving on to check how the normal name gets lowercased.
+
+For the getName test I confirm it preserves the original casing exactly as passed in. Some tests, like the one checking textState against RcData, don't actually capture the return value, so there's nothing meaningful to assert there.
+
+Then I go through several more textState tests, adding assertions to check that setting the Data option yields Rawtext, and that a tag with no text state option returns null, following the same pattern of adding an assertEquals or assertNull line after each unassigned method call.
+
+For the remaining tests, I add assertFalse for a tag with no seen self-close call, assertTrue for a cleared unknown tag becoming known, and assertEquals("") for both the prefix and namespace getters on tags without those properties. The hashCode test I decide to abstain on since I can't determine the exact value without knowing the NamespaceHtml constant.
+
+I'll also abstain on h6's parser options and custom tag parser options since I lack the TagSet data. For h6HasFormatAsBlockSet, I initially plan to abstain but reconsider—the method checks the InlineContainer flag, and since h6 is a heading tag whose inline children should stay inline per the block-formatting hint, the test name strongly suggests the expected value is true.
+
+Given the test name implies false, I'll add `assertFalse(hasOption);` for that case. Now I'm going through the full list of tests systematically, adding the right assertion for each one - equality checks get `assertTrue`/`assertFalse(isEqual)` depending on whether the tags should match.
+
+For text state, form submittable, and whitespace preservation tests, I'm matching each assertion to what the test name implies: `assertEquals` or `assertNull` for text state checks, and `assertTrue`/`assertFalse` for the boolean option tests.
+
+Continuing through more test cases, I'm adding assertions covering known-tag lookups, constructor behavior, and self-closing status across various tag configurations...
+
+Continuing through the remaining assertions: adding assertFalse for hasOption on tag 32, assertTrue for isKnownTag after clearing an option on 33, assertFalse for isKnownTag on 34, and checking the localName equality for a tag with a garbled name string on 35.
+
+Adding assertions for tests 44 and 45. Then I'm reconsidering test 7—checking whether a tag created via valueOf("I") and one created via new Tag("I") actually differ, since both seem to end up with no Known flag, same normalName, namespace, and options, meaning they might actually be equal despite the test name suggesting otherwise.
+
+So the key difference is that a plain `new Tag("I")` has options=0 with no Known flag, whereas `Tag.valueOf("I")` would return the known "i" tag with the Known flag and other properties set if "i" is a recognized HTML inline tag—meaning the two construction paths diverge in whether the tag's known-status options get populated.
+
+The custom tag name is clearly different, so `assertFalse(isEqual)` makes sense there.
+
+For `h6HasFormatAsBlockSet`, I'm reasoning that h6 as a heading likely has InlineContainer set in jsoup's TagSet, so `formatAsBlock()` should return true, meaning `assertTrue(formatAsBlock)` is the expected assertion.
+
+For `h6HasExpectedParserOption128`, without visibility into the internal HtmlTagOptions bit values, I can't confirm what 128 represents, so I'll abstain on that one.
+
+Reconsidering `customTagHasNoParserOptions`, an empty name and namespace likely falls outside HTML tag definitions, so `optionsFor` probably returns zero options for it.
+
+That means checking bit 128 against zero yields false, matching the expected `assertFalse` in the test. Now I need to work through the full file systematically, applying targeted edits for each test that needs an oracle assertion added -- like confirming that mutating a tag's fields directly and then comparing equality should assert false, since direct field mutation breaks the expected equality contract.
+
+So the normalName field differs between the two instances since only the cloned one got updated via name(), while the original retains its stale normalName from before the direct mutation. That confirms equals() should return false, so assertFalse(isEqual) is the correct assertion. Now I'll proceed to make all the necessary edits.
+

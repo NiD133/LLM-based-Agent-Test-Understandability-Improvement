@@ -1,0 +1,70 @@
+Let me read both the test file and the class under test to understand what oracles need to be added.
+
+Now let me analyze each test and determine what oracles should be added:
+
+**test00**: 
+```java
+Duration duration0 = DurationUtils.getMillis("g\"*8?I", (-9223372036854775808L));
+long long0 = DurationUtils.toMillisLong(duration0);
+```
+- `getMillis("g\"*8?I", -9223372036854775808L)` → Since the key "g\"*8?I" is not empty and not a valid system property, `getLong` returns the def value `Long.MIN_VALUE` (-9223372036854775808L). So `duration0 = Duration.ofMillis(Long.MIN_VALUE)`.
+Then `toMillisLong` calls `duration0.toMillis()`, and `Duration.ofMillis(Long.MIN_VALUE).toMillis()` returns `Long.MIN_VALUE`, so the oracle should assert that `long0` equals `Long.MIN_VALUE`.
+
+For test01, I'm looking at how `ChronoUnit.FOREVER.getDuration()` behaves when passed into `toMillisLong`, tracing through what duration value FOREVER represents to figure out the expected millisecond result.
+
+Then it becomes clear FOREVER's duration is enormous (essentially `Duration.ofSeconds(Long.MAX_VALUE, 999_999_999)`), and since `toMillis()` overflows and throws `ArithmeticException`, `toMillisLong` catches this and returns `Long.MAX_VALUE` for a positive duration. The oracle asserts `long0` equals `Long.MAX_VALUE`.
+
+For test02-04, I'm tracing simple `TimeUnit` to `ChronoUnit` conversions using `DurationUtils.toChronoUnit`: DAYS maps to `ChronoUnit.DAYS`, HOURS maps to `ChronoUnit.HOURS`, and SECONDS should map to `ChronoUnit.SECONDS`.
+
+Continuing this pattern, MICROSECONDS maps to `ChronoUnit.MICROS`, NANOSECONDS maps to `ChronoUnit.NANOS`, and for test07 I confirm that a negative duration (`Duration.ofSeconds(-105L, -105L)`) causes `isPositive` to correctly return `false` since `isNegative()` is true. Now I'm looking at test08, which involves calling `DurationUtils.getMillis` with a null string and a negative default value.
+
+Since the input string is null, `StringUtils.isEmpty(null)` returns true, so the method falls back to the default of -1048, producing `Duration.ofMillis(-1048L)`. There's no obvious returned boolean or value to assert on beyond the object itself, so I'll just verify the duration isn't null.
+
+For test09, calling `accept` with a valid consumer but a null duration hits the guard clause that requires both to be non-null, so nothing executes — there's no observable state to assert, just confirming it doesn't throw.
+
+Test10 similarly calls `accept` but with a null consumer and `Duration.ZERO`, again failing the non-null check on the consumer side.
+
+For test11, I'm tracing that `toChronoUnit(MILLISECONDS)` maps to `ChronoUnit.MILLIS`, then `get` with a non-empty key delegates to `getLong` since the key isn't empty.
+
+Since the system property isn't found, `Long.getLong` returns the default -210L, so `duration0` ends up as `Duration.ofMillis(-210L)`. I should assert on `chronoUnit0` being `ChronoUnit.MILLIS` as the main check, plus a non-null check on the duration, following the pattern from earlier tests where the primary computed variable gets the key assertion.
+
+Moving to test12, I'm now setting up a mock `FailableRunnable` using a `ViolatedAssumptionAnswer` to test failure paths.
+
+I'm reasoning that `DurationUtils.of` times the mock's execution, then `isPositive` checks whether that measured duration is greater than zero -- likely true since even a fast mock call takes some nonzero time.
+
+With `mockJVMNonDeterminism = true`, EvoSuite mocks time calls, so both `Instant.now()` calls inside `since()` likely return the same mocked instant, giving a zero duration and making `isPositive` false. So the oracle should be `assertFalse(boolean0)`.
+
+For test13, `getMillis("ctJ#Rib]z0+G8", 3831L)` looks up a nonexistent system property with that key, falls back to the default 3831L, producing `Duration.ofMillis(3831L)`, which is clearly positive.
+
+For test14, converting -866 minutes to Duration and then to milliseconds gives -51,960,000, which I need to check against the int conversion range check.
+
+For test15, I'm tracing through a nop consumer being passed to a "since now" duration calculation, which will depend on timing between the captured instant and Instant.now(), likely producing a very small or zero duration.
+
+For getNanosOfMiili with Duration.ZERO, the result works out to 0, though I should flag the timing-dependency here.
+
+For test16, DurationUtils is instantiated directly and I just assert it isn't null.
+
+For test17, I'm looking at a call to getSeconds with a malformed string and a negative long argument to see how it parses.
+
+I realize many tests compute values but lack assertions, so I need to add meaningful oracles based on what each computation actually produces—booleans, longs, ints, and durations get direct value assertions, while void operations need none. For the first test, tracing through the logic: the missing system property falls back to `Long.MIN_VALUE`, producing a `Duration.ofMillis(Long.MIN_VALUE)`, so I need to work out what the resulting millisecond value should be for the assertion.
+
+Working through the division: -9223372036854775808/1000 truncates toward zero to -9223372036854775, leaving a remainder of -808 nanoseconds worth of milliseconds, so the seconds/nanos split needs careful verification against the original value.
+
+Since Java truncates toward zero, dividing Long.MIN_VALUE by 1000 gives -9223372036854775 seconds with a remainder that works out to -808 million nanoseconds, which then needs normalizing since nanos must be non-negative.
+
+I'm tracing through the normalization: adjusting seconds down by one and adding a billion to the negative nanos gives -9223372036854776 seconds and 192,000,000 nanos. Converting back to milliseconds by multiplying seconds by 1000 and adding the nanos-to-millis conversion recovers exactly Long.MIN_VALUE, confirming the round-trip works correctly at this boundary.
+
+For the next test, FOREVER's duration uses Long.MAX_VALUE seconds, so toMillis() overflows on the multiplication, and since the duration is positive, the utility falls back to returning Long.MAX_VALUE. The remaining tests just check that various time-unit conversions map to the expected ChronoUnit values like DAYS, HOURS, SECONDS, and microseconds.
+
+For test07, since the duration is negative, the boolean check should assert false. For test08, when getMillis is called with a null key but a default of -1048L, StringUtils.isEmpty(null) returns true, so it falls back to that default, giving Duration.ofMillis(-1048L) as the expected result. Tests09-10 involve accept() calls with null consumers or durations that do nothing, so no assertions are needed there, and test11 introduces two computed values — a MILLIS chrono unit and a duration I still need to work out.
+
+Continuing through the remaining cases, I'm noting which need positive/negative boolean checks, exact numeric assertions, or simple non-null checks, while timing-dependent tests like test12 and test15 get abstained. I'm now categorizing tests by whether they genuinely require an oracle — void-returning tests that only verify no exception was thrown (test09, test10, test17) don't need one, while others do.
+
+Working through the math, `get` with that key falls back to -210L since it's not a system property, so the result equals `Duration.ofMillis(-210L)` — that's the oracle to assert for test11.
+
+For void-returning tests like test09, test10, and test17, there's no return value to assert on, so the implicit oracle is just that they run without throwing. I'm weighing whether that's sufficient given the instruction to add oracles wherever needed.
+
+Now I'm working out the specific assertions for each test: minimum/maximum long values, various ChronoUnit constants, boolean results, and duration values based on the millisecond calculations.
+
+Confirming test08's assertion with the negative duration value, then moving to test11 where the key isn't a system property so it falls back to -210L, giving me a matching duration assertion. For test13, I'm checking that the key also isn't a system property to determine the fallback value used.
+

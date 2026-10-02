@@ -1,0 +1,94 @@
+Let me read both the masked test file and the class under test to understand what needs to be done.
+
+Now I understand both files. Let me analyze each test method to determine what oracle (assertion) should be added:
+
+1. **equals_withNonTagSetObject_returnsFalse**: Tests `tagSet.equals(plainObject)` where `plainObject` is an `Object`, not a `TagSet`. The `equals` method returns `false` if it's not a `TagSet` instance. So we need `assertFalse(result)`.
+
+2. **equals_withSameInstance_returnsTrue**: Tests `tagSet.equals(tagSet)` (same instance). The `equals` method compares `tags` maps. Same instance means `Objects.equals(tags, tagSet.tags)` which is comparing the same map to itself - returns true. 
+
+3. **onNewTag_returnsThisForMethodChaining**: Since `onNewTag` returns the same `TagSet` instance, the returned tag set should be the same object as the original, so I'll use `assertSame(tagSet, returnedTagSet)`.
+
+4. **valueOf_withSameNormalName_returnsSameTagInstance**: I'm tracing through how `valueOf` resolves the tag when called twice with the same normalized name, checking whether the internal map lookup returns the identical cached `Tag` instance on the second call rather than creating a new one.
+
+Since this second lookup normalizes to the same tag name and finds the tag we just added, with preserveTagCase false meaning no clone is needed, it returns the identical tag instance—so firstTag and secondTag are the same object, confirmed via assertSame.
+
+This second lookup succeeds, and since preserveTagCase is true and the names differ, it clones the tag, sets its tagName to "J", and returns the clone. Now I'm wondering what assertion to write since tagName is a field rather than an accessor method, so I need to check the Tag class to see what's actually exposed.
+
+
+
+Now I have enough information to determine the oracles. Let me analyze each test:
+
+1. **equals_withNonTagSetObject_returnsFalse**: `result = tagSet.equals(plainObject)` where plainObject is `new Object()`. The `equals` method checks `if (!(o instanceof TagSet)) return false;`. So result is `false`. Oracle: `assertFalse(result)`.
+
+2. **equals_withSameInstance_returnsTrue**: `result = tagSet.equals(tagSet)` where tagSet is same instance. The `equals` method returns `Objects.equals(tags, tagSet.tags)` which comparing the same map to itself always returns true. 
+
+Oracle: `assertTrue(result)`. For the third test, `onNewTag` simply returns `this`, so I'm checking the returned instance is the same object with `assertSame`. Now I'm tracing through the fourth test's `valueOf` call to work out what normalized tag name and case-preservation logic produces on the first invocation.
+
+For the preserveTagCase test, since "J" differs from the stored normalized tag name, valueOf clones the stored tag with tagName set to "J" rather than returning the same instance.
+
+Now checking assertions: preservedTag.getName() should equal "J", and preservedTag must not be the same object as storedTag.
+
+Moving to the next test, valueOf_knownHtmlTag_isKnownTag calls Tag.valueOf("kbd"), but I need to verify whether Tag actually exposes a static valueOf method since I only saw an instance constructor earlier.
+
+If such a method exists, I'd assert `assertTrue(kbdTag.isKnownTag())`. I should read more of the Tag.java file to locate the `isKnownTag` and `valueOf` methods directly.
+
+
+
+Now I have all the information I need to write the oracles. Let me analyze each test:
+
+1. **equals_withNonTagSetObject_returnsFalse**: `assertFalse(result)` - comparing TagSet to a plain Object returns false.
+
+2. **equals_withSameInstance_returnsTrue**: `assertTrue(result)` - same instance equals itself.
+
+3. **onNewTag_returnsThisForMethodChaining**: `assertSame(tagSet, returnedTagSet)` - `onNewTag` returns `this`.
+
+4. **valueOf_withSameNormalName_returnsSameTagInstance**: `assertSame(firstTag, secondTag)` - both calls use same normalName, so second returns same tag.
+5. For the preserveTagCase test, since preserveTagCase is true, the original casing "J" should be preserved in the returned tag's name.
+
+For the known HTML tag test, I'm tracing through how `Tag.valueOf("kbd")` resolves against the HtmlTagSet source — since "kbd" is already lowercase and should exist in the source set, the lookup should clone it from HtmlTagSet and mark it as known, so the oracle should be `assertTrue(kbdTag.isKnownTag())`.
+
+For the customizer test, I'm working through how `TagSet.onNewTag` registers a customizer and how `Tag.valueOf("mtext", ...)` resolves with a given namespace, tracing whether the customizer gets applied to the newly added tag.
+
+Then I'm going through several straightforward oracle checks for copy constructor behavior — verifying that copies made from a TagSet with a customizer, from `TagSet.Html()`, and from a TagSet with tags already added, are all equal to their originals.
+
+For the hashCode test on an empty TagSet, since the test doesn't capture the return value and its name emphasizes "doesNotThrow", I'm considering whether an oracle is even needed here or if the absence of an exception is the implicit assertion, though I could try asserting the hash equals zero for an empty map.
+
+For the initHtmlDefault test, checking that the returned TagSet from `initHtmlDefault()` isn't null gives a solid oracle.
+
+Now I'm reconsidering the customizer test more carefully — I'm noticing that `htmlTagSet` refers to a static field, so calling `onNewTag` on it could mutate shared state, which raises concerns about whether this test is safe to verify against.
+
+I think verify(customizer).accept(mTextTag) is the right assertion since ViolatedAssumptionAnswer only intervenes on unstubbed calls without failing the test outright.
+
+For the third test, since onNewTag returns `this`, I can assert that returnedTagSet is the same instance as tagSet using assertSame.
+
+Now I'm working through the copy constructor tests, considering how the equals method compares the tags maps and whether HtmlTagSet's tags are lazily loaded via a source, which matters for verifying the copy behaves correctly.
+
+I'm now digging into whether Tag overrides equals or relies on Object's default identity comparison — this matters because if tags are cloned during copying, the copied Tag instances won't be equal to the originals under identity semantics, which would break the expectation that copy.equals(htmlTagSet) returns true. I need to check whether Tag actually implements equals or whether TagSet.equals is comparing something else, like tag names, rather than relying on Map equality with default Tag identity.
+
+For test 9, both starting maps are empty HashMaps so equality holds and `assertEquals` should pass. But test 10 has actual tags, and since Tag lacks equals override, cloned tags won't equal originals, so that assertion would likely fail despite the test's name suggesting otherwise.
+
+I'm tracing through the valueOf call with preserveCase enabled to see how it processes the tag name and namespace before creating the tag.
+
+After valueOf runs, tagSet.tags contains one entry. Then the copy constructor clones each Tag, so copy.tags has different Tag instances than the originals—since Tag doesn't override equals, copy.equals(tagSet) would actually be false, which contradicts what the test name "createsEqualCopy" seems to imply.
+
+Looking at the numbered test cases again, I think test 9 covers both TagSets being empty (trivially equal), while test 10 covers the case where both TagSets have tags after copying.
+
+Given the uncertainty over exact assertions, I should be more conservative and only assume equality where it's clearly demonstrated by the test setup.
+
+Re-examining test 8, I'm tracing how the HtmlTagSet copy is constructed and confirming its tags are populated correctly from the original set.
+
+Since the copy clones each tag, equals() would compare by instance rather than value, which seems inconsistent with "createsEqualCopy" — so I want to double-check whether Tag actually overrides equals somewhere I missed.
+
+
+
+Tag DOES override `equals` comparing `tagName`, `namespace`, `normalName`, and `options`. So cloned tags that have the same values WILL be equal. This means the copy constructor tests can use `assertEquals`.
+
+Now let me finalize all oracles:
+
+1. **equals_withNonTagSetObject_returnsFalse**: `assertFalse(result)`
+
+2. **equals_withSameInstance_returnsTrue**: `assertTrue(result)`
+
+3. **onNewTag_returnsThisForMethodChaining**: `assertSame(tagSet, returnedTagSet)`
+
+4. **valueOf_withSameNormalName_returnsSameTagInstance**: `assertSame(firstTag, secondTag)`

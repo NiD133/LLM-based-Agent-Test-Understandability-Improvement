@@ -1,0 +1,76 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now I understand the structure. Let me analyze each test method and determine what oracles are needed:
+
+**test00**: `mutableClock0.set((TemporalField) chronoField0, 0L)` - sets MILLI_OF_SECOND to 0. No return value, void method. The test just calls the method without checking. Originally this might have had no oracle, or could check that instant changed/didn't throw. Since there's no return value and the test just calls the method... perhaps there was no oracle here. But wait, we need to add an oracle if one is needed.
+
+Actually, looking at this test more carefully: the test calls `set((TemporalField) chronoField0, 0L)`. Since MILLI_OF_SECOND=0 on epochUTC() wouldn't change anything (epoch is at 0 millis), the instant would remain the epoch. 
+
+Since we're starting at epoch, setting MILLI_OF_SECOND to 0 shouldn't change anything, so I could assert the instant stays at epoch after the call.
+
+For test00, since it starts at epoch UTC and sets MILLI_OF_SECOND to 0, the result should still be Instant.EPOCH, so I could assert that equality directly. But I should first figure out whether each test actually needs an oracle at all -- some void-method tests might just be smoke tests checking no exception occurs, while others that mutate state need an assertion on the resulting instant value.
+
+For test01, it calls set with an Instant used as a TemporalAdjuster, and I need to work out what value the clock should hold afterward -- since Instant implements TemporalAdjuster, adjusting should effectively move the clock's underlying instant to match instant0's epoch second and nanosecond values.
+
+So I could assert `assertEquals(instant0, mutableClock0.instant())`, though I'm wondering whether MockInstant equality with a real Instant will actually hold since one is a mock and the other is produced fresh by the clock.
+
+**test02**: Calls `mutableClock0.add(-1L, ChronoUnit.DECADES)`, subtracting ten years from epoch, landing around 1960. Rather than compute the exact resulting instant, I'll just assert that the result is before the epoch, since we know we moved backward by a decade.
+
+**test03**: Creates two `withZone` clocks with the same MIN zone from `mutableClock0`, then checks whether they're equal to each other.
+
+Since both clocks share the same underlying instant holder and zone, they should be equal, so I'll assert `boolean0` is `true`.
+
+**test04**: Two separate `epochUTC()` clocks with different instant holder instances shouldn't be equal, so `boolean0` should be `false`.
+
+**test05**: Comparing `mutableClock0` to a plain `Object` should return `false` since it's not a MutableClock.
+
+**test06**: Comparing `mutableClock0` to itself should return `true`, hitting the identity check in equals.
+
+**test07**: Calling `withZone` with the same zone (UTC) returns the same instance per the code's short-circuit, so I can assert `mutableClock0` and `mutableClock1` are the same object.
+
+**test08**: Calling `withZone` with a different zone (MIN) creates a new clock, so equals should return `false` even though the instant holder is shared.
+
+**test09**: Now I'm working out what `toString()` produces for the epochUTC clock.
+
+For test10 with setInstant using a mock, there's no reliable oracle without knowing the mock's return value, so I might abstain there. Test11 just calls hashCode without capturing the result, so there's nothing to assert on directly—maybe I could check consistency by comparing two calls to hashCode, though that's a weak oracle.
+
+For test11, since the hashCode call result isn't stored, the oracle was likely comparing two calls for consistency, asserting that hashCode returns the same value each time it's invoked on the same object.
+
+I'll compare two calls to hashCode on the same object for consistency instead, since the mockJVMNonDeterminism setting could theoretically make identity hashes deterministic but I shouldn't rely on that. Now I'm categorizing which tests actually need oracles based on whether they store return values (like test03 through test09) versus ones that just call void methods without capturing anything (test00, test01, test02, test10, test11).
+
+For the variable-holding tests, the expected assertions follow naturally from the clock semantics: same-zone withZone calls sharing an instantHolder, equality checks between distinct clocks, self-equality, and the exact string format of a MutableClock at epoch UTC.
+
+For void-method tests, I'm now working through state-based oracles: checking whether the instant stays fixed, moves forward, or moves backward after each operation, and verifying hashCode consistency. Working through test00 specifically, setting MILLI_OF_SECOND to 0 on an already-epoch clock should leave the instant unchanged, so the oracle should assert the resulting instant equals Instant.EPOCH.
+
+For test01, after adjusting the mutable clock with a MockInstant like `-1034L, -1034L`, the resulting instant should equal that same instant value.
+
+So after normalization, `instant0.equals(mutableClock0.instant())` should hold true, assuming the mock properly normalizes the epoch values. For test02, subtracting one decade from the epoch should land around 1960, so the assertion would use `Instant.isBefore(Instant.EPOCH)` to confirm the result precedes the epoch.
+
+For test10, calling `setInstant` with a freshly generated mock instant should make `mutableClock0.instant()` equal that same instant afterward. For test11, which just checks `hashCode()`, I'm trying to figure out what assertion makes sense there.
+
+The hash combines an identity hash with the zone's hash, and since JVM non-determinism is mocked, the identity hash might not be reliably predictable in the test. The safest oracle is probably just checking that calling hashCode twice gives a consistent result, or trivially asserting the returned value isn't null, since there's no stored variable to compare against.
+
+For test12, adding a zero duration shouldn't alter the instant, so I'll assert that the clock still returns Instant.EPOCH after the operation.
+
+Now I'm reconsidering test07, where epochUTC's zone is UTC and withZone is called with ZoneOffset.UTC -- since the zone doesn't actually change, this should behave like a no-op or return an equal clock.
+
+I'm also confirming test09, where calling toString() on the epoch clock should produce the string "MutableClock[1970-01-01T00:00:00Z,UTC]".
+
+Now I'm compiling all these oracles together and preparing to write the final assertions into the test file.
+
+Continuing through more equality and identity checks: self-equality is true, withZone(UTC) on a UTC clock returns the same instance, clocks with different zones aren't equal, and the toString format matches the epoch timestamp with zone. I also verify setInstant correctly updates the returned instant, then move toward testing hashCode behavior.
+
+I'm adding a hashCode consistency check and confirming that adding a zero Duration leaves the instant unchanged at epoch. I pause to double-check that Instant.EPOCH is properly imported, then consider whether ZoneOffset.UTC's toString() actually renders as "UTC" or "Z" since that affects the expected string in the toString test.
+
+Since `ZoneOffset` extends `ZoneId` and inherits its `toString()` behavior returning `getId()`, `ZoneOffset.UTC.toString()` gives "Z". So the resulting string should be "MutableClock[1970-01-01T00:00:00Z,Z]", confirming my expectation.
+
+Confirming that `getId()` backs `toString()`, so the real Instant's default string representation applies since the clock stores `java.time.Instant.EPOCH` rather than a mocked variant. I'll settle on "MutableClock[1970-01-01T00:00:00Z,Z]" as the expected output, though I want to verify by tracing through `MutableClock.epochUTC()`'s implementation.
+
+I'm confident in "MutableClock[1970-01-01T00:00:00Z,Z]" as the toString result. For test01 and test10, since setInstant stores the exact same instant reference, assertEquals against mutableClock0.instant() should pass by reference equality; for the TemporalAdjuster case, I'm tracing through how the adjuster gets applied to the current ZonedDateTime and the result stored back into the holder.
+
+Since instant0 has -1034 nanos, that normalizes to a different epoch second and nano value — the actual stored value would be epoch second -1035 with a nanosecond adjustment near a billion, so I need to make sure the assertion reflects that normalized instant rather than the literal constructor arguments.
+
+I'm confirming the oracle for the EPOCH test case works since instant() is accessible after the field-set call, and now I'm moving to verify the remaining test cases before writing all the oracles into the file together.
+
+Confirmed, `Instant.EPOCH` is available in Java 8. For the hashCode oracle, I'll just check consistency across repeated calls since the mocked identity hash value is unpredictable. Now I'm finalizing all the oracles for the test file.
+

@@ -1,0 +1,85 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be filled in.
+
+Now I need to analyze each test method and determine what oracle (assertion) should be added. Let me go through each test:
+
+**test00** - No oracle needed (just tests exception is thrown)
+
+**test01** - Tests `hasPrevious()` after `hasNext()` on a nested FilterListIterator.
+- `filterListIterator1.hasNext()` is called - the iterator has a matching element (object0 passes the EqualPredicate since it's equal to itself; then UniquePredicate would also pass since it hasn't been seen)
+- Then `filterListIterator1.hasPrevious()` is called - since we only called hasNext (not next), no traversal happened, so hasPrevious should return false
+- Tracing through `hasPrevious()`: it invokes `setPreviousObject()`, which sees `nextObjectSet` is true so it clears the next object and retries, but since nothing was actually advanced, the result comes back false. So `boolean0` should be `false`, meaning I should assert `assertFalse(boolean0)`.
+
+- Next, checking a case where the iterator's list has object0 but the predicate is testing against object1 -- since EqualPredicate uses equals() via DefaultEquator, and object0 and object1 aren't equal, `hasNext()` should return false, so again I'd want `assertFalse(boolean0)`.
+
+**test04** examines a trickier sequence: after calling `next()` and then `hasPrevious()` on filterListIterator0, a second wrapper filterListIterator1 is built around the same underlying listIterator0, and I'm tracing through whether `hasNext()` on that second wrapper works correctly given the shared cursor position left behind by the first iterator's movements.
+
+Its own previousObjectSet is separate from filterListIterator0's, but they operate on the same underlying listIterator0 cursor, so calling next() here advances that shared cursor from position 0 to return object0, since hasNext() finds object0 available regardless of the other iterator's internal state.
+
+So boolean0 should be false, and I should assert that. Let me re-check test04's actual structure to confirm the assertion target, then move to test05, which tests calling previous() right after next() on the filter iterator.
+
+Tracing through: after next() returns object0, calling previous() should return that same object0, but I notice the test doesn't actually capture previous()'s return value in a variable, so the assertion must be checking something else, like state or absence of an exception.
+
+Since next() then previous() should restore the iterator to its initial position, I could check that hasNext() is true and hasPrevious() is false afterward as the oracle, though I need to confirm that's actually what the test asserts on.
+
+I'm reconsidering — the missing oracles were likely assertions on the return values of `next()` and `previous()`, which currently aren't captured in the test. Maybe the original test asserted `object0` equals the result of `next()`, then had a separate check after `previous()` was called.
+
+Going test by test now, I'm tracing through test01's calls to `hasNext()` and `hasPrevious()` to figure out what boolean value should be asserted based on the iterator's actual state at that point.
+
+I realize I need to correct myself: the outer filterListIterator1 actually calls next() rather than hasNext() when populating setNextObject, so let me trace through the actual setNextObject logic more carefully—it checks if a previous object was consumed, clears state, then loops through the underlying iterator testing each element against the predicate until one passes.
+
+Now tracing filterListIterator1.hasPrevious(): it clears the next object state and recurses into setPreviousObject, which calls down to filterListIterator0.hasPrevious(). That checks listIterator0.hasPrevious(), which is true since we advanced past object0, so previous() returns object0 and it gets tested against the equal predicate.
+
+Object0 comes back as the previous value, and now I need to check whether uniquePredicate0 still considers it unique, since it already saw object0 during the earlier next() call.
+
+Since previousObjectSet was cleared and the underlying listIterator has no more previous elements, the recursive call returns false, propagating up so hasPrevious() ultimately returns false — confirming boolean0 is false, matching assertFalse.
+
+Now moving to test02: filterListIterator0 wraps listIterator0 (positioned at start, object0 next) with an EqualPredicate matching object0, and the test calls hasNext() followed by hasPrevious().
+
+Tracing through hasNext(): since nextObjectSet is false, setNextObject() runs, iterator.hasNext() is true, iterator.next() actually advances the underlying listIterator0 past object0, and since predicate.test(object0) is true, nextObject is set and hasNext() returns true.
+
+Now for hasPrevious(): previousObjectSet is false, so setPreviousObject() runs, which first clears the already-set nextObject via clearNextObject(), then recursively calls setPreviousObject() again — and I need to check whether listIterator0.hasPrevious() is true now, since the earlier next() call did move it forward past object0.
+
+Wait, I need to re-check the structure of setPreviousObject — after the nested call succeeds, it calls clearPreviousObject() and then falls through to the loop that scans the iterator for a matching previous object, rather than returning immediately.
+
+Continuing the trace, the inner call finds object0, sets previousObject, and returns true, but then the outer clearPreviousObject() resets it back to null before the final hasPrevious() check finds the iterator already at position 0, so it returns false overall. This means boolean0 is false, giving me an assertFalse oracle for that test. Moving to test03, I'm now tracing filterListIterator0.hasNext() starting at line 85-86.
+
+Right, filterListIterator0's hasPrevious() left the shared listIterator0 positioned before object0, so when filterListIterator1 calls next(), it advances that shared iterator to consume object0 itself, and the predicate matches it as true.
+
+Since filterListIterator1.next() is invoked directly rather than through hasNext() first, I need to trace setNextObject() explicitly: nextObjectSet starts false, then the shared iterator advances past object0 to position 1, the predicate passes, and filterListIterator1 stores object0 as its nextObject with nextObjectSet now true.
+
+Now tracing filterListIterator0.hasNext(): it clears its previous object state and calls setNextObject(), which finds the shared underlying iterator has no more elements at position 1, so it returns false all the way up. This means boolean0 evaluates to false.
+
+Looking at test05, both next() and previous() calls don't capture return values, so instead I can verify iterator state afterward — after calling next() then previous(), the iterator should be back at the start, meaning hasNext() should be true and hasPrevious() should be false.
+
+Tracing through next() then previous(), I can work out the resulting nextIndex would be 0 and previousIndex -1, so the missing assertion likely checks one of those index values or hasNext() state after the calls.
+
+That confirms hasNext() returns true, so I could add an assertion there, but I'm reconsidering whether that's the best place for the oracle. Since the test's assertions were stripped without leaving markers, I need to figure out where they most naturally belong -- likely capturing the return value of previous() or asserting the final state like nextIndex, hasNext, or hasPrevious after the round trip.
+
+I'll settle on `assertEquals(0, filterListIterator0.nextIndex())` for test05, since nextIndex resolves to 0 while previousIndex would be -1.
+
+Now I'm going through the other tests one by one to see which ones still lack an oracle — test00 has a fail() in its catch block so it's fine, but test01 and test02 capture boolean results without any assertion following them.
+
+Continuing through the remaining tests, I see most just call methods like getListIterator, nextIndex, setPredicate, setListIterator, hasNext, and previousIndex without any assertions, while a handful rely on fail() calls as their oracle instead of explicit checks.
+
+For test07, I'm tracing through calling next() then hasPrevious() twice in a row — the second call should just return the cached true value since previousObjectSet is already true, so the oracle should assert that boolean0 is true.
+
+Now I'm examining test08's method call sequence to determine what oracle it needs.
+
+For test08, calling hasNext() twice in a row similarly returns the cached true value, so boolean0 should be true.
+
+For test09, since the constructor is given a null predicate, calling getPredicate() should return null, so the oracle needs to assert that predicate0 is null.
+
+Moving to test10, constructing with a predicate but no iterator means getListIterator() returns null since only the constructor sets the predicate. For test12, using the default constructor leaves nextIndex at its default value of 0, so nextIndex() should return 0.
+
+Tracing test17, I'm following the call sequence of next(), hasPrevious(), then hasNext() through the internal state machine—tracking how nextObjectSet, previousObjectSet, and the underlying list iterator's position shift with each call to determine what hasNext() ultimately returns.
+
+Continuing that trace, the inner setNextObject clears the next object flag, and since the outer iterator has no further elements, hasNext() ultimately returns false with assertFalse(boolean0) as the oracle.
+
+For test18, the default constructor leaves nextIndex at 0, so previousIndex() returns -1, giving assertEquals(-1, int0).
+
+Now I'm moving on to check the edge cases starting with test05, after a next() call.
+
+The original test likely captured next()'s return value and asserted it equaled object0, then did the same for previous(). Since the current code discards both results, the safest fix is probably a state-based oracle after both calls, checking that nextIndex() equals 0 since the iterator returns to its starting position.
+
+Moving on, for test14's void setPredicate call, I should verify with getPredicate() that it equals the predicate set. For test16's setListIterator, similarly I can check getListIterator() returns the same iterator passed in. Now I'm compiling the full set of oracles across all the numbered tests, mostly boolean assertions checking false results.
+

@@ -1,0 +1,148 @@
+Let me start by reading the masked test file to understand what tests are there and where oracles need to be added.
+
+Now I need to add oracles to the test methods. Let me analyze each test method:
+
+1. `newString_nullBytesAndNullCharset_returnsNull` - result should be null
+2. `newStringIso8859_1_nullBytes_returnsNull` - result should be null
+3. `getBytesUnchecked_nullString_returnsNull` - result should be null
+4. `getBytesUnchecked_unsupportedCharset_throwsIllegalStateException` - already has try/catch, but could use `assertNotNull(e)` or some check in catch
+5. `getByteBufferUtf8_nullString_returnsNull` - null result
+6. `equals_charBufferOfTwoNullCharsAndDifferentString_returnsFalse` - false result
+7. `equals_stringAndCharBufferWrappingSameContent_returnsTrue` - true result
+8. `equals_charBufferWithNullBytesAndAsciiStringWithSameBaseChars_returnsFalse` - false result
+9. `equals_nonNullAndNull_returnsFalse` and `equals_nullAndNonNull_returnsFalse` - false results
+10. `equals_sameCharBufferReference_returnsTrue` and `equals_emptyStringAndNonEmptyString_returnsFalse` - true/false results
+11. `getBytesUtf16Le_thenDecodeAsUtf8_producesNullByteInterleavedString` needs a more complex assertion
+12. Various empty-string byte array tests need length-zero checks, and `getByteBufferUtf8_nonNullString_returnsHeapByteBuffer` needs a not-null check
+
+Continuing through the remaining tests, I'm noting several length checks (13, 17, 2, 2, 2, 2 chars/bytes for various encodings), a couple of null-char verifications for UTF-16 zero-byte tests, an unsupported charset test that already handles its own exception logic, and a null-string check for `getBytesUtf16Be_nullString_returnsNull`. For test 4, I'm confirming the catch block's fail-in-try structure already covers the exception test correctly.
+
+For test 13, I'm working through the math: encoding an ASCII string as UTF-16LE interleaves each char with a null byte, and when that raw byte sequence is reinterpreted as UTF-8, each original character produces two characters -- itself plus a null character -- so the decoded string length should double the original 17-character input to 34.
+
+I could assert the decoded length equals double the ASCII input length, or check specific characters. For the UTF-16 four-zero-bytes test, I'm reasoning that would decode to two null characters, so I'd assert length 2 and both chars equal null. Similarly for US-ASCII with two zero bytes, and I'm now considering whether an empty string encoded to UTF-16 would include just a BOM in Java's implementation.
+
+But the test name for empty string UTF-16 encoding claims it returns an empty byte array, which conflicts with my understanding that Java's UTF-16 charset always writes a BOM (2 bytes) even for empty input -- so I might need to abstain from asserting the exact byte count there and settle for a safer assertion instead.
+
+I'll stay cautious here: for UTF-8 empty string, zero bytes is clearly correct, so I'll assert length 0 there. For UTF-16 with its BOM ambiguity, I'll just abstain on length and assert non-null, then move through the remaining test cases one by one to decide the most natural assertions.
+
+For the batch of null-input and exception tests, straightforward oracle assignments make sense: null-returning methods get `assertNull`, boolean comparisons get `assertTrue`/`assertFalse` based on their names, and the unsupported-charset test doesn't need an oracle since it's verified through exception handling.
+
+Now I'm working out the trickiest case: decoding UTF-16LE bytes as UTF-8 should produce a string with null bytes interleaved between each original ASCII character. Since ASCII_INPUT has 17 characters and each becomes two UTF-16LE bytes, I'm reasoning through whether the assertion should check the resulting length (34) or verify the null-byte interleaving pattern more directly.
+
+For the empty string UTF-16 test, I'm unsure how Java handles the BOM in output bytes, so I decide to abstain there rather than guess. For the remaining tests I move through simpler cases quickly, checking for non-null results and zero-length byte arrays where the test names clearly indicate empty string handling.
+
+I continue assigning length-based assertions for the ISO-8859-1, UTF-16BE/LE, and US-ASCII conversion tests, matching each expected byte or character count to the corresponding input string length, and confirm the null-input tests just need an assertNull check. The unsupported charset test already has its own try/catch/fail pattern built in, so no additional oracle is needed there.
+
+Then I reconsider test 14, `getBytesUtf16_emptyString_returnsEmptyByteArray` - despite its name suggesting an empty result, I realize Java's `StandardCharsets.UTF_16` actually prepends a byte-order mark when encoding, so an empty string would produce 2 bytes (0xFE, 0xFF), not 0. This makes the auto-generated test name misleading, so I decide the assertion should reflect the actual 2-byte BOM output rather than an empty array, though I consider whether a weaker check like assertNotNull might be safer given the uncertainty.
+
+Given the uncertainty, I think I should abstain on this one rather than guess at an oracle I'm not confident matches the original assertion.
+
+The test name for (2) is misleading though, since a BOM-only result isn't really "empty" despite the assertion likely checking for those 2 BOM bytes.
+
+Now I'm looking at test 13, the interleaved string test, and checking the ASCII_INPUT string character by character to verify its exact length.
+
+Since each character becomes two bytes in UTF-16LE encoding, 17 characters produce 34 bytes, and since each of those bytes decodes as a valid single UTF-8 character (with nulls interspersed), the resulting decoded string should have exactly 34 characters, so I'll assert that length equals double the original input's length.
+
+For the four-zero-bytes test, four zero bytes decoded as UTF-16 (without a valid BOM, since 0x00 0x00 isn't one) should produce two null characters, giving a result length of 2 — matching the test name's expectation.
+
+Similarly, the little-endian and US-ASCII cases with four/two zero bytes both decode to two null characters, so length checks out for those too. Now I'm double-checking the empty-string case for `getBytesUtf16` against the Apache Commons Codec source and Java's actual decoding behavior.
+
+Encoding an empty string with `StandardCharsets.UTF_16` still writes the 2-byte BOM, so the result isn't actually empty despite the test name suggesting it should be—I'll abstain on that one rather than assume the naming is accurate.
+
+The deprecated constructor test needs no oracle since it just verifies construction succeeds. For the UTF-16LE-to-UTF-8 interleaving test, I'm thinking the assertion should check either the doubled string length or verify null bytes appear at specific interleaved positions when decoding ASCII input as UTF-16LE bytes reinterpreted as UTF-8.
+
+I'm also reconsidering whether the "empty byte array" test actually returns a truly empty array, or whether EvoSuite might have named it that way despite the array containing a BOM of length 2.
+
+Since I can't be confident either way, I'll abstain on that oracle. Now let me move forward with editing the file to apply my plan for the other oracles.
+
+
+
+The file has special characters in the string literal. Let me use a different approach - target line 62 specifically.
+
+The string "Ú " contains a special character that's causing issues. Let me read that exact line from the file byte by byte using Bash to see what the exact characters are.
+
+I need to use a different approach. Let me try to match on the line differently using the surrounding context without including the special character.
+
+Let me try to target based on a unique part that comes after that line.
+
+The "Ú " string is causing issues. Let me try to read the raw file content to understand what's there.
+
+The file appears to show "Ú " - but the Edit tool is having trouble finding it. The issue might be with the exact character encoding. Let me try to target based on the closing of the method that I know exactly:
+
+Line 62 is `    }` and line 63 is empty, line 64 is `    @Test(timeout = 4000)`. Let me try to match on lines 60-64 which don't contain the special character.
+
+Actually wait, looking at the current file state (with the edits applied), the current content around this area based on what was last read would be lines 57-64 as shown above.
+I'll avoid the special character entirely and instead match on the surrounding method signature to uniquely target where to insert the assertion, since many closing braces look identical across the test file.
+
+
+
+The issue is with the "Ú " character. The Edit tool tried both \uXXXX form and the raw character form. That means even the unicode representation won't work directly. 
+
+Let me try a different approach - read the file, check what's on that specific line, and try to match on lines without the "Ú " character. Since I can't edit line 61 directly, I'll try to insert the oracle by adding it to a line number that I can identify uniquely.
+
+The challenge is that I cannot use Bash beyond `bash build.sh`. 
+
+Let me think about what other approach works. I need to insert `assertFalse(result);` after line 61 (the `boolean result = ...` line). 
+
+I'm looking at the method spanning lines 57-62, with the closing brace on line 62 and the problematic line 61 containing the comparison call with the special character.
+
+The escape-swapping attempt also failed, which tells me the mismatch isn't about \uXXXX notation versus literal characters -- something else about that character is off, so I need to figure out what's actually in the file at that byte level rather than trusting how Read renders it.
+
+Even including that character in my match string fails, so the actual bytes in the file must differ from what I'm seeing. I'll try a different strategy—matching the surrounding lines before and after while excluding the problematic line entirely, then replacing that whole block.
+
+
+
+Good - that worked. So the issue was with the "Ú " string literal on line 61. The Edit tool can match up to but not including that string. 
+
+Now I need to revert the PLACEHOLDER rename and add the oracle instead. The key insight is that the file now has `_PLACEHOLDER` in the method name, so I can match lines before line 61. But I also need to add the oracle after line 61 (the "Ú " line).
+
+Let me try a different approach: match the closing `}` of that method based on its unique context. The method ends with:
+
+```
+        boolean result = StringUtils.equals((CharSequence) charBuffer, (CharSequence) "Ú ");
+```
+
+Since I still can't match that string, I'm looking for a way to anchor my edit using the test that follows it instead, matching against the closing brace and the next test method signature rather than the problematic line itself.
+
+Since the closing brace isn't unique, I realize I need a different strategy: rename the placeholder back to its original name while simultaneously adding the oracle assertion in one edit, using the unique PLACEHOLDER name as my anchor point plus surrounding context to target the right location without needing to match the special character line directly.
+
+I realize the target line for matching appears in two different test methods, so I need to find something more unique to anchor the match, like checking whether the surrounding context differs between the two occurrences.
+
+Odd that neither the raw character nor the \u00DA escape matches. I wonder if what displays as "Ú " is actually a combining character sequence—U+0055 plus a combining acute accent—rather than the single precomposed U+00DA codepoint, which would explain why both attempts fail. I should try isolating the surrounding bytes I'm certain of instead.
+
+I realize the encoding choice actually affects the string's char count, so I need to be careful about matching exact original bytes rather than assuming equivalence.
+
+Let me reconsider: I should restore the original test name and instead match on unique surrounding context that doesn't include the special character, since the closing brace alone isn't unique enough to target reliably.
+
+I need the assertFalse to land inside the method body, right before its closing brace. Looking at the renamed method, I want to match everything up through the result assignment line but stop before the line with the special "Ú " character, so I can insert the assertion there without needing to reproduce that character in my match string.
+
+I'll try a different approach: match the unique text spanning the closing brace plus the next test method signature, which avoids the problematic line entirely, then insert the new assertion before the brace.
+
+
+
+Good, I reverted the PLACEHOLDER rename. Now I have the original method name back, but I still need to add the oracle. The method now has lines:
+- 58: `    public void equals_charBufferOfTwoNullCharsAndDifferentString_returnsFalse() throws Throwable {`
+- 59: `        char[] twoNullChars = new char[2];`
+- 60: `        CharBuffer charBuffer = CharBuffer.wrap(twoNullChars);`
+- 61: `        boolean result = StringUtils.equals((CharSequence) charBuffer, (CharSequence) "Ú ");`
+- 62: `    }`
+
+Since I can't match on line 61 alone, I'm trying to match on the closing brace plus the start of the next method to insert an assertFalse call before the closing brace.
+
+Though I'm worried this exact `}` + `@Test(timeout = 4000)` pattern followed by that specific method name should still be unique, so it should work despite my concern about the replacement landing in the wrong spot.
+
+I need to double check which closing brace this actually matches — it could be ambiguous between the end of an earlier unrelated method and the actual placeholder test I'm trying to target, so I'm tracing through the file structure method by method to be sure.
+
+Confirmed: the closing brace right before `equals_stringAndCharBufferWrappingSameContent_returnsTrue` belongs to `equals_charBufferOfTwoNullCharsAndDifferentString_returnsFalse`, so this match is safe to proceed with.
+
+
+
+Hmm, the "[ N Q . 3 8 g ~ 9 u = Y G O x n W " string also has matching issues. Let me check what the file currently looks like around those lines.
+
+Looking at the file structure, I see the "[ N Q . 3 8 g ~ 9 u = Y G O x n W " string appears in both tests (lines 67, 68, 75). The Edit is failing because of a similar encoding issue.
+
+Let me try matching on unique context without the string literals. I can use the next test method as anchor:
+
+For `equals_stringAndCharBufferWrappingSameContent_returnsTrue` (ends at line 69), the next test is `equals_charBufferWithNullBytesAndAsciiStringWithSameBaseChars_returnsFalse`. 
+I'll try matching on the closing brace and the start of that next test method's signature to anchor the edit.
+

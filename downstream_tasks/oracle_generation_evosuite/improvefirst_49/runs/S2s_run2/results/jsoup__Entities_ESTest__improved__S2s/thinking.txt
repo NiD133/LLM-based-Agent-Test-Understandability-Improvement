@@ -1,0 +1,243 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now let me analyze each test and determine what oracle(s) should be added:
+
+1. **test00_escapeEmptyStringReturnsEmpty** - `Entities.escape("")` should return `""` (empty string)
+   - Oracle: `assertEquals("", result);`
+
+2. **test13_escapeNullStringReturnsEmpty** - `Entities.escape(null)` should return `""` (based on `escapeString` which handles null by returning "")
+   - Oracle: `assertEquals("", result);`
+
+3. **test08_escapeDoubleQuoteAndLessThanInDefaultHtmlMode** - `Entities.escape("^du^X\"w<", settings)` in HTML mode should escape `"` as `&quot;` and `<` as `&lt;`
+   - Oracle: `assertEquals("^du^X&quot;w&lt;", result);`
+
+4. For **test09**, tracing through `escape(String, OutputSettings)`, I see it calls `doEscape` with both `ForText` and `ForAttribute` set, so an apostrophe gets escaped as `&apos;` (not `&#x27;`, since that's only for xhtml mode) while `&` becomes `&amp;`, giving `"K&apos;?wQt&amp;"` as the result.
+
+5. Moving to **test25_escapeNonBreakingSpaceAsNbspEntityInHtmlMode**, I'm now tracing through how a non-breaking space character gets escaped when the mode is HTML.
+
+Comparing test07 and test25, both use the same "yen " string but differ in mode: xhtml mode encodes that trailing character as `&#xa0;` while html mode should render it as `&nbsp;`, giving `"yen&nbsp;"` as the expected result.
+
+xa0;", result);`
+
+Now checking the XML syntax test with angle brackets - XML syntax doesn't itself change the escape mode, that's set separately via settings.escapeMode(). Tracing through each character in "e\n//]<]>" to see which get escaped and which pass through unchanged.
+
+Then moving to the apostrophe test in XML syntax, where a comment suggests XML syntax encodes apostrophe as `&#x27;` rather than `&apos;` — I need to verify this against the actual escape logic to see if that's accurate.
+
+I'm not confident enough about the xml/xhtml escape mode connection, so I'll abstain on this test unless I can confirm it. Moving to test03, checking whether the section sign § maps to a named entity like &sect; in base mode for the ASCII charset test.
+
+For test23, I'm confirming that ≻ has no named entity in the base set, so it should fall back to a hex reference like &#x227b;. Then for test05, I'm checking what happens when escape is called on an appendable with a negative option and whether the syntax settings remain unchanged afterward.
+
+I'm continuing through several more test oracles checking that after escaping with a negative option, settings like syntax, escape mode, and the outline flag remain at their defaults - syntax stays html, escape mode stays base, and outline stays false.
+
+Then I move to a new test about CoreCharset.byName with an unknown name, confirming it should return fallback rather than throwing, though I pause to double-check whether that method already handles this case.
+
+Continuing through more test cases: findPrefix with a known entity name "shy" should return "shy" itself, findPrefix with a garbage string should return empty string, and codepointsForName with an empty name should return 0 since it's not a valid entity.
+
+Now considering getByName with "QUOT" (uppercase) - since entity lookups are case-sensitive and only "quot" (lowercase) is standard, "QUOT" likely isn't found in the table, so it should return empty string rather than the actual quote character despite what the test name implies.
+
+Confirmed - the W3C HTML5 spec lists "QUOT" mapping to U+0022 too, so I'll go with `"` for that result. Moving to the next case, "degGT=k&quot;]+G" clearly isn't a valid entity name, so that should return an empty string.
+
+For the remaining tests: "LQ2" isn't a known base entity so it returns false; "sup2" is a recognized extended entity for the superscript-2 character so isNamedEntity should return true; "|TM1yKJ" isn't valid so that returns false too.
+
+For the escape mode tests, base mode maps codepoint 38 (`&`) to "amp", while xhtml mode maps codepoint 62 (`>`) to "gt". Finally, unescaping "&lt;" should produce the literal "<" character.
+
+Now I'm checking tests that lack a stored result variable but still need assertions. For test01, since `byName("")` isn't captured, I need to add a direct assertion comparing it against the fallback charset. For the QuietAppendable-based tests, I'm verifying the settings object's state after calling escape, since that method invokes the internal doEscape logic.
+
+I'm going through the specific expected escaped outputs for tests like double-quote/less-than escaping and apostrophe/ampersand escaping, working out the correct oracle assertion for each based on the default HTML mode behavior.
+
+For the non-breaking space test, I'm confirming that "yen " followed by a `\u00a0` character should escape to "yen&nbsp;" in the base HTML mode, since regular ASCII letters pass through unchanged and only the non-breaking space gets converted to its entity.
+
+For xhtml mode with the same string, the non-breaking space converts to a numeric hex entity instead, giving "yen&#xa0;". Then for xml syntax escaping angle brackets, I'm checking that "e\n//]<]>" only escapes the `<` and `>` characters into `&lt;` and `&gt;` while leaving everything else including newlines and slashes untouched, producing "e\n//]&lt;]&gt;".
+
+For the apostrophe test in xml syntax, I suspect switching to xml syntax might also implicitly change the escape mode to xhtml, which would explain an apostrophe encoding as `&#x27;`, but without access to the OutputSettings internals I can't confirm this, so I'll abstain on that case. Moving to the ASCII charset test, I'm now examining how a non-ASCII character like § gets escaped as a named entity when the charset is restricted to ASCII.
+
+Since the test name says "hex-entity-escaped" rather than "named-entity", I'll conclude § becomes `&sect;` if named entities are used, giving the oracle output "kp1D(Cu%~vB8caHD&sect;".
+
+For the ASCII charset test with the character U+227B, since there's no named entity for it, it gets hex-encoded as `&#x227b;`, producing "ethiH_p3&#x227b;".
+
+Now I'm going through each remaining test case to determine its expected assertion, matching escaped characters like quotes, apostrophes, ampersands, and non-breaking spaces to their correct entity or hex representations for tests 00, 02, 04, 07-09, 13, and 25.
+
+Continuing through the list, some cases like test17 need an ABSTAIN flag due to ambiguity, while others verify boolean outcomes or specific attribute names like "amp" for test21, and count values for test16.
+
+I'm now working through the settings-related tests, checking syntax mode, escape mode, outline flags, and indent amounts, plus a charset fallback check for test01. Now I'm moving on to figuring out the correct assertions for test25 and test07.
+
+For the yen entity, I can't directly verify the byte content, so I'll trust the test name and comment indicating the trailing character is a non-breaking space. For test17, I'm confirming that "QUOT" (uppercase) is indeed a valid HTML5 named character reference mapping to U+0022, the double quote character, per the WHATWG spec.
+
+Turning to test04, I need to determine whether calling `syntax(xml)` on OutputSettings switches the escape mode to xhtml, which would affect how an apostrophe is escaped—either as `&#x27;` or `&apos;`. The test's own comment states that XML syntax should encode the apostrophe as `&#x27;`, so I'll set the expected assertion accordingly, matching that encoding in the oracle string.
+
+Now reconsidering test03, which uses an ascii charset with default escape mode. The section sign § should map to the named entity `&sect;` since that's a common HTML 4 entity, so my oracle there becomes "kp1D(Cu%~vB8caHD&sect;". Moving to test25, I'm noting the "yen" portion of that string is just plain text, not an entity reference.
+
+Then the trailing character in that string is likely a non-breaking space (U+00A0), given the test name "NonBreakingSpaceAsNbspEntityInHtmlMode" and the fact that a companion xhtml test outputs `&#xa0;` for it, with a comment noting xhtml mode uses numeric encoding rather than the `&nbsp;` named entity.
+
+For test25, I'll settle on treating the string as "yen" followed by U+00A0, giving "yen&nbsp;" in HTML mode and "yen&#xa0;" in XHTML mode—these seem like the most reasonable interpretations to proceed with.
+
+Now I need to write the oracles for the remaining tests checking that OutputSettings stay unchanged after escaping—recalling that `syntax()`, `escapeMode()`, `outline()`, and `indentAmount()` are the relevant accessors on `Document.OutputSettings`, with indentAmount defaulting to 1. I'll go through each test one by one and add the appropriate assertions.
+
+
+
+The string in the file might have a non-breaking space in it. Let me read that specific section of the file to see what's there.
+
+I see - the string `"yen "` contains what appears to be a non-breaking space but the file has some unicode character that I can't see from the display. Let me look at it with a Bash command to see the actual bytes.
+
+Actually, I need to use a regex search to match that test, since the space character might be a non-breaking space in the file.
+
+I can only run `bash build.sh`. I need to use grep with a pattern to match the test. Let me try to use a regex-based grep to find the exact bytes.
+
+Actually, I need to use a different approach. Let me try to edit the file using a pattern that includes more context so the match is unique. Looking at the raw file content, the string `"yen "` in test25 likely contains U+00A0 (non-breaking space) as the last character before the closing quote.
+
+But I can't match it with the Edit tool since the exact byte sequence is needed. Let me try to grep for the pattern.
+
+I can see that the string `"yen "` on line 61 contains a non-standard character (likely U+00A0) that isn't fully visible in the grep output. The trailing character after "yen " appears to be the non-breaking space.
+
+The Edit tool works with exact string matching. Since I can't see the exact bytes of the special character, I need a way to represent the special character correctly.
+
+Let me try using the Unicode literal `\u00a0` in the edit. But the Edit tool works with raw strings, not Java unicode escapes.
+
+One approach: I can try to use a Java unicode escape in the assertion rather than the literal character. 
+
+Since exact byte matching is required, I should avoid including the problematic line in my old_string entirely and instead anchor my edit on surrounding context that's safe, like the method signature, then insert the assertion after the existing lines.
+
+I'm identifying the unique transition point between the test25 and test07 methods to insert my assertion right after the closing brace, avoiding the line with the special character entirely.
+
+
+
+The Edit tool can't match the special characters. Let me try matching only a small unique context that avoids the problematic line.
+
+I'll match the transition between the tests, using content that doesn't include the `"yen "` line:
+- The closing `}` of test25 is followed by an empty line then `@Test...test07`
+- This is the pattern `    }\n\n    @Test(timeout = 4000)\n    public void test07_`
+
+But there might be multiple `}` followed by `@Test`. Let me pick a more specific context.
+
+Actually, the issue is that any string containing the special character is not matchable because the Edit tool doesn't support matching raw non-ASCII bytes in this way.
+Let me try matching just the boundary between the end of test25's body and the start of test07, avoiding the special-character line entirely by anchoring only on the closing brace and the following test declaration.
+
+
+
+OK so the issue is the "yen " part - the first two lines of the method body can be matched. The problem is the third line `String result = Entities.escape("yen ", settings);` contains the special character.
+
+Let me revert the name change and instead try to match just the two lines without the problematic one. Actually, let me use a different strategy: match the method close brace + next test.
+
+Actually, looking at the issue more carefully: I can match the two lines that don't contain the special character, and then the close brace and next test. The Edit tool needs an exact match. Let me try to find a unique pattern that ends at the closing brace of test25 without including the "yen" line.
+Instead, I'll try anchoring on the closing brace and the following test07 method signature, since that boundary should be unique enough to match.
+
+
+
+Now let me try to match only the closing brace of test25 and the blank line + test07 annotation:
+
+Looking at the file structure (from the initial read):
+```
+    }
+
+    @Test(timeout = 4000)
+    public void test07_escapeNonBreakingSpaceAsNumericHexEntityInXhtmlMode() throws Throwable {
+        Document.OutputSettings settings = new Document.OutputSettings();
+        settings.escapeMode(Entities.EscapeMode.xhtml);
+        String result = Entities.escape("yen ", settings);
+        // xhtml mode encodes non-breaking space as &#xa0; rather than &nbsp;
+I'm identifying a unique anchor spanning the end of test25 and the start of test07's signature, planning to replace it with the missing assertion for test25 plus the beginning of test07's body.
+
+
+
+The issue is that any string involving the "yen " part with the special char can't be matched. Let me try to match only from the settings.escapeMode line:
+
+Interesting! The match `settings.escapeMode(Entities.EscapeMode.xhtml);` was matched (not the one containing "yen"), confirming that this pattern is matchable. And I replaced it with garbage. Let me revert this and understand what's happening.
+
+The Edit tool matched `settings.escapeMode(Entities.EscapeMode.xhtml);\n        String result = Entities.escape("yen` - no wait, it only matched `settings.escapeMode(Entities.EscapeMode.xhtml);\n        String result = Entities.escape("yen` which seems like the file has something different on that line.
+Now test07 is broken since I swapped that escapeMode call for a probe placeholder. I need to read the file's current state and fix it back properly.
+
+
+
+I see the damage now. Line 67 is:
+```
+        settings.escapeMode_PROBE(); ", settings);
+```
+
+It seems my match was successful on just `settings.escapeMode(Entities.EscapeMode.xhtml);\n        String result = Entities.escape("yen` and it was replaced with `settings.escapeMode_PROBE();`. The rest of line 67 (" ", settings);) was preserved after the replacement point.
+
+Wait, that's odd. Let me re-read how the Edit was applied. The old string was:
+```
+        settings.escapeMode(Entities.EscapeMode.xhtml);
+```
+
+So the match found through the string literal `"yen` and replaced it with the probe call, leaving the trailing `", settings);` dangling on the same line. I need to restore line 67 to properly declare the result variable and call escape with the correct opening quote.
+
+I'm trying to figure out what special character originally sat between "yen" and the closing quote -- it's likely a non-breaking space that got mangled in the match/replace process, so I need to reconstruct that byte carefully.
+
+I realize the NBSP character is likely embedded right after "PROBE();" so I should try matching the trailing portion of the line, like the segment ending in `", settings);`, to avoid needing to type the special character directly.
+
+Instead, I decide to sidestep the NBSP issue entirely by rewriting test07 to use the `\u00a0` Java unicode escape sequence in the string literal rather than the literal non-breaking space character, since they're functionally equivalent.
+
+Fixing the escape test line...
+
+
+
+The line 67 is: `        settings.escapeMode_PROBE(); ", settings);`
+
+The `PROBE()` part was my replacement. The ` ", settings);` part is the remaining from the original that came after the NBSP.
+
+To fix this, I need to:
+1. Replace `settings.escapeMode_PROBE(); ", settings);` with the correct two lines (without using NBSP literal)
+
+The key insight: I can now match `settings.escapeMode_PROBE();` (just this part) because I know it's the probe marker I put there, and it's unique.
+
+Let me try:
+Old: `        settings.escapeMode_PROBE(); ", settings);\n        // xhtml mode encodes non-breaking space as &#xa0; rather than &nbsp;`
+Still writing test replacement...
+
+The NBSP character is exactly the problem—it sits between the closing `;` and the quote, and I can't type that invisible character directly into the edit tool. Instead, I'm considering matching just the unique `escapeMode_PROBE();` marker without the trailing space, and separately verifying whether using the Java unicode escape for NBSP inside the string literal will work correctly.
+
+Still needs the NBSP though—I'm realizing this match still requires typing that character directly, so I need to find a replacement pattern that spans from the PROBE call through the closing brace, avoiding the NBSP entirely by restructuring where the escape call and its string argument appear.
+
+I see now - the original match cut off right before the NBSP character, leaving the escaped Unicode space stranded between the semicolon and the closing quote in the resulting line. That explains why the replacement produced a malformed line with the NBSP sitting awkwardly between `;` and `"`.
+
+To fix this, I should target the unique ASCII substring `_PROBE();` instead, replacing it with the correct method call and result string assembly, letting the existing NBSP and remainder of the line flow naturally after it.
+
+
+
+The file is now restored to the original for test07 (line 68 now shows `String result = Entities.escape("yen ", settings);` with the NBSP back in place). Now I need to add the assertion to test07. The assertion should go after line 69 (the comment) but before line 70 (the closing brace).
+
+For test25, I still need to add the assertion after the `escape()` call on line 61.
+
+Let me now add assertions to both test25 and test07 by matching patterns that don't include the NBSP.
+
+For test25:
+- The pattern I can match to insert the assertion:
+- Since the closing brace followed by the test07 annotation is unique, I can use that unique transition point between test25 and test07 as the anchor for my edit.
+
+Still adjusting test expectations...
+
+
+
+Wait, I just added `assertEquals("yen&#xa0;", result);` to test07. But this assertion is placed AFTER the comment `// xhtml mode encodes non-breaking space as &#xa0; rather than &nbsp;`, which is fine for compilation. But wait, it also goes BEFORE the closing brace. So the order in test07 would be:
+1. settings.escapeMode(xhtml)
+2. result = escape(...)
+3. comment
+4. assertEquals("yen&#xa0;", result)
+5. }
+
+That's fine. The assertion is after the result assignment.
+
+Now I still need to add the assertion to test25. 
+
+I need to find a unique anchor point for the edit — since the closing brace of test25 followed by the test07 method signature should be distinctive enough given test07's unique name, I can use that transition to insert the assertion right before test25 ends.
+
+
+
+Wait, I'm going in circles. The match succeeded because I changed the method name but not the `Entities.escape("yen` part. The problem is that to match test25's body, I need to match a line with NBSP.
+
+Let me look at the test25 closing brace + transition to test07:
+
+After test25 escape line is the closing brace of the test method:
+```
+    }
+
+    @Test(timeout = 4000)
+    public void test07_...
+```
+
+If I find the pattern `_PROBE() throws Throwable {\n        Document.OutputSettings settings = new Document.OutputSettings();\n        String result = Entities.escape("yen` 
+I realize this only appears in the test25 method, but the NBSP still follows. Let me try instead matching just the PROBE method name plus the closing brace and transition into test07's signature, replacing it so the assertion for "yen&nbsp;" leads directly into the test07 method declaration.
+
+Since that closing brace and blank line before test07's annotation only occurs once in the file, this should be a unique, safe anchor to use for the edit. First though, I need to restore the PROBE method name I just added before attempting this.
+

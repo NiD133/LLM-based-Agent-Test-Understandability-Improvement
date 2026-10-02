@@ -1,0 +1,80 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be verified.
+
+Now I need to analyze each test method and determine what oracles are needed.
+
+Looking at the tests:
+
+**test00**: `encodeAsString(byteArray0)` where byteArray0 = `{-115, 0}`. The comment says `// Unstable assertion: assertEquals("(jM", string0);` - this is already commented out as unstable. No oracle needed here.
+
+**test01**: Tests that `encode(byteArray0, 64, 64, baseNCodec_Context0)` throws `ArrayIndexOutOfBoundsException`. Already has the assertion structure with `fail()`. No additional oracle needed.
+**test02**: Testing `encode(byteArray0, -20, -20)` calling the three-arg public method inherited from `BaseNCodec`, where a negative length signals EOF, so I need to trace what BaseNCodec does with a negative offset and length in that case.
+
+With `byteArray0` being a single zero byte, the negative length forces an empty context buffer, so `convertToBase58` gets called on empty input. Tracing `getStringBuilder(EMPTY)`, the BigInteger value is zero with no leading zeros, so the while loop never executes and it returns an empty StringBuilder—meaning the final encoded result should be an empty byte array.
+
+Without direct access to BaseNCodec's source, I'll reason from expected behavior: since encode was never called with positive length before this EOF call, the internal buffer would be empty, so the returned byte array should also be empty for test02.
+
+For test05, decoding "Dt2" as Base58: computing digit values D=12, t=51, 2=1 gives 12·58²+51·58+1 = 43327, which as bytes is [0xA9, 0x3F] or [-87, 63]. For test06, decoding "t2" gives 51·58+1 = 2958, and I need to convert that into its byte representation.
+
+Now checking test08, decoding two leading '1' characters means two leading zero bytes, so the result should be [0, 0]. Then for test11, I'm examining isInAlphabet against a string containing special characters like '/', ':', '%' which map to -1 in the decode table, meaning the method should return false for this input.
+
+**test11** should be `assertFalse` - the string contains characters like '/', ':', '%' that aren't in the Base58 alphabet, so it fails validation.
+
+For test08, tracing through the decode logic with two leading '1' characters gives leadingOnes=2 and no non-zero digits, so the result is a two-byte array of zeros: {0, 0}. Now I'm tracing test06's decode of "t2" the same way, checking that leadingOnes starts at 0 since 't' isn't a leading '1'.
+
+Working through the digits, I get value 2959 which converts to bytes [11, -113], giving a two-byte result. Now I'm tracing through another test case, decode("Dt2"), starting with leadingOnes=0 since 'D' isn't '1', then iterating through the characters to compute the value.
+
+I calculate the digits for '2', 't', and 'D' at their respective base-58 positions—'2' gives digit 1, 't' gives digit 51, and 'D' maps to position 12 in the decode table. Combining these with their powers of 58, I get value = 2959 + 12*3364 = 43327.
+
+Converting 43327 to hex gives 0xA93F, so the decoded bytes are {0xA9, 0x3F} which as signed bytes is {-87, 63} — that's my expected result for this test case.
+
+For the isInAlphabet test with a string containing spaces, slashes, colons, and percent signs, I reason that since space (0x20) maps to -1 in the decode table, the inherited method should correctly return false since not all characters belong to the Base58 alphabet.
+
+For encoding 18 zero bytes, I expect the deterministic result to be a string of 18 '1' characters, since leading zeros map directly to '1' characters with no additional Base58 digits needed. For the builder pattern tests, I'm reasoning that setEncodeTable should return a non-null Builder (possibly the same instance), and calling get() on it should produce a non-null Base58 object.
+
+Now I'm cataloging which tests still lack proper assertions — cases like the encode result at negative indices, several decode results for short strings like "Dt2", "t2", and "11", plus the builder and get() results — these all need oracles added before I can consider the coverage complete.
+
+For test02's `encode(byteArray0, -20, -20)` call, I'm tracing through how BaseNCodec handles the negative length as an EOF signal, walking through how the context accumulates and eventually drains to produce the final byte array output.
+
+I'm uncertain whether to assert specific byte contents here, so I'll settle for a safe `assertNotNull(byteArray1)` check instead. I should look at the BaseNCodec source directly to understand what the encode methods actually return in this edge case.
+
+
+
+Now I have a full picture. Let me analyze each test carefully:
+
+**test02**: `encode(byteArray0, (int)(byte)(-20), (int)(byte)(-20))`
+- byteArray0 = new byte[1] (not empty)
+- offset = -20, length = -20
+- `encode(byte[], int, int)` in BaseNCodec:
+  - `BinaryCodec.isEmpty(array)` = false (array has 1 element)
+  - Creates new Context
+  - Calls `encode(array, -20, -20, context)` — length=-20 < 0, so it's EOF
+  - This sets context.eof to true, and with an empty accumulate buffer it converts an empty byte array to base58, which just produces empty output and allocates a fresh 8192-byte buffer for the context.
+
+So the final result: byteArray1 should be an empty byte array, meaning the oracle should assert its length is 0 or that it equals a new empty byte array.
+
+For test05, decoding "Dt2" computes to the byte array [-87, 63], so I need to write an assertArrayEquals oracle comparing against that expected byte array.
+
+Now checking test06 with "t2", I convert 2959 to hex getting 0x0B8F, splitting into bytes 11 and 143, converting 143 to its signed byte representation since it exceeds 127.
+
+For test08 with "11", the leading ones equal 2 and there's nothing left to decode, so the value stays at zero and the result is an all-zero byte array of length 2.
+
+For test09, I trace through setEncodeTable in the Base58.Builder class, which calls into the parent decode table setter with DECODE_TABLE before setting the encode table, and then follows into AbstractBuilder's implementation which clones the input array or falls back to the default table if null.
+
+Since setEncodeTable returns "this" via asThis(), test09's oracle should check that the returned builder is either the same instance or simply non-null. For test10, calling get() on the builder constructs a new Base58 object, so the oracle just needs to confirm it's not null. For test11, I'm checking isInAlphabet with a string containing invalid characters like space, slash, colon, and percent signs, which converts the string to UTF-8 bytes before validation.
+
+Continuing the table trace, ':' maps to -1 since it falls outside the digit range, so it fails isInAlphabet and isn't the pad character either, confirming that this returns false and triggers the invalid character error message.
+
+For test12, encoding an all-zero 18-byte array gives 18 leading zeros with no numeric value, so the result is just eighteen '1' characters concatenated. Test13 confirms Base58.builder() returns a non-null Builder instance, and now I'm double-checking test02 where the byte array has length 1, so it isn't actually empty.
+
+With a negative length passed to encode, the context marks eof true and treats the buffer as empty, so convertToBase58 processes an empty accumulator, producing an empty encoded string and a zero-length byte array before the buffer gets resized.
+
+So for test02, the expected oracle should just check that the returned byte array is non-null and has length zero, essentially assertEquals(0, byteArray1.length) or an equivalent empty-array check. Now I'm moving on to deciding which oracles apply to the remaining tests.
+
+I go through the list and mark which result variables in test05, test06, test08 through test13 currently lack assertions and need oracles added. Test00 already has a commented-out unstable assertion for a string comparison, so I'll leave that one alone rather than re-adding an oracle, and I note that test01, test03, and test07 are exception-testing cases instead.
+
+Test04 doesn't capture any return value since it just calls void decode methods, so it doesn't need an oracle. I'm now working out the specific assertions to add for each test based on the expected byte array and string values.
+
+For test09, since builder methods return `this`, I could use either `assertNotNull` or the more precise `assertSame` to confirm the returned builder is the same instance—I'll go with `assertSame` for accuracy.
+
+Now let me finalize the test modifications.
+

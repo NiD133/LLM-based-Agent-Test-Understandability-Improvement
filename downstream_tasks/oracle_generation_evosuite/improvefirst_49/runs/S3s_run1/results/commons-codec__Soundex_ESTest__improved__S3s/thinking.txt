@@ -1,0 +1,68 @@
+Let me start by reading the masked test file to understand what tests are there and what oracles need to be added.
+
+Now I need to analyze each test and add appropriate oracles. Let me go through each test:
+
+1. **test00**: `soundex.encode("vyHWF);{")`  - Non-letter characters are stripped. H and W are silent. The only letters are v, y, F. Let me think:
+   - v → index 21, in US_ENGLISH mapping "01230120022455012623010202" - position 21 (v) is '1', position 24 (y) is '0', F is index 5, position 5 is '1'
+   - Actually let me think more carefully. 
+
+The mapping assigns codes to each letter: A=0, B=1, C=2, D=3, E=0, F=1, G=2, H=0 (silent), I=0, J=2, K=2, L=4, M=5, N=5, O=0, P=1, Q=2, R=6, S=2, T=3, U=0, V=1, W=0 (silent), X=2, Y=0, Z=2. Stripping non-letters from "vyHWF);{" leaves v, y, H, W, F as the letters to process.
+
+Since V is the first letter, it's kept as-is for the output. Then y encodes to 0, H and W are silent (code 0), and F encodes to 1, so I'm walking through building the resulting Soundex code from these values step by step.
+
+Let me carefully map out the digit values for each letter position in the Soundex code string to double-check the encoding for the rest of the alphabet.
+
+Now I'm working through Soundex encoding for "vyHWF);{": V is the first letter, Y has code 0 so it's dropped, and H is silent under the US rule.
+
+With W also silent, F contributes code 1, giving "V1" which pads to "V100" once I account for the silent-separator handling of H and W in the US_ENGLISH variant.
+
+Actually V and F both have code 1, which matters because F comes right after V with only silent/vowel letters between them. I need to check whether the Commons Codec algorithm treats a same-code letter following the first letter as skipped even when separated by vowels, since the "vowel separator" rule normally applies to non-first-letter pairs.
+
+Given the complexity of determining the exact expected Soundex string here, I think it's safer to just verify the encode call doesn't throw rather than asserting on a specific value.
+
+This is getting complicated, so I'll stop overanalyzing the H/W silent rule details and just focus on writing reasonable assertions for each test case. For test10, the default Soundex maxLength is always 4, so that assertion is straightforward. For test08, comparing two identical encoded strings should yield the maximum difference score of 4.
+
+Actually, the `difference()` method counts matching Soundex characters, so identical strings would yield 4, not 0 -- the comment's phrasing about "0" is likely misleading, and I should just verify what value the test actually expects.
+
+Tracing through Commons Codec's difference() method: it calls soundCode on both strings, and if a string has no letters at all, encode returns null, so differenceEncoded(null, null) likely returns 0. That matches the expected assertion that "01230120022455012623010202" has no alphabetic characters, encodes to null, and produces a difference of 0.
+
+For test05, I'm checking what ")1XSFmv!V?i#" and the exception class name encode to under Soundex, trying to work out the expected difference score of 1.
+
+Trying to trace through the codec mapping for this exception class name, but I'm unsure of the exact US_ENGLISH_GENEALOGY letter-to-digit mapping since it may differ from standard Soundex. This is getting complicated without knowing the precise mapping table.
+
+I can pin down some assertions confidently though: test10's default maxLength is always 4, and test08's difference is 0 since both strings are all digits and encode to null. For test00, I'm working through the letters in "vyHWF);{" to figure out how each character maps under the US_ENGLISH encoding rules.
+
+Since H and W are transparent when specialCaseHW is true, they don't break same-code runs, but y's code of 0 acts as a vowel separator the way A, E, I, O, U do in Soundex encoding.
+
+So V→y(separator)→H(silent)→W(silent)→F(code 1) means F does get coded since the vowel y separates it from V, giving "V100" as the padded result. I'm second-guessing myself now on whether all 0-coded letters, including Y, are uniformly treated as separators in this implementation, or if there's a special carve-out.
+
+Now I need to encode ")1XSFmv!V?i#" using US_ENGLISH_GENEALOGY, but I'm not confident about its exact character mapping compared to the standard US_ENGLISH soundex table.
+
+For the other test cases, I'm checking the object-based encode call with a scrambled custom mapping string, trying to figure out which characters correspond to actual letters like n, H, b, L in that 14-character mapping.
+
+This is too intricate to trace through by hand without executing the code, so I'll move on to the other test cases, like the boolean constructor case for Soundex where maxLength defaults to 4 with no clear assertion needed.
+
+Going through the rest: several tests need assertions added on their results (encode return values, diff calculations, getMaxLength), while a few just construct objects and likely only need to verify no exception is thrown. I'll work through each test one at a time, starting with test00.
+
+For test00, I'm verifying the codes match up so V maps to 1 in US_ENGLISH, then checking whether "V100" is the expected encoded result given how V, silent letters, and separators get processed.
+
+For test01, encode(null) returns null but since the test doesn't capture the return value, I can't assert on it directly. The existing comment about an unstable getMaxLength() assertion suggests the original oracle might not apply cleanly here, so I'm considering whether to add an assertNull check on the encode call itself or leave the test without an assertion.
+
+For test04, the mapping string maps letter positions to codes—checking which mapping character corresponds to 'n' in the input string to determine the expected Soundex code.
+
+I'll abstain on test04. Moving to test05, the difference call between two odd strings has a comment saying "1 indicates little similarity," which suggests the assertion should equal 1, though I'm not fully confident without tracing the exact US_ENGLISH_GENEALOGY mapping. I try working through the letters manually to verify, but it's hard to be certain.
+
+Comparing "X151" and "O621" character by character gives just one match, so the difference score is 1, matching the "little similarity" comment. That confirms `assertEquals(1, diff)` for this test case, and I move to the next one involving US_ENGLISH soundex encoding.
+
+For test08, two identical numeric strings would both encode to null, and since `differenceEncoded()` returns 0 when either encoded value is null, the expected result should be `assertEquals(0, diff)`.
+
+For test10, the default Soundex maxLength is 4, so `assertEquals(4, maxLength)` makes sense. Now I'm consolidating my confidence levels across all these test assertions: test00 seems solid, test01 has no real assertion, test04 needs abstaining due to the unusual mapping, and test05 and test08 follow from the comments and difference-encoding logic.
+
+For test00, I want to trace through the Soundex algorithm once more on "vyHWF);{" carefully, letter by letter, tracking how 'v', 'y', and 'H' get coded and whether they contribute to the output given the specialCaseHW handling.
+
+Since W is also transparent, F gets coded because y (a zero-code letter) separates it from V, giving a result of "V1" which pads to "V100" — so the expected assertion is `assertEquals("V100", result)`.
+
+'0' doesn't get added but marks lastCode as a vowel separator. Then H and W stay silent and transparent, not touching lastCode. Then F's code '1' differs from the last code '0', so it gets added, giving V,1 so far. The punctuation marks get skipped since they aren't letters, and padding to length 4 yields "V100".
+
+With that confirmed, I'm ready to write the edits.
+

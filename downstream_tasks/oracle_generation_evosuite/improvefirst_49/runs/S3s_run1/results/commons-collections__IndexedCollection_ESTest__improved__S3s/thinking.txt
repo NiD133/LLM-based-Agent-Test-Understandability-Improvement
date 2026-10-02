@@ -1,0 +1,51 @@
+Let me start by reading the masked test file to understand what needs to be filled in.
+
+Now I understand the test file. Let me analyze each test and determine what oracles are needed.
+
+1. **test00**: `retainAll` on a non-unique collection where one element exists, retaining against empty set → should return `true` (collection was modified).
+   - `assertTrue(modified);`
+
+2. **test01**: `retainAll` on empty collection with empty retain set → no change → should return `false`.
+   - `assertFalse(modified);`
+
+3. **test02**: `removeIf` with `NullPredicate` (never matches) → no change → should return `false`.
+   - `assertFalse(modified);`
+
+Continuing through the remaining tests: test03 checks that `removeIf` with `TruePredicate` removes everything and returns `true`; test04 checks that `removeIf` with a null Predicate returns `false` without throwing; test05 checks that removing an absent element returns `false`; test06 checks that `get()` on a key with no associated element returns `null`; test07 checks that `containsAll` returns `false` when elements were added bypassing the index; and test08 examines a case where elements are added directly to the backing list before checking `containsAll` against it, which I need to trace through carefully to determine the expected result.
+
+Actually, `IndexedCollection.containsAll` likely just delegates to the decorated backing collection's own `containsAll`, rather than checking the index at all—so since the backing LinkedList already contains those elements directly, it would naturally return true regardless of indexing state.
+
+But that contradicts test07, which expects `containsAll` to return false for an element added directly to the backing list. This makes me suspect `contains` and `containsAll` in `IndexedCollection` actually check membership using the index map rather than trusting the decorated collection, so I need to check the real Apache Commons Collections source to confirm.
+
+I need to check whether `contains` is overridden to use the index while `containsAll` might either delegate straight to the decorated collection or iterate using `contains` — the key question is whether `AbstractCollectionDecorator` overrides `containsAll` to bypass the index-based `contains` entirely.
+
+Looking at test07 versus test08, the difference seems to hinge on timing: whether the element was added to the backing list before or after the `IndexedCollection` was constructed, since construction likely reindexes from the current state of the backing list.
+
+But then I realize this only matters if `containsAll` actually uses the index. If `AbstractCollectionDecorator.containsAll` just delegates straight to the decorated list's `containsAll`, both tests would trivially return true since a list always contains itself, regardless of indexing behavior — which contradicts the expected false result in test07. So I need to reconsider whether `contains`/`containsAll` really route through the index at all.
+
+Digging into Commons Collections 4 source, since `containsAll` isn't overridden in `AbstractCollectionDecorator`, it falls back to `AbstractCollection.containsAll`, which calls `this.contains(o)` for each element—so it does use `IndexedCollection`'s overridden `contains` after all. That confirms test07's element, added directly to the backing list post-construction, won't be found in the index, so `containsAll` returns false.
+
+For test08, the constructor calls `reindex()` on existing elements, so an element already in the backing list before construction gets indexed and `containsAll` returns true. Test09 already has its own try-catch/fail structure, so no assertion is needed there. For test10, since `addAll` actually adds new elements, it should return true indicating the collection was modified.
+
+For test11, looking up `values()` for a key not present in the index should return null. Test12 just calls `clear()` with no return value to check, so no assertion is needed—success is simply not throwing. Test13's `removeAll` matches and removes elements, so it should return true.
+
+Reconsidering test04 with a null Predicate passed to `removeIf`—the comment indicates null filters are treated as no-ops and return false without modifying anything, so I'll assert false there, though I want to double-check this assumption.
+
+Actually, since the backing collection in test04 is empty, `removeIf` would have nothing to iterate over, meaning it could return false without ever invoking the predicate and thus avoid a NullPointerException entirely—that explains why the test expects false rather than an exception.
+
+For test05, removing an absent element should simply return false. And for test11, checking `values()` for a non-existent key: the comment specifies it returns null, so I'll assert null there, even though I'm second-guessing whether an empty collection might be returned instead.
+
+Now I'm compiling the final list of assertions for each test case, keeping them consistent with the expected boolean or null outcomes.
+
+For test07 and test08, I'm reasoning through whether `containsAll` would return true or false. Since elements are added to the backing list before the IndexedCollection wraps it, the constructor likely reindexes on creation, so `nullKeyTransformer` would already be part of the index -- meaning `containsAll(backingList)` should return true.
+
+So working through both cases: in test07 the backing list starts empty, so when `collection` gets added directly afterward the index never picks it up, meaning the null-key lookup fails and `containsAll` returns false. In test08 though, `nullKeyTransformer` is already present before the index builds, so reindexing captures the null key and the lookup succeeds, making `containsAll` true. Now I'm moving to test10, where adding a source collection containing zero into the target collection should trigger normal add behavior.
+
+For test13, since `nullKeyTransformer` appears both in the collection and in the backing list, calling `removeAll(backingList)` should strip it out, so `modified` should be true.
+
+Now I'm going through each test to figure out exactly where in the code to insert the assertion oracles based on what each `modified` boolean represents.
+
+Continuing through the remaining tests: for removeIf with no matches, modified should be false; with all matches, true; for the mixed case, false. Remove of an absent element should return false, get() returning nothing should be null, and the containsAll checks should return false and true depending on whether the backing list is fully covered.
+
+test09 already has its own try-catch structure with fail(), so that's fine as-is. For addAll I need assertTrue(modified), for values() with a null transformer assertNull(result), clear() needs no assertion at all, and removeAll should assert true. With all these oracle points identified, I'm ready to start editing the file.
+

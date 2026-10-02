@@ -1,0 +1,162 @@
+Let me start by reading the masked test file to understand what needs to be filled in.
+
+Now I need to analyze the test file and determine what oracles (assertions) need to be added. Let me go through each test method:
+
+1. `newString_nullBytesAndNullCharset_returnsNull` - `StringUtils.newString(null, null)` should return null
+   → `assertNull(result);`
+
+2. `newStringIso8859_1_nullBytes_returnsNull` - `StringUtils.newStringIso8859_1(null)` should return null
+   → `assertNull(result);`
+
+3. `getBytesUnchecked_nullString_returnsNull` - `StringUtils.getBytesUnchecked(null, ...)` should return null
+   → `assertNull(result);`
+
+4. The unsupported charset test already has try/catch with fail, so no additional oracle needed beyond the catch block.
+
+5. `getByteBufferUtf8_nullString_returnsNull` - should return null → `assertNull(result);`
+
+6. For the char buffer comparison test with two null chars versus "Ú ", the assertion needs to confirm equals returns false.
+
+7. For matching string and char buffer content, the equals result should assert true.
+
+8. Comparing a char buffer with embedded nulls against the ASCII input string, equals should return false.
+
+9. For non-null versus null, equals should assert false.
+
+10. For null versus non-null, equals should assert false.
+
+11. For the same char buffer reference, equals should assert true.
+
+12. For empty versus non-empty strings, equals should assert false.
+
+13. Now I'm reasoning through the UTF-16LE encoding test case: since ASCII characters encode as two bytes (char plus a zero byte) in UTF-16LE, decoding that byte sequence as UTF-8 should interleave each original character with a null character U+0000, and I'm working through whether that holds for all 17 characters in the ASCII input.
+
+So decoding those 34 bytes as UTF-8 gives 17 ASCII characters each followed by a null character, totaling 34 characters. I need to figure out what assertion the test actually expects, since it just decodes the bytes without asserting anything afterward—I'll need to add a proper check based on the decoded content.
+
+So the resulting string would have 34 characters total (17 original chars doubled). Given the test name's focus on null-byte interleaving, the simplest and most fitting assertion is just verifying the decoded result isn't null.
+
+The test name itself confirms the key characteristic: null bytes interleaved between each ASCII character, so checking the doubled length (34, or ASCII_INPUT.length()*2) is the clearest assertion, since each byte pair like 0x5B,0x00 decodes cleanly as valid single-byte UTF-8 sequences without errors.
+
+Java's UTF-8 decoder correctly treats 0x00 as U+0000, so I'm confident the result length is 34, with the first decoded character being '[' followed by a null character from the interleaved UTF-16LE bytes.
+
+For the empty string UTF-16 test, I realize encoding with "UTF-16" (not LE/BE) adds a byte-order-mark, so an empty string actually produces 2 bytes rather than 0 — I need to account for that BOM in the expected result.
+
+I'm second-guessing myself on whether the test name is accurate despite the BOM behavior, so I think the assertion probably checks `result.length` equals 2 to account for the BOM, even though the test name suggests otherwise.
+
+The test name still bugs me, but I'm fairly confident Java's UTF-16 charset always prepends the BOM even for an empty string, so encoding "" yields those 2 bytes. I'll go with `assertEquals(2, result.length)` despite the misleading test name.
+
+Moving through the rest: for `getByteBufferUtf8_nonNullString_returnsHeapByteBuffer` I just check the result isn't null. For `getBytesUtf8_emptyString_returnsEmptyByteArray`, getBytesUtf8 on an empty string should genuinely return a zero-length array, so I'll assert that directly. The constructor test just needs to confirm instantiation doesn't throw, and then I move into checking that Latin-1 encoding of a thirteen-character string produces exactly thirteen bytes.
+
+For the four-zero-bytes UTF-16 case, I'm reasoning through how Java's UTF-16 decoder handles a byte sequence with no valid byte-order mark—since 0x0000 isn't 0xFEFF or 0xFFFE, it likely falls back to big-endian and decodes the four zero bytes into two null characters.
+
+Same pattern applies to the UTF-16BE and UTF-16LE four-zero-byte tests, both decoding to two null characters with length 2. Then I move to the ASCII byte-count test using the seventeen-character input string.
+
+Continuing through the remaining cases: two zero bytes decode to two null chars under US-ASCII, the unsupported charset test already has its own exception handling so no oracle is needed, and getBytesUtf16Be with a null input should simply assert null. Now I want to double-check a few of these more carefully, starting with the empty-string UTF-16 byte case.
+
+For that one, I recall that `getBytesUtf16` likely delegates to `getBytes(string, Charsets.UTF_16)`, and in Java, encoding an empty string with `StandardCharsets.UTF_16` actually returns the two-byte BOM rather than an empty array. So the test name suggesting "returnsEmptyByteArray" may be misleading -- the oracle should reflect actual runtime behavior rather than what the name implies, and I need to decide whether the naming is meant to describe intent or actual output.
+
+Actually I recall Java's `"".getBytes(StandardCharsets.UTF_16)` returns the 2-byte BOM `{0xFE, 0xFF}`, not an empty array, which is standard Java 8+ behavior. This contradicts the test's name suggesting an empty result, but since EvoSuite names tests based on observed behavior, I'm torn between trusting the name and trusting my knowledge of Java's actual encoding behavior, so I remain uncertain enough to abstain.
+
+I'm still stuck on the discrepancy since Java's UTF-16 encoding of an empty string should include a 2-byte BOM, not be truly empty, so either the test name is misleading or something unusual is happening in commons-codec. I'll abstain on this case and move to checking the next test involving UTF-16LE encoding followed by UTF-8 decoding, working out what byte length the ASCII input should produce.
+
+Continuing the byte-length calculation, I land on 34 characters total in the decoded UTF-8 string, matching each original character interleaved with a null character, giving me confidence in asserting length 34. Now I move to reconsidering the four-zero-bytes UTF-16 test and how Java's "UTF-16" charset handles that input.
+
+The UTF-16BE and UTF-16LE variants both decode the four zero bytes the same way, producing two null characters with length 2. Now I'm checking the US-ASCII case with two zero bytes, which should similarly decode each byte as a null character.
+
+For the ISO-8859-1 test with a thirteen-character string, I'm counting the characters to confirm it's exactly 13, since each ISO-8859-1 character maps to exactly one byte, giving a result length of 13.
+
+Now I'm working through the remaining test oracles: null bytes with null charset returns null, null bytes for ISO-8859-1 returns null, unchecked byte conversion of a null string returns null, unsupported charset throws an illegal state exception (already handled via try/catch), null string for UTF-8 byte buffer returns null, and equality checks comparing character buffers with null characters against different strings return false.
+
+Continuing through the remaining test cases, I'm noting oracles for byte array length checks, null-byte string decoding, and cases needing no assertion like the deprecated constructor test.
+
+I'm second-guessing whether commons-codec might special-case empty strings and skip the BOM, though standard Java UTF-16 encoding would add one. The test name is my strongest clue, but if EvoSuite generated the name from a since-removed assertion, the actual runtime behavior might not match what the name implies, which is a real risk of getting this one wrong.
+
+Given the method name, the original oracle likely checked for an empty array, but standard UTF-16 encoding of an empty string actually produces 2 bytes for the BOM, so that assertion would fail unless commons-codec handles this specially. Without visibility into the actual implementation, I keep going back and forth, but I think the safest choice is to abstain since the test name conflicts with expected Java behavior.
+
+Actually, given the conflict between the test name and Java's real behavior, I don't have enough confidence to commit either way, so I'll abstain here and move on to making the edits.
+
+
+
+The string has special characters that might be causing matching issues. Let me try with the offset/line approach or use a different part of the string that's unique.
+
+The issue seems to be with encoding of the special character "Ú " in the test file. Let me read the raw bytes to understand the encoding.
+
+Let me try using the Read tool with a very narrow context to understand the exact characters on line 61, and then try different ways to match the string.
+
+Let me try a different approach - I'll look for a unique string in the line that doesn't have special characters.
+
+The issue is with the special character "Ú" which is a Unicode character. The Edit tool is trying to match the string but it seems like the encoding is different. Let me try using a different approach to narrow down the exact bytes.
+
+Let me try to use the Read tool again with more lines to find some other unique text for pattern matching.
+
+Actually, looking at the error message: "Edit also tried swapping \uXXXX escapes and their characters; neither form matched". This means there's something beyond just the Ú character that's different.
+
+Wait, maybe the issue is with the space after "Ú " - could it be a non-breaking space or some other special character?
+I should try matching on a smaller, unique string that avoids the special characters entirely.
+
+
+
+The issue is consistent. I suspect the "Ú " string contains some special characters that my input doesn't match exactly. The line reads:
+```
+boolean result = StringUtils.equals((CharSequence) charBuffer, (CharSequence) "Ú ");
+```
+
+The problem might be that "Ú " has a non-breaking space or a different Unicode character. But wait - even my attempts to match on lines WITHOUT the special character are failing (like the `public void equals_...` line, which doesn't contain any special chars).
+
+Wait, actually all my attempts include the "Ú " string which is the problematic part. Let me try to match ONLY on the surrounding lines without the special char line.
+It's odd that even the method signature line without special characters fails to match. I wonder if the file has different line endings than my replacement text, which could explain the "neither form matched" error. Let me try matching just the signature alone to test this theory.
+
+
+
+OK so that worked. The issue is with the "Ú " string. The way I'm writing "Ú " in my old_string doesn't match what's in the file. The character might be encoded differently in the file versus in my input.
+
+Let me read the file around that line to see the exact content.
+
+I can see the line 61 content. The issue might be that the "Ú " contains a special Unicode character that is rendered as "Ú " in the Read output but might be encoded differently.
+
+Let me try to match on non-special parts — the `CharBuffer charBuffer = CharBuffer.wrap` line and the closing brace.
+
+The issue is definitely with the "Ú " string. When I type "Ú " in the Edit tool, it might be encoded differently from what the file contains. But I can match on the lines before it.
+
+Let me try to match ONLY the last two lines of the method (line 61 and 62), without including the "Ú " in the old_string, or let me match on just the closing brace and next test annotation.
+
+Actually wait - the line 61 contains "Ú " which is problematic. Let me try matching on the closing brace + the next @Test annotation:
+
+```
+    }
+
+
+I'm having trouble matching the line with "Ú ". The issue is that even though "Ú " visually appears as "Ú " in the file when read, the actual bytes might be different from what I'm generating in the old_string.
+
+Let me think about this differently. The "Ú" could be encoded as a multi-byte UTF-8 sequence, and when I type it in my old_string, maybe I'm using a different encoding. But the error says "Edit also tried swapping \uXXXX escapes and their characters; neither form matched" - this is strange because it means the tool already tried the Unicode escape version.
+Maybe the space right after "Ú" isn't a regular space but something like a non-breaking space, since this file was generated by EvoSuite as a stress-test string, and "Ú" itself is U+00DA. If even the simplified match without that character is failing, I suspect my approach of relying on exact character matching is flawed.
+
+Testing shows that the version with a marker comment on the `twoNullChars` line succeeds, while the version without it fails -- so the issue seems tied to something subtle in how I'm matching that exact block, not the "Ú " character itself.
+
+I'm now thinking about whether I can avoid including the problematic line entirely by matching only the closing brace of the method plus surrounding content instead.
+
+Since the next test method starts shortly after, maybe I could anchor my edit on the blank line and the following @Test annotation instead of touching line 61 directly.
+
+Since that method name is unique, I could anchor my replacement text right before it, inserting the missing assertion and closing brace ahead of that declaration—though I still need to check whether similar closing-brace-plus-annotation patterns elsewhere in the file could cause ambiguity in the match.
+
+
+
+That worked! Now I need to add the assertion for `equals_stringAndCharBufferWrappingSameContent_returnsTrue`. Let me read the current state of the file to see what's there.
+
+The `"[ N Q . 3 8 g ~ 9 u = Y G O x n W "` string contains spaces and special characters, but the issue might be with how spaces are encoded or perhaps there are special Unicode spaces. 
+
+Let me try to avoid including the string literal in my old_string and instead use the non-special lines:
+
+Wait, but that "    }" could have matched to wrong method! Let me check the current state of the file around that area to verify.
+
+Actually, looking at the method ending for `equals_stringAndCharBufferWrappingSameContent_returnsTrue`, line 69 was `    }`. Then line 70 was blank, then line 71 was `@Test(timeout = 4000)` and line 72 was the `equals_charBufferWithNullBytesAndAsciiStringWithSameBaseChars_returnsFalse` method.
+
+I matched:
+```
+    }
+```
+
+I need to double-check which method got the `assertTrue(result);` insertion versus which one just got matched by this closing brace and test annotation — I may have mixed up which fix landed in which method.
+
+That confirms `assertTrue(result);` was correctly appended to `equals_stringAndCharBufferWrappingSameContent_returnsTrue`. Next I need to add `assertFalse(result);` to `equals_charBufferWithNullBytesAndAsciiStringWithSameBaseChars_returnsFalse`.
+

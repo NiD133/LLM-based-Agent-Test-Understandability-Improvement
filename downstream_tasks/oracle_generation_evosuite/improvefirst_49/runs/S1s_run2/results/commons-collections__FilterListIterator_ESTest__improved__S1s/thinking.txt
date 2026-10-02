@@ -1,0 +1,46 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now let me analyze each test to understand what oracle should be added:
+
+1. **`hasNext_returnsFalse_whenNoElementsMatchPredicate`** - The predicate doesn't match any element (uses a different target object), so `hasNext` should return `false`.
+   - Oracle: `assertFalse(hasNext);`
+
+2. **`hasNext_isIdempotent_whenCalledTwice`** - The element in the list matches the predicate, so both `hasNext` calls should return `true`.
+   - Oracle: `assertTrue(secondHasNext);`
+
+3. **`hasNext_returnsFalse_afterForwardAndBackwardTraversal`** - After `next()` is called, the single element is consumed. Then `hasPrevious()` is called. A second iterator also uses the same (exhausted) underlying iterator and calls `next()`. Finally, `filterIterator.hasNext()` is called. The underlying iterator is shared and exhausted.
+   
+   I'm tracing through the cursor position and internal state after each of these calls to figure out whether the second iterator's `next()` call would advance past the end, and what that implies for the final `hasNext()` result.
+
+Since secondIterator is a fresh FilterListIterator, its own previousObjectSet is false, so calling next() makes it call the underlying iterator's next(), which is at position 0 and returns the element again—but the first iterator still has its previousObjectSet flag as true from the earlier hasPrevious() call, creating a state mismatch between the two iterators sharing the same underlying list.
+
+Now when the first filterIterator's hasNext() is called, since previousObjectSet is true it must first clear the previous object, then recursively call setNextObject() again—but by then the underlying iterator has advanced to position 1 (the end), so hasNext() returns false. The test then asserts hasNext is false, moving into the next test case around hasPrevious returning false.
+
+icate matches, so it sets `previousObject`, marks `previousObjectSet = true`, and returns true from the inner call — but the outer call then clears that previous object and returns false overall, meaning `hasPrevious()` ends up returning false, confirming my trace. I want to double-check this by re-reading the actual `setPreviousObject()` implementation to make sure I'm tracing the nested clearing logic correctly, since the recursive clearing of both next and previous state is subtle.
+
+So `hasPrevious()` returns false, matching the expected assertFalse oracle. Then for the case where `next()` is followed by `hasPrevious()` twice: the first call warms the buffer by walking backward and finding the element, setting previousObjectSet true and returning true; the second call just returns the cached true, matching the assertTrue oracle.
+
+Now I'm tracing the nested filter case where the outer filter wraps an inner filter, which itself wraps the list iterator with an equality predicate, and the outer filter uses a uniqueness predicate—checking how `outerFilter.hasNext()` cascades down through `innerFilter.hasNext()` to determine what `hasPrevious()` should return afterward.
+
+I need to trace through this more carefully - `setNextObject` calls `iterator.hasNext()` first, then `iterator.next()`, so I'm checking whether `innerFilter`'s internal `nextObjectSet` flag was actually set by that `hasNext()` call before `next()` consumes it.
+
+Now I'm tracing what happens when `outerFilter.hasPrevious()` is called, which triggers `setPreviousObject()` recursively down into `innerFilter`, walking back through the underlying list iterator position by position to check the predicate against the previous element.
+
+The equal predicate matches once, letting `innerFilter` set its previous object true, but then when `outerFilter` actually calls `previous()`, the returned element hits `UniquePredicate` and fails since it's a duplicate seen before. So the loop keeps checking `innerFilter.hasPrevious()` again, and this time the underlying iterator has reached position 0, meaning there's nothing left before it.
+
+So `innerFilter.previous()` sets its previousObject to the element and returns true, meaning `outerFilter.setPreviousObject()`'s recursive call also succeeds, retrieving that same element again -- but now I need to check if `UniquePredicate` flags it as a duplicate since it already tested this element once during the earlier `setNextObject()` call.
+
+Tracing through, since the element was already added to the seen set, testing it again returns false, so the recursion continues and eventually `hasPrevious()` returns false overall since there's nothing further back. Next I'm looking at the test case checking that `hasNext()` becomes false after `hasPrevious()` reverses the buffered position following a `next()` call.
+
+Then it clears the nextObject state and falls through to the main loop, scanning forward through the underlying iterator for the next element matching the predicate, setting it if found.
+
+So tracing through the `previousObjectSet = true` case: clearing the previous object, recursing into `setNextObject()` which consumes an element and sets it as next, then immediately clearing that next object, and finally falling through to the while loop where the underlying iterator has no more elements—so it returns false, meaning `hasNext()` is false.
+
+Now I'm considering the next scenario, `previous_afterNext_resetsNextIndexToZero`, which tests that calling `next()` then `previous()` properly resets the index back to zero.
+
+Tracing through: since `previousObjectSet` was false after `next()`, calling `previous()` triggers `setPreviousObject()`, which walks the underlying iterator back, finds a matching element, and sets `previousObject` before `nextIndex` decrements to 0 and the element is returned.
+
+I notice the test name mentions resetting nextIndex to zero, and there's a blank line right after `filterIterator.previous()` that's missing an assertion — I should add `assertEquals(0, filterIterator.nextIndex())` there. Moving to the next case: for a brand new empty iterator, `nextIndex()` should just return 0, so I need an oracle asserting that too.
+
+Next up, `previousIndex()` on a new empty iterator should return -1, since it's always `nextIndex - 1`. Then for the test where the list iterator is set to itself via `setListIterator`, since `nextIndex` stays at 0, `previousIndex()` should still come back as -1 — I'll assert that. Then I'm moving into checking that `getPredicate()` returns null when the iterator was constructed with a null predicate.
+

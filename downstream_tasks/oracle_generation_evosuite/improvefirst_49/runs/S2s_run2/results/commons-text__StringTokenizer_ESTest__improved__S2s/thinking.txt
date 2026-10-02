@@ -1,0 +1,87 @@
+Let me start by reading both the masked test file and the CUT (class under test) to understand what oracles need to be added.
+
+Now let me analyze each test method and determine what oracles (assertions) are needed:
+
+**test00_toStringBeforeTokenizationReturnsNotTokenizedYet**
+- Creates a tokenizer and calls `toString()` before tokenization
+- According to the CUT: `if (tokens == null) { return "StringTokenizer[not tokenized yet]"; }`
+- Oracle: `assertEquals("StringTokenizer[not tokenized yet]", result);`
+
+**test01_toStringAfterTokenizationShowsContent**
+- Creates tokenizer, calls `previousToken()` to trigger tokenization, then `toString()`
+- With a 1-char null array and the mock matcher returning no delimiter matches, tokenization would produce a single token, and toString() would return "StringTokenizer" concatenated with the token list rather than the "not tokenized yet" message. I need to work out the exact format the token list produces to pin down the oracle.
+
+Tracing through the actual tokenize logic now: checkTokenized calls tokenize on the single-char array, and since only the delimiter matcher is mocked while trimmer and ignored matchers stay default (noneMatcher, returning 0), removeLen stays 0 and the loop breaks immediately without consuming anything, leaving start at 0 with len 1.
+
+From there readNextToken checks the mock delimiter matcher (returns 0 on the first call, no delimiter found) and the default quote matcher (also 0), so it proceeds into readWithQuotes with quoting false and pos at 0. Inside that loop, the mock matcher is called a second time (still returns 0, no delimiter), the quote check is skipped since quoteLen is 0, and the ignored matcher returns 0 as well.
+
+For the oracle, I'm considering asserting that the result isn't the "not tokenized yet" placeholder, since the toString mock actually applies to the matcher not the tokenizer itself. A safe check would be verifying the result doesn't contain that unconverted placeholder text.
+
+Moving to the next test case, for an empty TSV input calling previousToken() at the start, hasPrevious() should evaluate to false since the token position is 0, so the oracle is simply that the returned token is null.
+
+For test09, I'm working through the CSV instance "%*dR|" - with no comma delimiters present, this parses as a single token. After calling nextToken() then previousToken(), the oracle checks that the token equals "%*dR|".
+
+I'm also cataloging several more null-quote-char scenarios: null quote characters, post-configuration calls, TSV instances, whitespace-only input, and after setting ignored chars - previousToken() at the start should return null in each case, with each oracle asserting a null result.
+
+I'm also checking a case where next() is called then previous() on a TSV-configured tokenizer with a comma-containing input string, verifying that previous() correctly returns the same token that next() just produced, plus starting to look at whether nextToken() throws on a tokenizer with no content.
+
+Moving on to setTrimmerMatcher — since it returns `this`, the oracle should assert the same instance is returned, both for a normal trimmer matcher and when passing null.
+
+For setIgnoredMatcher with null, the same pattern applies: it returns `this` regardless, so the assertion is `assertSame(tokenizer, result)`.
+
+For the isEmptyTokenAsNull default test, I notice the test just constructs a tokenizer with a null string but never actually calls isEmptyTokenAsNull() to check the default value — I need to figure out what the real oracle should be here.
+
+For the persistence test around setEmptyTokenAsNull, I'm noticing the call to previousToken() doesn't capture its return value, so I can't build an assertion on that call directly — only the setter's assertSame result is verifiable.
+
+For test13, since the delimiter string doesn't appear in the input "6j*-yw_2R-]", forEachRemaining should invoke the consumer exactly once with that whole string, so the oracle is a Mockito verify checking the consumer was called with that token.
+
+With no delimiter match, the whole input becomes a single token, so the consumer should be called once with that full string. For the next test, getTSVInstance with no arguments leaves chars null, so getContent() should return null, and I'm moving to check that another test confirms getContent returns the original string unchanged.
+
+Then I'm noting clone() should produce a distinct, non-null instance, verified via assertNotSame against the original tokenizer. For size after setting a delimiter that matches the entire input string, I'm reasoning through how that full-length match affects the token count, expecting it to reduce to zero.
+
+I'm also confirming that isIgnoreEmptyTokens() defaults to true both for null String input and when null matchers are passed with a char array constructor, with assertTrue oracles for each case.
+
+For test21, I'm checking previousIndex() on a null char array TSV instance—since chars is null, tokenPos stays at 0, so previousIndex() returns 0 - 1 = -1.
+
+For test25, previousIndex() at start also gives -1, and test26's nextIndex() at start equals tokenPos which is 0. Test23 checks that setIgnoreEmptyTokens returns the same tokenizer instance for chaining.
+
+For test30, since getTokenArray() is called without capturing its return value in the original code, I'll leave the structure as is but note that the assertion should verify a non-null empty array if I add a capture afterward.
+
+Now I'm systematically going through each test case to identify which ones compute a value without asserting anything on it, so I can insert appropriate assertions after those computations—like test00 and test01 which call toString() without checking the result, or test02 which calls previousToken() without validating what's returned.
+
+Continuing through the remaining tests, I'm cataloging each one that needs an assertion added after operations like forEachRemaining, getContent, clone, previous, size, and setIgnoreEmptyTokens, plus a couple that just create the tokenizer and need an assertion added entirely.
+
+` - assertion after
+
+Now I'm tracing test09 carefully: with input "%*dR|" and comma delimiter, there's no comma so it produces a single token, and since the trimmer finds no whitespace to strip, previousToken() should return "%*dR|" exactly. Then I'm starting to work through test17 with the TSV tokenizer configuration and its tab delimiter setup.
+
+For test17: input ",OF0)2fR[p0$" has no tab character, so it's one token unchanged by trimming, meaning both next() and previous() should return that same string.
+
+Then for test13, testing forEachRemaining with input "6j*-yw_2R-]" and a longer delimiter string that never matches, so again it's a single remaining token that the consumer should receive via verify.
+
+Now I'm double-checking the delimiter-string constructor behavior to make sure I'm reasoning about it correctly.
+
+Since there's no matching delimiter and no trimmer, the tokenizer yields a single token equal to the whole input string, so accept is called once.
+
+For test30, since getTokenArray() result isn't captured, I'll add an assertion checking its length is zero. Then I move on to think through test00's setup with a single-char input and mock matcher.
+
+For test00, since tokens is null before tokenization, toString() should return "StringTokenizer[not tokenized yet]" as the oracle result. For test01, after previousToken() is called, the token becomes a single null character, so toString() won't equal the "not tokenized yet" string anymore—I'll use assertNotEquals as the safer oracle since the mock's toString() being null doesn't affect the tokenizer's own toString() output.
+
+Now I'm moving on to plan the remaining edits, especially for tests where the toString() result is captured in a variable.
+
+For test00 I'll assert the result equals "StringTokenizer[not tokenized yet]"; for test01, assertNotEquals for that same string; for test02, assertNull on the previousToken result. I'll continue through each numbered test method this way, adding targeted assertions after the captured variables.
+
+Adding more assertions...
+
+Adding more test assertions...
+
+For test10, I'm considering the nextToken case where the tokenizer has no content — calling it without capturing the result means it should return null, but I can't verify that without a second call that would shift position, so I may need to leave it as-is or with a note instead of an assertion.
+
+For test10, since the test doesn't capture the return value of nextToken(), I'm considering adding `assertFalse(tokenizer.hasNext())` afterward as a valid oracle confirming no tokens remain, though the test's real purpose—verifying no exception is thrown—might just warrant abstaining instead.
+
+For test29, since `result.previousToken()` at the end isn't captured either, I'll insert `assertSame(tokenizer, result)` right after the setEmptyTokenAsNull call to confirm the returned tokenizer is the same instance.
+
+Given how many test files need similar targeted insertions, I think it's easier to do multiple precise edits rather than one massive rewrite.
+
+Going test by test would mean dozens of individual edits, which is tedious, so I'm deciding to just do a full rewrite of the file with all the assertions added in place.
+

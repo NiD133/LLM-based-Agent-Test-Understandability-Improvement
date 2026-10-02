@@ -1,0 +1,27 @@
+Let me start by reading the masked test file to understand what tests are there and what oracles need to be added.
+
+Now I need to analyze the tests and add appropriate oracle assertions. Let me go through each test:
+
+1. **testLengthAfterClose_returnsAggregatedLength**: The comment says "GroupedRandomAccessSource reports the total length even after close()." The data is a 6-byte array, and there are 8 sources in the `buildEightSources` method. Looking at the sources: there are 6 sources of `buffered` (which wraps `base` with 6 bytes), 2 `base` arrays, and 2 `independent` (which wraps `buffered`). Wait, let me re-read:
+Each of the eight sources wraps a 6-byte array in different combinations of `buffered` and `independent` sources, so each individually reports a length of 6, and the total across all eight should sum to 48.
+
+Checking the test code, I notice it calls `grouped.close()` but never actually calls `grouped.length()` afterward — the test name implies it should verify the aggregated length post-close, so the oracle assertion for that call seems to be missing.
+
+I conclude the oracle should just be the assertion checking that length equals 48 after calling close(), since each of the 8 sources wraps a 6-byte array. That confirms this test case, so I move on to the next one about bulk reads at a position before the window start.
+
+For that test, the window starts at offset 807 and the requested position 196 falls before it, so the return value should be -1, and I use that same expectation for the negative buffer offset and negative position cases too, since all of them expect -1 as the result. Then for reading a single byte at position 0, I need to verify it returns the correct first byte of data.
+
+For the byte-beyond-end case with a 6-byte source, reading 4 bytes from position 4 leaves only 2 available, so the expected return is 2. Then I check a window with negative length -645, expecting the length getter to just return that same negative value -- though I want to double check this against the actual window construction logic.
+
+For the array-index-out-of-bounds test, the try/catch with fail() already handles the oracle, so nothing more to add there. Now I'm walking through test 1 again, tracing how buildEightSources wraps the base 6-byte array through buffered and independent source layers to determine the aggregated length.
+
+Since each of the eight sources delegates back to the same 6-byte base, the GroupedRandomAccessSource sums them to 48, and this total should remain 48 even after calling close(), since length values are cached rather than recomputed. For test 7, I'm now checking that reading beyond the end of a single 6-byte source correctly returns only the available byte count.
+
+For test 2, I'm tracing through how a windowed source starting at offset 807 handles a read request at position 196 — since that position falls before the window's start, the source needs to correctly signal it's out of range rather than returning garbage data.
+
+That confirms base.get(1003) returns -1 since it's out of bounds, so the expected result is -1 for that read.
+
+For the negative-length window test, the length should just propagate the negative value directly, so the assertion should check for -645L as the reported length.
+
+Now I'm ready to write out the test file with all these oracles added.
+

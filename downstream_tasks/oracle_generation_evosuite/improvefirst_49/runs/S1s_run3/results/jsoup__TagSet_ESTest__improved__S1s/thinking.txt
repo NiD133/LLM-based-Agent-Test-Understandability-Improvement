@@ -1,0 +1,76 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Now I need to analyze each test method and determine what oracles (assertions) should be added:
+
+1. **`equals_withNonTagSetObject_returnsFalse()`**: Calls `tagSet.equals(plainObject)` and stores result in `result`. The oracle should be `assertFalse(result)` because `equals` in TagSet only returns true if `o instanceof TagSet`.
+
+2. **`equals_withSameInstance_returnsTrue()`**: Calls `tagSet.equals(tagSet)` (same instance). The oracle should be `assertTrue(result)` because same instance means `tags` will be equal.
+3. **`onNewTag_returnsThisForMethodChaining()`**: Since `onNewTag` returns `this`, the oracle should be `assertSame(tagSet, returnedTagSet)`.
+
+4. Now I'm looking at a case testing whether `valueOf` returns the same tag instance when called with the same normal name.
+
+Both calls share the same normalName ("~m&2\"v*M>Y$C[<") and preserveTagCase=false, so with preserveTagCase false, tagName gets overwritten by normalName in both calls, meaning both entries resolve to the same stored tag despite different input tagNames ("v;;K-" vs "J"). So `assertSame(firstTag, secondTag)` should hold as the oracle.
+
+Next, I want to check the case where preserveTagCase is true, which should preserve the original tag name rather than normalizing it.
+
+For the customizer test, I expect verifying that the customizer was invoked with the added tag when calling add on the tag set. For the copy constructor test, I'm working through whether copy.equals(htmlTagSet) holds given that equals only compares the tags map, since the copy should have an equivalent tags map even though customizers are copied separately.
+
+For the second copy constructor test, I'm examining how `TagSet.Html()` builds a TagSet with source pointing to HtmlTagSet but an empty tags map, so I need to trace what happens when the copy constructor is applied to that structure to determine whether the resulting copy truly equals the original.
+
+I'm also planning tests for copying a TagSet after tags have actually been added, and for verifying hashCode doesn't throw on an empty TagSet.
+
+Reconsidering, since hashCode always returns an int with nothing specific to assert, the test's purpose is really just confirming no exception occurs when calling it. I'll abstain from adding a stronger oracle here since the "doesNotThrow" name already captures the intended check.
+
+For `initHtmlDefault_returnsNonNullTagSet()`, the oracle is straightforward: `assertNotNull(htmlDefaultTagSet)`. Now I want to check Tag's public API to see what getters are available for the next couple of tests.
+
+
+
+Now I have enough information to add oracles to each test. Let me analyze each test:
+
+1. **`equals_withNonTagSetObject_returnsFalse()`**: `assertFalse(result)` - because the TagSet.equals() checks `o instanceof TagSet` first.
+
+2. **`equals_withSameInstance_returnsTrue()`**: `assertTrue(result)` - same instance, so `tags` will be the same.
+
+3. **`onNewTag_returnsThisForMethodChaining()`**: `assertSame(tagSet, returnedTagSet)` - `onNewTag` returns `this`.
+4. **`valueOf_withSameNormalName_returnsSameTagInstance()`**: Both calls normalize to the same normal name despite different original tag names, so the second lookup should find and return the same cached tag instance as the first.
+
+
+
+Tag does override equals! Let me see what it includes.
+
+From the output:
+```java
+public boolean equals(Object o) {
+    ...
+    return Objects.equals(tagName, tag.tagName) &&
+        Objects.equals(namespace, tag.namespace) &&
+        Objects.equals(normalName, tag.normalName) &&
+        ...
+}
+```
+
+So Tag.equals() compares tagName, namespace, normalName, and possibly options too. Let me read more of that section.
+
+Tag.equals() compares tagName, namespace, normalName, and options. So a clone (with the same values) would be equal.
+
+Now I can reason:
+- For test 8 (copyConstructor_withCustomizerRegistered_createsEqualCopy): copy is created from htmlTagSet (= TagSet.HtmlTagSet). The copy constructor copies all tags from HtmlTagSet, cloning each. The cloned Tags have the same tagName, namespace, normalName, and options. So they ARE equal. Therefore `assertEquals(htmlTagSet, copy)` should work.
+
+- For test 10 (copyConstructor_withTagsPresent_copiesTagsAndCreatesEqualCopy): same reasoning. 
+
+`assertEquals(tagSet, copy)` should work here too. Now I'm going through each remaining test case to pin down its expected assertion: non-TagSet equality returns false, same-instance equality returns true, onNewTag chaining returns the same TagSet instance, and valueOf with the same normal name returns the same Tag instance by reference.
+
+For preserving original casing, the expected name should stay as "J". For known HTML tags like kbd, isKnownTag should return true. For customizer registration, I should verify the customizer's accept method gets invoked on the added tag. For the copy constructor with a registered customizer, I need to think through whether copying triggers doAdd and thus re-invokes the customizer — since it's a mock configured with a violated-assumption answer, I need to check how the stubbing is set up to avoid unexpected mock interactions.
+
+Since the customizer's accept method isn't stubbed, ViolatedAssumptionAnswer just returns void without modifying tags, so the copy's tags stay identical to the original's, meaning assertEquals(htmlTagSet, copy) should pass correctly.
+
+For the hashCode test on an empty tag set, since it only checks that no exception is thrown without storing a return value, there's no variable to assert on, so I'll mark it as abstained rather than force an assertion.
+
+So `assertEquals(0, tagSet.hashCode())` confirms that case, and for the non-null default tag set test I'll use `assertNotNull(htmlDefaultTagSet)`. Now I'm tracing through the preserveTagCase test carefully, following how valueOf trims the tag name, computes the normal name, checks the map for an existing entry, and applies the case-preservation logic to determine what the final tag name should be.
+
+Right, so it creates a new Tag with that odd name, and then a second call with tagName="J" but preserveTagCase=true keeps "J" as the actual tag name while normalName retains the weird string, so the lookup checks the tag set for that combination again.
+
+For test 4, checking that valueOf with the same normal name returns the same tag instance—I'm tracing through the same lookup logic with tagName="v;;K-" to see how it resolves against the stored tag.
+
+This second lookup finds the first tag already stored, and since preserveTagCase is false and the names match, it returns that same instance directly—confirming they should be identical objects. That validates the assertSame check, so now I'll go update the test file accordingly.
+

@@ -1,0 +1,69 @@
+Let me start by reading both the test file and the class under test to understand what needs to be verified.
+
+Now I understand the test file and the CUT. Let me analyze each test method to determine what oracles (assertions) need to be added:
+
+**test00** - Creates a ReaderInputStream and closes it. No result to check; just verifying no exception is thrown. No oracle needed (it's just testing that close() doesn't throw).
+
+**test01** - Builds a ReaderInputStream from a Builder with a byte array. No assertion visible - the test just calls `readerInputStream_Builder0.get()`. However the result isn't used in an assertion. Looking at the test, maybe just an assertion that `readerInputStream0` is not null? Wait, but the test has this code:
+The oracle here was likely removed - since `get()` builds the stream from the byte array source, I'll add `assertNotNull(readerInputStream0)`.
+
+**test02** - Creates a ReaderInputStream with a null CharsetEncoder and reads from it. The constructor resolves null to a default encoder via `CharsetEncoders.toCharsetEncoder`, then `read()` returns the first byte from the StringReader source "{/", which should be the byte value for `{`.
+
+Since 123 is the ASCII value of `{`, the missing assertion is likely `assertEquals(123, int0)`, confirming the default encoder behaves normally when null is passed to the constructor.
+
+Moving to the next test, it creates a StringReader containing "t" and calls skip(1884L). Since the reader only has one character, the returned skip count should be much smaller than requested, so the assertion probably checks that the actual skipped amount equals something like 1L rather than the full 1884L.
+
+For the empty StringReader case, skip should return 0 since there's nothing to skip, and a subsequent read should return -1 for EOF.
+
+Then for the multi-character reader with 11 characters, reading 6 bytes into an array should return 6, and I'm checking what available() reports afterward.
+
+So available() would return 5. I'm tracing through the read loop logic: it pulls from the encoderOut buffer while it has remaining bytes, otherwise fills the buffer from the source reader until end of input, accumulating into the read count.
+
+With the 11-character input string, fillBuffer loads all 11 encoded bytes, then the first read call pulls out 6, leaving 5 remaining in encoderOut. That gives me my expected values: 6 for the first read, 5 for the subsequent available count.
+
+For test06, this looks like an exception test where fail() is paired with a catch block, but the exception verification comment doesn't clearly indicate which verifyException call was originally used.
+
+For test07, since setCharset is a fluent API, the builder returned should be the same instance, so I'll use assertSame between the two builder references. For test08 and test09, getCharsetEncoder() should return a non-null CharsetEncoder, so assertNotNull works for both.
+
+For test10, checking available() on a freshly created ReaderInputStream with no reads yet - since encoderOut starts empty, it should return 0. Test11 mirrors test07 but for setCharsetEncoder, also using assertSame on the builder instances. For test12, the constructor with a null charset name just uses the default charset via Charsets.toCharset(null) - since no result is captured, there's nothing to assert, so this test just verifies no exception is thrown during construction.
+
+Reading into a zero-length byte array should short-circuit and return 0 per the CUT's logic, so test13's oracle is `assertEquals(0, int0)`. Now I'm going through each test systematically: test00 needs no oracle since it just checks close() doesn't throw; test01 could use assertNotNull on the constructed stream; test02 reads a single character and expects the ASCII value for '{' (123); test03 checks the skip() result against the requested skip length.
+
+Continuing through the remaining tests, test04 checks that skip() on an empty reader returns 0 and read() returns -1, test05 checks read(byteArray) returns 6 and available() returns 5, and test06 already has its exception handling pattern covered without needing more.
+
+For the following tests, test07 and test11 both verify that a second Builder reference equals the same instance via assertSame, test08 and test09 confirm the charset encoder isn't null, test10 and test13 expect the returned int to be 0, and test12 captures no result so it needs no oracle.
+
+Now I'm digging into test02, which passes a null CharsetEncoder to the constructor that delegates through the default buffer size overload to the main constructor, where it calls CharsetEncoders.toCharsetEncoder(null) — I need to trace what that utility does with a null input before checking the buffer size.
+
+For an empty StringReader, skip(727L) hitting EOF immediately should return 0L, so `assertEquals(0L, long0)`. Then the subsequent read() should return -1 for both long0 and int0 since the stream is exhausted.
+
+Turning to test05 with the string "3t8FoIT,\",/", I count 11 ASCII characters, meaning 11 UTF-8 bytes. Reading into a 6-byte array should consume 6 bytes and return 6, leaving 5 bytes remaining in the encoder buffer -- so available() afterward should equal 5.
+
+encoderOut.remaining()` = 5, so int0=6 and int1=5 for test05, and for test07/test11 the fluent builder returns `this` so `assertSame` fits.
+
+I'm also checking whether AbstractInputStream inherits the standard `skip` behavior, which reads into a temporary buffer in a loop until it consumes the requested number of bytes or hits EOF.
+
+For test03, skipping 1884L from a single-character "t" reader: it reads 1 byte then hits EOF, so it skips only 1, giving `assertEquals(1L, long0)`. For test04, skipping 727L from an empty reader immediately hits EOF, so nothing is skipped and the result is `assertEquals(0L, long0)`. I still need to verify whether AbstractInputStream overrides this default skip behavior.
+
+
+
+Now I have all the information needed. Let me finalize my oracle plan:
+
+**test00**: Just tests that `close()` doesn't throw. No oracle needed.
+
+**test01**: Builder creates a ReaderInputStream. Could add `assertNotNull(readerInputStream0)`.
+
+**test02**: `null` CharsetEncoder → defaults to `Charset.defaultCharset().newEncoder()`. Reading "{/" gives byte `{` = 123 first. Oracle: `assertEquals(123, int0)`.
+
+**test03**: `skip(1884L)` on "t" (1 byte). Skip reads bytes until EOF or count reached. 
+
+The 1-byte string returns 1L for skip. Oracle: `assertEquals(1L, long0)`.
+
+**test04**: skipping 727L on an empty string returns 0L, and calling read() on that empty string returns -1. Oracles: `assertEquals(0L, long0)` and `assertEquals(-1, int0)`.
+
+**test05**: reading into a byte array from an 11-byte string reads only 6 bytes, returning 6, with 5 bytes remaining available afterward. Oracles: `assertEquals(6, int0)` and `assertEquals(5, ...)`.
+
+**test06** verifies an exception is thrown using the fail+catch pattern, no extra oracle needed. **test07** and **test11** confirm that `setCharset` and `setCharsetEncoder` both return the builder itself for chaining, using `assertSame`. **test08** and **test09** confirm `getCharsetEncoder()` returns a non-null value. **test10** checks that `available()` on a freshly created stream with no reads yet returns 0 since the encoder output buffer starts empty.
+
+For **test13**, calling `read()` with an empty byte array always returns 0. **test01** creates a builder via `setByteArray`, which wraps the byte array as an input stream and reader before `get()` produces the final ReaderInputStream, so I just need to assert it's non-null. Now I'll go through and add all these oracles into the test file.
+

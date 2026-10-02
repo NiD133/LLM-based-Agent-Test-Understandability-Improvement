@@ -1,0 +1,111 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be filled in.
+
+Now I'll analyze each test method and determine what oracles (assertions) need to be added.
+
+Let me go through each test method:
+
+1. **replaceCharArraySubrange_defaultConstructor_returnsDefaultEscapeChar** - calls `substitutor.replace(chars, 1, 1)` and doesn't store result. The test name says "returnsDefaultEscapeChar" but that's misleading - it's about replacing in char array. No oracle needed here as nothing is stored. Wait - looking at the code pattern, this test seems to just verify no exception is thrown... but if we need to add an oracle. Actually, looking at the return value and how the source string would be replacement, there's no variables in empty chars so the result should be an empty string (length 1 subrange).
+Checking that call again - it's a char array of 9 nulls with offset 1 and length 1, and no result is captured, so no oracle is needed there either. Moving to the next test, it creates a single-element char array, calls replace and stores the result as "result", with the name suggesting the oracle should confirm the returned string isn't null.
+
+Going through the rest systematically: the second test replaces a null char array without storing the result, so no oracle applies. The third one replaces a null array with a specific range and also discards the output, so again no oracle is needed there.
+
+The fourth test stores its result as a string, and since the input is a single-null-element array with no substitution, the output should be non-null—so `assertNotNull(result)` fits. The remaining tests replace null CharSequences with various ranges, none of which store their results, so they don't need oracles either.
+
+Tests 11-13 similarly call replace with ranges but don't store the result, so no oracle needed. Test 14 tests a self-referential resolver expecting an IllegalStateException, already using a fail() call for verification.
+
+Tests 15-16 follow similar patterns: exception verification for undefined variables, and no-op checks for no-match substitutions. Test 17 checks that replacing a null Object returns null, matching the source's early null check.
+
+Tests 18-21 cover StringBuffer replace overloads: null inputs (no oracle needed since result isn't stored), an empty buffer with zero range (expecting a non-null or empty string result), and a buffer containing a closing brace.
+
+Now checking tests 22-23 for TextStringBuilder replace: a null source with a negative range should return null, and a zero-length range should return an empty string. I want to verify this against the actual replace(TextStringBuilder, int, int) source implementation to confirm the zero-length behavior.
+
+I move on to tests 24-25: replacing a null TextStringBuilder needs no oracle since the result isn't captured, but replacing an empty builder should return a non-null result that I'll need to check next.
+
+Then for test 26, the exception case with a null suffix is already properly structured with try-catch. For test 27, I'm working through custom prefix/suffix behavior where "${" as input with "}" as both prefix and suffix means the string won't match as a variable pattern, so I expect the result to just be "${" unchanged.
+
+For test 28, the static replace method with null Properties should fall back to calling toString() on the source object per the source code, so the assertion should just verify the result equals obj.toString() rather than trying to predict the exact hash value.
+
+For test 29, I'm tracing through what happens when replace is called with the substitutor object itself as source and empty Properties -- it builds an empty map resolver, wraps it in a new StringSubstitutor, then calls replace on substitutor.toString(), which contains "${" patterns that won't resolve against the empty map.
+
+For 30, replaceSystemProperties is called but the result isn't captured, so no oracle is needed there. For 31, passing a null StringBuilder to replaceIn should hit the early null check and return false, so I'm asserting that. Now I'm looking at test 32, which similarly passes a null StringBuilder but with a range argument.
+
+Test 33 uses a StringBuilder containing "${}", an empty variable name — with no resolver configured, this should resolve to null and leave the string unchanged, but the test name claims it "replaces and returns true," which seems inconsistent with my expectation, so I need to look more closely at how empty variable names are actually handled.
+
+I realize sb2's append call is self-referential: since sb equals sb2, appending sb to sb2 actually doubles its current contents, producing "}\0\0\0\0${}}\0\0\0\0${}". This creates an embedded "${}" pattern, an empty variable reference, so I'm now digging into the substitute method's escape-position handling to understand why the test expects a true return despite the null resolver.
+
+I'm tracing through the index positions to see where the "${" prefix matches and checking whether the preceding character is the escape character '$', to determine if the match should be treated as escaped or not.
+
+Tracing through character by character... the string starts as "}", then five chars are appended where only the last one is '$' (others are null chars), giving "}\0\0\0\0$" at length 6. Then appending "${" adds two more characters, so the final buffer becomes "}\0\0\0\0$${" at length 8.
+
+Tracing through carefully, position 5 holds the escape character '$', so when the check reaches position 6 it sees the escape and treats the "${" there specially rather than as a real substitution marker. I'm now tracking how the builder appends itself recursively, watching the string grow as it includes its own current contents mid-construction.
+
+Tracing through the escape logic, deleting the escape char at position 5 should count as an alteration, so the test name "replacesAndReturnsTrue" suggests the oracle should assert `wasAltered` is true.
+
+Checking for a later suffix after this point, I find one at the start of the second copy, so hasOuterSuffix is true, meaning pos advances past the nested prefix and the escape character at position 5 gets deleted, confirming altered = true. This means wasAltered should indeed be true in the oracle assertion.
+
+Next, examining `_stringBuilderWithUnclosedVariable_resolvesEscapedPrefixOnly`, which tests a similar scenario but without a closing brace before the second copy — I'm tracing how the string gets built by appending null characters, a dollar sign, then "${", followed by appending the builder's own current value onto itself to double it.
+
+I need to carefully count character indices to figure out where the "${" prefix and escape character "$" land, and whether a matching "}" suffix can be found afterward given the duplicated content.
+
+I notice the '$' character at position 5 acts as an escape, and the "${" pattern actually appears starting at position 6, which changes how the string should be interpreted. Then appending the builder's own content to itself doubles the string to 16 characters total.
+
+I need to trace through this more carefully for the test case involving a closing brace character.
+
+For test 33, the char array creates a null-padded string with a trailing dollar sign, then successive StringBuilder appends chain values together, with sb2 eventually appending both a literal closing brace and the entire prior string content of sb onto itself, doubling part of the sequence.
+
+For test 34, I'm setting up the same char array but tracking the variant without the closing brace to compare the resulting string lengths.
+
+Now I'm tracing through the substitution logic character by character, checking where "${" prefixes appear in the resulting doubled string to see how the parser resolves the pattern.
+
+Checking the substring after that position, there's no closing brace present, so hasOuterSuffix is false, which makes the overall condition false and sets pos to startPos + 1 = 7 instead of escPos. The character at escPos=5 gets deleted from the builder, confirming that wasAltered = true.
+
+For test 35, I'm tracing through the construction of a StringBuilder with an appended char array and multiple nested "${" sequences to see how the substitutor resolves escaped prefixes -- the oracle should assert wasAltered is true given the test name's intent.
+
+I'll note the expected assertion is `assertTrue(wasAltered)` for that test.
+
+Moving on: for null StringBuffer inputs, both with and without a range, the oracle expects `assertFalse(wasAltered)`. And for a buffer containing only the default variable start "${" with no suffix, there's no complete variable to resolve, so I expect that to also yield false.
+
+For a case where the test's own assertions are unstable and effectively commented out, no oracle is needed. For null TextStringBuilder with a range, false is expected. Now I'm looking at a case with a negative length parameter passed to replaceIn on a TextStringBuilder, tracing how it delegates through the source.
+
+Tracing further, since bufEnd becomes negative, the while loop condition fails immediately, so substitute returns false right away — the oracle expects `assertFalse(wasAltered)`. Next, for a null TextStringBuilder overload without a range, false is again expected. Then I'm moving to a case where the TextStringBuilder has no variables to substitute.
+
+Now working through similar test scenarios: one with the string ":-" that contains no variable patterns, so nothing changes; another where preserveEscapes is true and an unclosed "${" is encountered, causing the position to just advance without altering the buffer — both expected to return false.
+
+For the constructor tests, I'm inferring that since no oracle is stored, the checks are likely verifying the escape char getter — for instance, a constructor called with 'R' as the escape char should result in `getEscapeChar()` returning 'R'.
+
+Continuing through the test cases: the copy constructor should preserve the interpolator's escape char, several replace-based tests have no stored result and need no oracle, and the null-matcher setter tests are exception tests that are already properly structured.
+
+For the fluent setter tests (setValueDelimiter, setVariableSuffix), each stores the return value and checks `assertSame(substitutor, returned)` to confirm the builder pattern returns the same instance.
+
+For 54, setDisableSubstitutionInValues doesn't store a result so the oracle checks `assertTrue(substitutor.isDisableSubstitutionInValues())` afterward. Tests 55 and 56 call replace() without storing the result, so they don't need additional oracles. Now I'm starting to compile the full list of tests needing oracles added, beginning with the replaceCharArray tests that need `assertNotNull(result)`.
+
+Continuing through the list I'm assigning null checks, empty string checks, and non-null checks to each replace-family test depending on whether the input represents an empty, null, or valid buffer case.
+
+Continuing through more test case mappings...
+
+Continuing through more test cases: escape char copying, value delimiter and suffix setters returning the same instance, and the disable-substitution flag being set correctly. Now I'm circling back to reconsider tests 14-16 involving StringBuilder replace operations more carefully.
+
+Tracing through the character positions in the self-appended string to figure out where the prefix, suffix, and escape character land, and confirming the escape position lines up with the variable delimiter.
+
+Since hasOuterSuffix is true, the condition evaluates to false, so pos advances to 7 and the character at index 5 gets deleted, confirming the alteration for test 14. Now I'm moving to test 15, which checks resolving escaped prefixes on a string builder with an unclosed variable pattern.
+
+When sb2 is built by appending "${" to sb1 and then appending itself (sb2 references sb), the self-append doubles the current content, producing a 16-character string that's the original 8-character sequence repeated twice.
+
+Tracing through the escape detection logic, I find the "${" pattern matches at position 6 with the closing "}" right after at position 8, and since there's a preceding "$" at position 5, this triggers the escape-handling branch to check if the escaped variable starts with a nested prefix.
+
+Checking both conditions come out false, so no outer suffix follows, meaning the escape character gets deleted and the string is marked as altered — confirming test 15 passes. Now I'm moving to test 16, which builds a StringBuilder containing nested variable references to verify escaped prefixes resolve correctly.
+
+Since escapeChar matches right before it, this "${" gets treated as escaped rather than a real substitution start, so I continue scanning and find the closing "}" further along at position 10, extracting the variable name from between those bounds.
+
+Checking further, hasOuterSuffix turns out true since position 11 holds the closing brace, so the condition collapses to false, pos advances to 7, and the character at escPos 5 gets deleted, confirming the alteration for test 16. Now I want to trace through the stringBuilderWithPreserveEscapes test case, specifically the scenario with no closing suffix present in the string.
+
+With preserveEscapes enabled, when the prefix matches at position 6 and the preceding character is the escape char, the loop just advances past it without altering anything, so wasAltered ends up false as the oracle expects. I'm also checking the stringBuffer test where the string is just the default variable start with no suffix, which similarly results in no substitution and a false result.
+
+Now I'm working through the static replace case with a custom prefix/suffix of "}" where scanning "${" finds no matching suffix, so the string is returned unchanged. Then I move to the interpolator case with empty Properties passed to the static replace method, checking how that overload handles a non-null but empty properties object.
+
+So the toString output is just the internal debug representation of the StringSubstitutor object itself, dumping its configuration fields like escape char, matchers, and resolver — not an actual substitution of the original source text.
+
+For the null properties test, since the source code returns `source.toString()` when properties are null, the result should just equal the default Object.toString() output for that test object, like "java.lang.Object@hashcode".
+
+Now I'll go through and add these assertion oracles to each test case in the file.
+

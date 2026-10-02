@@ -1,0 +1,50 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be tested.
+
+Now let me analyze each test method and determine what oracles need to be added:
+
+1. **testLengthAfterClose_returnsAggregatedLength** - The test creates 8 sources from a 6-byte array. The sources are: `buffered`, `base`, `buffered`, `buffered`, `independent`, `buffered`, `base`, `independent`. The grouped source is closed. The test comment says "GroupedRandomAccessSource reports the total length even after close()". But there's no assertion in the test. After `grouped.close()`, it should check `grouped.length()`. Let me figure out the total length. 
+
+Each source contributes 6 bytes, so with 8 sources total that's 48 bytes, and since `length()` just returns a cached size value, it should still work correctly after closing. The test seems to be missing an actual assertion verifying `grouped.length()` equals 48 after close -- I should add that check.
+
+Adding up sources[5] through sources[7], each contributing 6 bytes, gives a total of 48 bytes for the group, so the assertion should be `assertEquals(48L, grouped.length())`.
+
+Moving to the next test case, I'm considering the window-based scenario where the window starts at offset 807 with a length of 807, and reading at position 196 falls within that window's bounds.
+
+So position 196 maps to window offset 196, which tries reading the base at 807+196=1003, exceeding its 6-byte length and returning -1. I also notice `off=1318` is out of bounds for the 6-byte dest array, but the code checks for `count == -1` and breaks before attempting to write, avoiding the out-of-bounds write.
+
+With that, I'm confident the expected oracle for this test is `assertEquals(-1, bytesRead)`, and I move on to the next test case involving negative buffer offset and length.
+
+Next I'm checking `get(-1L)` for negative position. Since `-1 >= size` (64) is false, it checks whether -1 falls within the last source entry's byte range, which it doesn't since that entry starts at byte 56, so it falls back to searching from the start.
+
+For the fifth test, `get(0L)` should map to source 0 at offset 0. Since the underlying data is a zero-filled 7-byte array, the byte at index 0 is simply 0.
+
+Moving to the negative position test, `grouped.get(-1L, data, 1310, -156)` should return -1 since position -1 falls outside any source's range, making `getSourceEntryForOffset` return null. I'm now tracing through the bulk get method's logic to confirm the entry-null check leads to -1.
+
+For the last case, reading 4 bytes from position 4 in a 6-byte source only has 2 bytes actually available, so I expect the method reads those 2 bytes and then tries to fetch the entry for position 6, which is out of bounds and returns null, ending the read there.
+
+Next, I'm working through a case where a window is constructed with negative offset and negative length, checking that the grouped source's length() call simply propagates that negative value through to the caller, so the oracle expects -645.
+
+Then I move to a test that already has its full assertion baked in with a try/catch and fail() call, so it needs no additional oracle work.
+
+I'm cataloging the remaining oracles to insert: confirming the aggregated length after closing the source equals 48, verifying that reading before the window start returns -1 bytes read, and starting to assess a case involving negative...
+
+
+
+Now I have a clear picture. Let me work through each test:
+
+1. **testLengthAfterClose_returnsAggregatedLength**: 8 sources, each 6 bytes = 48 total. After `grouped.close()`, `grouped.length()` returns 48L. Need to add `assertEquals(48L, grouped.length());` after `grouped.close();`.
+
+2. **testGetBulk_positionBeforeWindowStart_returnsMinusOne**: Window has offset=807, length=807. GroupedRandomAccessSource has one source (the window) with total size=807. Reading at position 196 (which is < 807), the window maps this to offset+position = 807+196 = 1003 in base (6-byte array). 
+
+Since base only has 6 bytes, calling get(1003) returns -1, and tracing through how GroupedRandomAccessSource delegates the bulk read to the window entry confirms the read should also return -1.
+
+Now moving to a new test case, testGetBulk_negativeBufferOffsetAndLength_returnsMinusOne, checking behavior with a negative offset and length.
+
+Since no source entry matches, it returns null, so getSourceEntryForOffset returns -1 for that case, matching the expected result of -1.
+
+For the next case with position zero and zero-filled data across 8 sources, I trace through how currentSourceEntry gets reset and searched from the start, finding sources[0] since offset 0 falls within its byte range, then computing the local offset within that entry as 0.
+
+I then check that reading from the underlying buffered source at offset 0 returns 0, matching the expected test outcome. For negative position and length test cases, I confirm getSourceEntryForOffset returns null leading to a -1 result again. Finally I start working through the test where reading extends beyond a single 6-byte source's end, expecting the available byte count to be returned instead of an error.
+
+That gives 2 bytes read, so the expected oracle is `assertEquals(2, bytesRead)`. For the negative-length window test, offset=-2147 and length=-645 sum through GroupedRandomAccessSource to give a total length of -645, so the oracle is `assertEquals(-645L, length)`. Now I'll add these oracles into the test file.
+

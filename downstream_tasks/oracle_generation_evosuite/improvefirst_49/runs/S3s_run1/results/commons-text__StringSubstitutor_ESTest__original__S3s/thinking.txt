@@ -1,0 +1,243 @@
+Let me start by reading the masked test file to understand what tests are present and where oracles need to be added.
+
+Now I need to analyze the test file and identify where oracles (assertions) are needed. Let me go through each test method and determine what assertions should be added.
+
+Looking at the tests, most of them call methods and capture return values but don't assert anything about them. Let me figure out the correct oracles for each.
+
+Let me analyze each test:
+
+**test00**: `stringSubstitutor0.replace(charArray0, 1, 1)` - replaces a char array with offset 1, length 1. The char array is all zeros. With no variables, it should return the original string representation. Since the return value is not stored, no oracle needed here (or the test is just checking it doesn't throw).
+**test01**: creates a substitutor with a null value delimiter matcher, then replaces a description string, expecting no change since there's no variable resolver -- the return value isn't captured. **test02**: calls replaceIn on a StringBuilder full of odd delimiter characters and self-references, storing a boolean result with no assertion. **test03** involves replace with setEnableSubstitutionInVariables configured.
+
+Several later cases test edge conditions: replacing a toString() result unassigned, replaceIn with preserveEscapes true expecting false since there's no resolver, passing a null TextStringBuilder expecting false, and passing a negative length expecting false as well.
+
+Continuing to check the remaining null/edge-case scenarios—null TextStringBuilder, StringBuilder text without variables, null StringBuilder overloads, and a null StringBuffer with index bounds—all of which should return false since no substitution can occur.
+
+array), so with zero length it should return an empty string. The remaining tests continue this pattern of testing replace/replaceIn with null or empty TextStringBuilder and StringBuffer inputs at various offsets, expecting either null (for null input) or empty string results, with several calls not storing their return values.
+
+**test39**: Replacing a CharBuffer of 36 null characters with no variable resolver, expecting a string of 36 null chars back.
+
+**test40**: A char array with a single null character, no variables involved, so it should just return that null char as a string.
+
+**test41**: Testing replaceIn on a complex StringBuilder containing `}`, null chars, `$`, `${`, and `}` combinations.
+
+**test42**: Similarly checking replaceIn with no variable resolver, expecting false.
+
+**test44-45**: Checking that replace with null or empty Properties leaves the original object's toString() unchanged.
+
+**test46**: Confirming setValueDelimiter returns the same instance (`this`).
+
+**test47**: Checking replaceSystemProperties returns a String result that isn't stored.
+
+**test48**: With source "${" and both prefix and suffix as "}", since the prefix never appears in the source, expecting it to return "${" unchanged.
+
+**test49**: Considering whether setDisableSubstitutionInValues returns void or is fluent.
+
+**test50**: Looking at creating a new StringSubstitutor from an existing one.
+
+**test51-52, test55**: Various replace calls where return values aren't stored, and I'm confirming no exceptions occur.
+
+**test53**: setVariableSuffix should return `this`, so the resulting instance should match the original.
+
+Now I'm trying to identify which test oracles I can confidently assert - starting with replaceIn returning false for a null source, then false for a negative length parameter.
+
+Continuing through the sequence, I'm confirming several more replaceIn calls that return false due to null sources, missing substitutions, or invalid parameters across StringBuilder, StringBuffer, and TextStringBuilder variants. There's also a replace call with a null TextStringBuilder returning null, and another with zero-length offset/length returning an empty string.
+
+Continuing through more cases: replacing with an object argument returns its toString, setValueDelimiter and setVariableSuffix both return `this` for chaining, and replacing with no matching variables leaves the string unchanged. I'm now revisiting test21, where the StringBuffer holds the default variable start "${".
+
+Since there's no closing brace, the interpolator can't find a complete variable reference, so it should return false. The same logic applies across several other tests: complex builders without a resolver, buffers with escaped characters but no resolver, and any calls with null input or a negative length range — all of these should return false since there's nothing valid to substitute.
+
+For the simpler replace cases, I'm reasoning through what should happen with null sources, empty builders, zero-length ranges, and basic single-character inputs — these mostly return either null or empty/unmodified strings since there's nothing meaningful to replace. For a builder with no resolver but a complex string, the outcome hinges entirely on whether variable patterns exist; without a resolver, even detected patterns can't actually be substituted.
+
+I'm also checking the setter methods that return "this" for chaining, which should pass assertSame checks, then working through what `StringSubstitutor.replace` does when given a plain Object and null Properties — since the object's toString() won't contain variable syntax, it should just return that unchanged toString value, though I want to double-check this reasoning holds.
+
+For the case with an empty Properties map and a StringSubstitutor whose toString() contains unresolved `${...}` variables, I'm reasoning that since the map has no entries, those variables can't be resolved — but by default StringSubstitutor leaves unresolved variables in place rather than throwing, unless undefined-variable exceptions are explicitly enabled.
+
+I'm not confident enough about the exact behavior for these cases to commit to specific test oracles, so I'll move on. For test48, I'm examining a case where the prefix and suffix are both "}" and the source string is "${", trying to figure out how the substitution would behave.
+
+Since "${" doesn't start with "}", there's no variable pattern match, so the result should just be "${" unchanged - I feel fairly confident about that one. I'll now focus on listing out the test cases where I'm most confident, mostly involving null inputs, negative lengths, and strings without variable syntax returning false.
+
+Continuing through the fluent API cases (test48, test53) where methods return "this" for chaining, then I'm puzzling over test02, test05, test41, test42 -- specifically whether a substitutor that resolves a variable to null and replaces it with an empty string counts as "changed" (true) versus leaving unresolved variables untouched (false).
+
+I'm second-guessing myself on the actual Apache Commons Text behavior here -- when the resolver returns null for a found variable, does it leave the placeholder unchanged or substitute empty? I'm trying to reason it out from test15's expected oracle to calibrate, since that test uses a TextStringBuilder with ":-" and no resolver and should return false.
+
+For test05, I notice preserveEscapes is true and the builder content includes a "$${" sequence, so I'm working through whether the double dollar sign gets treated as an escaped literal dollar rather than the start of a variable expression, which would mean no substitution occurs there either.
+
+Now I'm tracing through test41's string building step by step, appending character arrays and literal strings to see how the `${` and `}` markers combine, since StringBuilder.append mutates the builder in place and returns the same reference.
+
+Continuing the string trace, I realize stringBuilder2 and stringBuilder0 are actually the same object, so appending stringBuilder0 to itself means it's appending its own current contents to itself mid-operation, which could produce a self-referential doubling effect I need to work through carefully.
+
+Rather than nail down the exact resulting string, I'll shift focus to whether the substitution logic returns true or false, since the string contains `${}` — a variable reference with an empty name — and with no resolver set, I need to figure out how that empty lookup gets handled.
+
+I should focus on the cases I'm most confident about: null inputs and negative lengths clearly give false (test12-14, test16-20), and the no-substitution-pattern case (test15) is also false. For the trickier ones like test02, test05, test21, test41, test42, I'm less sure since they depend on whether the interpolator treats malformed or unresolved variable patterns as changes — I'll be cautious about asserting those without more certainty.
+
+I realize stringBuilder0 is actually the same object being reused throughout, so its internal contents get mutated by each append call - meaning when it's later appended to stringBuilder2, it captures whatever state it holds at that moment ("}\0\0\0\0$${}"), not some fixed earlier value.
+
+Parsing the string further, I realize the "$$" is actually an escaped dollar sign under the default escape character, so "${}" that follows isn't treated as a variable reference at all—it's just the literal escape sequence plus a suffix. If it were treated as a variable with an empty name, the default resolver would return null for that lookup.
+
+So test41's `$$` gets processed into `$`, changing the string → true. For test42, I'm tracing through a StringBuilder construction where a builder appends itself after accumulating null characters and escape sequences, which requires carefully working out what the self-referential append produces.
+
+I need to reconsider whether the double `$$` here is an escaped literal dollar sign rather than the start of a new variable reference, which changes how the rest of the string should be parsed.
+
+This edge case is too tricky for me to be confident about, so I'll skip adding assertions for test02, test05, test21, test41, and test42.
+
+For test23, the TextStringBuilder wraps a single-char array and the substring request has zero length, so the result must simply be an empty string, and I'm confident asserting that.
+
+For test25 and test27, both involve capacity-only constructors or empty buffers with a zero-length substring request, so both should confidently resolve to empty strings.
+
+For test29, the buffer contains just a closing brace with no variable syntax to interpolate, so the result stays exactly "}".
+
+Moving through the null-input cases: replace on a null Object should convert to a null string and return null, and similarly a null TextStringBuilder with negative offsets should also just return null. For the char array case with a single zero-value char and no patterns, the result should be the literal null character string.
+
+For test48, checking prefix "}" and suffix "}" against source "${" — since it doesn't start with "}", no substitution happens and the result should just be "${" itself. Then for test44, using object0 with null properties, the substitutor falls back to the object's toString(), which is problematic to assert directly since it includes a non-deterministic hash code.
+
+Actually, since object0 is the same instance used in both the call and any assertion, I can safely assert equality against object0.toString() at test time rather than hardcoding the hash. Moving to test45, this involves substituting with a stringSubstitutor object and properties0 as the source.
+
+Since stringSubstitutor0.toString() likely contains unresolved variable patterns and properties0 is empty, I need to figure out what happens to those patterns. I'm not fully certain whether the default behavior leaves unresolved variables as-is or replaces them with empty strings, since that depends on the enableUndefinedVariableException setting which defaults to false.
+
+I'll skip that uncertain oracle. For the setValueDelimiter test, since fluent setters return the same instance, I can confidently assert that the returned StringSubstitutor is the same object as the original. Similarly, setVariableSuffix should also return the same instance for its assertion.
+
+For test00, the replace call's return value isn't captured so no oracle is needed there. For test37, I'm working out that a CharBuffer allocated with size 36 (from the char value '$') filled with null characters, when replaced with no variable patterns present, produces a 36-character string of null chars -- so I can assert either its length is 36 or match it against a string of 36 null characters.
+
+Confirming that CharBuffer.allocate(36) behaves as a CharSequence of 36 null characters, so the replace result should equal a 36-char null string via `assertEquals(new String(new char[36]), string0)`. Now I'm compiling the list of remaining oracle assertions to add, mostly simple `assertFalse(boolean0)` calls across several test cases.
+
+Continuing to fill in more expected assertions for tests 20 and 21, then flagging a few boolean-return tests (02, 05, 41, 42) where I'm unsure enough to abstain rather than guess. I'm now rechecking test21's logic by tracing through the substitutor replacing a buffer initialized with the default variable start string.
+
+With no closing brace, no variable resolves, so replaceIn returns false — I'll assert that. I'm also scanning through remaining tests (25, 32, 44) to decide whether the returned string values need null-checks or equality assertions, particularly noting how StringSubstitutor.replace behaves when given null Properties.
+
+Since test44's source is a plain Object with no "${" pattern, its toString should pass through unchanged, so I'll assert equality there. Now I'm sweeping through the rest of the test list to flag which methods actually capture a return value worth asserting on, versus ones that discard the result or just return void/this.
+
+For test02, test05, test41, and test42, the captured boolean values aren't ones I can confidently derive an expected result for, so I'll mark those with `// ABSTAINED` rather than guessing at an assertion.
+
+For the rest, I'm going through each test methodically: several booleans should be asserted false, and a couple string captures should check for null or empty string values based on what the class logic implies.
+
+I'm also noting that test47 discards a return value from a static call, so that one may need special handling in the assertion generation logic.
+
+Test32's replace call also has an uncaptured return value, so no oracle needed there either. For test45, I'm digging into what StringSubstitutor actually does with unresolved variable placeholders when the lookup is an empty Properties object, checking the Apache Commons Text source to understand the default behavior for unmatched variables.
+
+My best guess is that null-lookup values leave the variable expression untouched, so the output would just equal the interpolator's toString(). But given the uncertainty around whether the keys even match valid variable syntax, I'll abstain from asserting a specific value here and move on to test37, which involves allocating a CharBuffer.
+
+For test37, since '$' evaluates to 36, the buffer holds 36 null characters, and with no variable patterns present, the replace should just return those 36 null characters unchanged. Moving to test23, I'm now checking a replace call on a substring of zero length starting at offset zero.
+
+Since offset and length are both zero, the substring is empty, so replacing variables in an empty string should just return "". Same logic applies to test27 with an empty StringBuffer and zero offset/length — result should be "".
+
+For test25, the TextStringBuilder is constructed with just a capacity value, meaning it starts out empty, so replacing on it should also yield an empty string.
+
+Checking test48: with source "${" and an empty map, prefix "}" and suffix "}" won't match anything since the string never contains a closing brace to pair with, so the string stays unchanged as "${".
+
+Now I'll go through and apply all these assertion edits across the test methods, batching them by method.
+
+
+
+Wait, I wrote `assertEquals(" ", string0)` for test40 but it should be `assertEquals("\u0000", string0)`. Let me fix that.
+
+The current content shows `assertEquals(" ", string0)` but I need `assertEquals("\u0000", string0)`. Let me fix it.
+
+There might be some issue with the special character. Let me read the file content in that area more carefully to check what's actually there.
+
+Let me try a different approach using Grep to find the exact content.
+
+I see - the assertion I added was `assertEquals(" ", string0)` but what I really needed was `assertEquals("\u0000", string0)`. Looking at the grep output, it shows the file has a binary null byte in it. The assertion was written with an actual null char rather than the escape sequence. Let me check: the file content shows:
+```
+assertEquals("
+", string0);
+```
+The "\0" (null byte) in the string is visible as a binary match. So the file contains an actual null byte in the string literal. This is problematic because it would cause compilation issues (or unexpected behavior).
+
+Wait, looking more carefully: `assertEquals(" ", string0)` - I think I actually typed a non-breaking space or there's a character encoding issue. 
+
+The real fix is to write the literal null character as the escape sequence "\u0000" rather than an embedded raw byte, since the grep output confirms the assertion line got split across two lines with an actual newline/null character breaking it. I need to edit the file to replace that broken literal properly.
+
+Actually, a char[1] of value '\0' being compared with what I typed suggests the literal got mangled somewhere in transmission — I probably intended `"\u0000"` but it rendered as something else. I should redo the edit using the explicit `\u0000` escape in the assertion instead of a raw character.
+
+
+
+Now the Read tool shows line 385 as `assertEquals(" ", string0);` where the space between quotes looks like a normal character. But the Grep found a binary null byte around offset 16868. Let me count: if we're on line 385 with that content, the binary null might be somewhere else.
+
+Actually when I first made the edit with `assertEquals(" ", string0)`, the " " I typed might have been a literal space but the char[1] would be '\0', not ' '. Let me just replace it with the correct version using "\u0000".
+
+Wait - looking at the Read output at line 385: `assertEquals(" ", string0);` - I can see there's a character between the quotes. 
+
+The Read tool likely isn't rendering the null byte visibly, which explains the Grep hit — my earlier edit must have inserted an actual `\0` character rather than a space. I'll rewrite line 385 to use `"\u0000"` explicitly, and use the Edit tool with enough surrounding context to ensure the replacement targets the right spot uniquely.
+
+
+
+The Edit tool can't find the string because the file actually has a binary null byte (or some other non-printable character) in the string literal. The Read tool is showing it as " " (a space or some display-normalized version), but the actual bytes are different.
+
+I need to rewrite this section of the file. Since I can't directly edit around a binary character, I'll need to read the full file and rewrite it with the correct content. But the Write tool requires reading the file first, and I already have the content.
+
+Actually, let me think about this differently. The assertion is on line 385 and contains a problematic character. The safest approach would be to read the entire file content and rewrite it with the correct assertion.
+
+
+Given the guidance to prefer editing over creating files, I'm reconsidering my approach to swap the null character for its proper escape sequence, since a single-element char array defaults to the null character and calling replace on it should behave as expected.
+
+I should write `assertEquals("\u0000", string0)` to correctly represent the null character in the test. Rather than patching just this one assertion, I'll re-read the entire file first to understand its current state, then rewrite it completely with all the correct expected values.
+
+
+
+Good, now I can see the full current state of the file. The file looks mostly correct, but I need to:
+
+1. Fix test40: The assertion `assertEquals(" ", string0)` has a problematic character (binary null) in it. I need to change it to use `"\u0000"`.
+
+2. Add oracles for test41, test42, test44, test45, test46, test48, test53.
+
+Wait, but looking at the Read output, line 385 shows `assertEquals(" ", string0);` with what looks like a space character. The Grep reported a binary null byte in the file. Let me see if that's actually from line 385 or somewhere else.
+The offset the grep found (around 16868) likely lands near test40 given the file's overall length, confirming that's the null byte causing the mismatch. I'll rewrite that assertion to use "\u0000" explicitly instead of the literal null character, and I need to reconstruct the full test40 method with enough unique surrounding context to target the edit correctly.
+
+I realize the default char value is the null character, Unicode zero, so the string produced from a single-element char array should actually equal that null character rather than a space. I should verify what the correct expected value really is for this assertion.
+
+I'm second-guessing whether a literal null byte is even valid inside a Java string literal versus needing an escape like `\u0000` or `\0`. Rather than keep reasoning about the Java lexical spec, I should just try compiling the file as-is and see whether it actually works.
+
+I suspect the character I typed might be a special whitespace character rather than a normal space, which different tools display differently, or the binary null byte elsewhere in the file is confusing the display. Rather than keep guessing, I'll just run the compile check directly and fix any actual error it surfaces, since a literal newline inside a string literal would be invalid Java syntax anyway.
+
+I realize the correct fix is to write the escape sequence `\u0000` literally as source text in my edit, rather than sending an actual raw null byte, so the Java compiler interprets it properly as the null character escape.
+
+I need the assertion to check for the null character rather than a space, but since the file may have a mismatched character in the quotes, I should target the surrounding lines instead of the quoted string itself to make the edit match reliably.
+
+
+
+Now I've added `assertEquals(1, string0.length())` but the old `assertEquals(" ", string0)` (with the binary null) is still there. I need to remove that bad line. Let me read the area to see the current state.
+
+I see that line 385 is now the new `assertEquals(1, string0.length())` and line 386 is the old problematic `assertEquals(" ", string0)` with possibly the binary null inside. I need to remove line 386.
+
+The issue is the Edit tool can't match the binary character. Let me try a different approach - I'll try to match line 385+386 together and replace with just line 385.
+
+Actually wait - looking at lines 385-386:
+```
+385	      assertEquals(1, string0.length());
+386	      assertEquals(" ", string0);
+```
+
+Line 386 has the problematic character. 
+
+Since the Read tool is displaying it as a plain space, I'll try matching the surrounding lines instead, anchoring on line 385 and the closing brace at 387 to work around the binary byte on 386 that the Edit tool won't recognize as text.
+
+The grep output confirms line 386 has a stray character embedded in the string literal, likely tied to that null byte I found earlier around offset 16868 in the file. I'm now considering using Grep with -o to pinpoint exactly what's on that line, since the Read tool may just be rendering the problematic byte as a space.
+
+
+
+Now I can see clearly the problem. Lines 385-387 in the Grep output show:
+- Line 385: `assertEquals(1, string0.length());`
+- Line 386: `assertEquals("`
+- Line 387: `", string0);`
+
+So the binary null byte got inserted between the quotes, and it's being treated as a newline separator by the Grep tool (or actually, the null byte is being treated as a line terminator or the file genuinely has a newline in the middle of the string literal).
+
+Wait, looking again: Grep is showing lines 386-387 as spanning a "newline" (the 386- prefix then 387- prefix). 
+
+The context markers suggest these are non-matching lines, with the null byte likely sitting inside the string literal itself. It seems the null byte is either being interpreted as a newline by Grep or there's something else going on with how the file structures that region.
+
+Given the "binary file matches" notice, the Grep is probably detecting a 0x00 byte rather than an actual newline, just rendering it oddly across two lines. The Read tool normalizes that null byte to a space, showing it as `assertEquals(" ", string0);`, meaning the actual source contains a raw null byte inside the string quotes. Now I'm wondering whether a literal null byte is even valid inside a Java string literal per the language spec.
+
+Having both assertions is redundant but not harmful—the real question is whether the literal null byte actually compiles. Rather than keep reasoning about the spec, I should just try compiling and see what happens.
+
+
+
+The file compiles successfully. Now let me add the remaining oracles that I haven't added yet:
+
+- test41: `boolean boolean0` → ABSTAINED
+- test42: `boolean boolean0` → ABSTAINED
+- test44: `String string0` → `assertEquals(object0.toString(), string0)`
+- test45: `String string0` → ABSTAINED
+- test46: `StringSubstitutor stringSubstitutor1` → `assertSame(stringSubstitutor0, stringSubstitutor1)`
+- test48: `String string0` → `assertEquals("${", string0)`

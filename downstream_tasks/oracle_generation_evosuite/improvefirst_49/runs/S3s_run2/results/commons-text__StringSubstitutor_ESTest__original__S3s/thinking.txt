@@ -1,0 +1,128 @@
+Let me start by reading the masked test file to understand what tests need oracles.
+
+Now I need to analyze each test method and determine what oracles are needed. Let me go through them:
+
+**test00** - `replace(charArray0, 1, 1)` with a 9-element char array - this returns a String. No oracle needed since the return value is not captured.
+
+**test01** - `replace(String)` - returns a String but not captured. No oracle needed.
+
+**test02** - `replaceIn(stringBuilder3)` - returns boolean, captured but not asserted. Need to determine what value it returns. The StringBuilder contains `}` + 5 chars (last is '$') + `${` + `${` + `}` + the same stringBuilder again - this is complex. 
+
+Since the variable resolver is null, substitutions won't resolve anything -- the `${}` pattern has an empty variable name, and with a null resolver there's nothing to look up, so no replacement can occur. I'm leaning toward `replaceIn` returning false here since no actual substitution takes place.
+
+Given the uncertainty, I decide to reconsider the test structure instead: since the task explicitly says all oracles were stripped out entirely with no markers left behind, I need to add an assertion at the end of each test method wherever the captured result is meaningful, rather than trying to guess whether an oracle originally existed.
+
+Going test by test, test00, test01, test03, and test04 discard their return values, so they need no oracle. But test02 and test05 both capture a boolean from `replaceIn` without asserting on it, so those need oracles added.
+
+Continuing through the sequence, test06-11 don't capture return values needing assertions, but test12 through test16 all capture a boolean from various `replaceIn` overloads without any assertion, so each of these needs an oracle.
+
+Test17 similarly captures a boolean from a `replaceIn(StringBuilder)` call needing an oracle, and test18 already has "Unstable assertion" comments marking it as unreliable so I'll skip it. Test19 and test20 both capture booleans from `replaceIn(StringBuffer, ...)` calls that also need oracles, and I'm now looking at test21's replace call.
+
+Continuing through, tests 22, 23, and 25 all capture string results from `replace()` calls with TextStringBuilder arguments and need oracles, while test24 and test26 call replace but don't capture the return value, so no oracle is needed for those. I'm now checking test27's setup.
+
+Continuing through tests 34-39, I'm cataloging more replace() overload calls with null CharSequence, char arrays, and CharBuffer arguments, noting which ones capture return values needing an oracle versus those with uncaptured returns.
+
+Moving into tests 39-45, I'm tracking replaceIn() calls on StringBuilders that capture boolean results, an exception test needing no oracle, and static replace() calls with Properties and Object arguments that capture string results requiring oracles.
+
+Continuing through test46-51, I find a setValueDelimiter call capturing the returned StringSubstitutor, a static replaceSystemProperties call with no capture, a replace() call using a HashMap that captures a string, and setter calls (setDisableSubstitutionInValues) with no return capture needing no oracle.
+
+For test52-55, I see replace() calls with uncaptured returns needing no oracles, a setVariableSuffix call capturing the returned StringSubstitutor, an exception test needing no oracle, and another replace() with uncaptured return.
+
+Now I'm working through test02, analyzing a StringBuilder containing complex nested content with template markers but no resolver configured, to determine the correct oracle for replaceIn().
+
+The self-append creates a circular reference I shouldn't overthink - with a null resolver, replaceIn should just return false regardless, so the oracle assertion is assertFalse(boolean0). Moving to test05, I'm tracing similar StringBuilder append operations but this time with preserveEscapes=true, building up a string containing `$${` patterns.
+
+) so that should also return false. I'm going through the remaining test cases now: null TextStringBuilder inputs, negative length values, and other edge cases should all return false without throwing exceptions, so I'm asserting false for each of these oracles.
+
+0 contains `${`, which is `DEFAULT_VAR_START`, but without a variable name or closing brace, so no substitution occurs and it returns `false`. Oracle: `assertFalse(boolean0)`.
+
+**test22** - `replace((TextStringBuilder) null, (-25), (-25))`. With null TextStringBuilder, returns null. Oracle: `assertNull(string...)`.
+
+**test23** - `replace(textStringBuilder0, 0, 0)`. The TextStringBuilder wraps a single null char, but replacing with offset 0 and length 0 gives an empty substring, and with no resolver the result is just that empty string. So string0 = `""`, oracle: `assertEquals("", string0)`. Though I'm not fully certain about the exact offset/length semantics here.
+
+**test25** through **test29** follow a similar pattern - empty or minimal source content with no substitution markers, so `replace` just returns the input as-is: an empty TextStringBuilder gives `""`, an empty StringBuffer with offset 0 length 0 gives `""`, and a StringBuffer containing `"}"` returns `"}"` unchanged since there's no matching prefix to substitute.
+
+**test34** - `replace((Object) null)` simply returns `null`, oracle: `assertNull(string0)`.
+
+**test37** - I'm now looking at `replace((CharSequence) charBuffer0)` with a CharBuffer allocated using the char value 36 (`'$'`) as its size.
+
+I'm weighing whether to assert on the exact null-character content or just check that the resulting string has length 36, since I'm not fully certain how CharBuffer's content converts to a String here — checking length alone seems like the safer, simpler oracle.
+
+For the next case with a single-element char array containing a null char, replace() should just yield a one-character string with that null char, so asserting on length 1 or non-null seems like reasonable oracles there too.
+
+Now I'm tracing through a more complex StringBuilder scenario where the same StringBuilder object gets appended to itself repeatedly, which means the appends compound self-referentially since stringBuilder0 through stringBuilder3 are all aliases for the same object.
+
+Actually, `append(Object)` calls `toString()` on the argument, so I need to retrace the actual sequence: stringBuilder0 starts as `}`, then appending a char array with a `$` at index 4 gives `}\0\0\0\0$`, with stringBuilder1 pointing to the same object.
+
+Appending `"${"` then `"}"` builds it up to `}\0\0\0\0$${}`, and stringBuilder2 still refers to that same underlying object. Then appending `(Object) stringBuilder0` triggers a toString() call on itself, doubling the content to `}\0\0\0\0$${}}\0\0\0\0$${}` — so now I need to trace what happens when `replaceIn` runs on this doubled string.
+
+Since the pattern `${}` represents a variable with an empty name and the resolver is null, the lookup fails and nothing gets substituted, so the method should return false — that's the oracle for test41.
+
+Now I'm tracing test42, which follows the same construction pattern but skips the final `append("}")` step.
+
+Continuing the appends, the resulting string ends up without a proper closing brace, so there's no complete `${...}` pattern for `replaceIn` to match — meaning it should also return false.
+
+Moving to test44, I'm looking at `StringSubstitutor.replace()` called on a generic Object with a null Properties argument, where the object's toString() output matters.
+
+For test45, I'm considering `StringSubstitutor.replace()` on the substitutor itself with empty properties, thinking through how variable references in its toString() would resolve with nothing to substitute them.
+
+Since `replace(Object, Properties)` builds a fresh StringSubstitutor from the given Properties, an empty Properties means nothing resolves, so the output should just equal the input string unchanged. So the oracle would be `assertEquals(stringSubstitutor0.toString(), string0)` -- though I want to double check whether unresolved variables actually get left as-is rather than throwing, since that's what test30 seems to confirm with similar interpolator toString content.
+
+For test45, given the uncertainty about how the interpolator's internal lookup resolves things, I'll abstain since the behavior is too complex to pin down confidently.
+
+For test46, `setValueDelimiter('$')` follows the fluent API pattern and returns `this`, so `stringSubstitutor1` and `stringSubstitutor0` should be the same object -- the oracle is `assertSame(stringSubstitutor0, stringSubstitutor1)`.
+
+Moving to test48, I'm now looking at `StringSubstitutor.replace((Object) "${", (Map<String, LinkOption...
+
+For that replace call with an empty map and both prefix and suffix set to `}`, there's no `}...}` pattern present in `"${"`, so the string is returned unchanged -- oracle should be `assertEquals("${", string0)`.
+
+For test53, `setVariableSuffix('r')` is another fluent method returning `this`, so again `assertSame(stringSubstitutor0, stringSubstitutor1)` applies.
+
+Now I want to revisit the boolean assertions for the `replaceIn` calls with null arguments across several other tests to make sure those return values are consistent.
+
+I'm tracing through test02's builder construction step-by-step: starting with `}`, appending a char array padded with `$`, then appending `${` twice to build up the string before checking what substitution logic does with the resulting sequence.
+
+Continuing to trace the append operations, I get a full content of `}\0\0\0\0$${${}}\0\0\0\0$${${}` after appending stringBuilder0's own content back into stringBuilder2. Now I'm examining the `$${` pattern at offset 5 to figure out whether the escape character logic treats the `$$` as escaping the following `{`.
+
+So the escaped `${` outputs a literal `${` without being resolved, and then the following `${}` at the next positions forms an actual variable reference with an empty name.
+
+With a null resolver, resolving that empty-named variable just returns null, meaning no substitution happens, so `replaceIn` should return false there. Since test03, test04, and test01 don't capture the return value, they don't need oracles -- only test02 needs `assertFalse(boolean0)`.
+
+Continuing through the remaining tests: test05, test12-17, and test19-20 all follow the same pattern of `assertFalse(boolean0)`, each failing for a different reason -- null resolver, null builder, negative length, missing variable pattern, or null StringBuilder/StringBuffer inputs.
+
+I'm cataloging further edge cases: incomplete variable patterns, null TextStringBuilder returning null, empty ranges and empty builders yielding empty strings, a StringBuffer with just `}` returning that literal, and some ambiguous cases (like the CharBuffer of null chars) where I'm noting I may need to abstain from a specific assertion rather than guess incorrectly.
+
+Now I'm revisiting test37 more carefully, thinking through what CharBuffer.allocate(36) actually contains and how StringSubstitutor would process a buffer of null characters to determine the correct expected output.
+
+For test40, I'm working out the char array case with a single null character, deciding between checking string length versus the exact null-character value as the oracle.
+
+For test44, I'm considering what `StringSubstitutor.replace(object0, null)` produces when object0 is a plain Object with no substitution map, since the toString would include a hash code that varies between runs.
+
+Now I'm reviewing more test cases: test22 with a null TextStringBuilder source expecting a null result, test25 with a TextStringBuilder constructed with a negative size producing an empty string, and test27 with an empty StringBuffer.
+
+For test29, replacing on a single `}` character returns it unchanged since there's no `${` pattern to match. For test23, I'm checking that a zero-length substring from a one-char TextStringBuilder returns empty, and now I need to verify what the offset and length parameters actually mean for this overload.
+
+With offset=0 and length=0, the source becomes an empty string, so the oracle is `assertEquals("", string0)`. Now I'll write all these confirmed oracles into the test file.
+
+
+
+Now I can see all the remaining tests. Let me add oracles for test44, test45, test46, test48, and test53.
+
+test44: `String string0 = StringSubstitutor.replace(object0, (Properties) null)` - with null Properties, no substitution. Returns object0.toString() which is like `java.lang.Object@...`. Not null. Oracle: `assertNotNull(string0)`.
+
+test45: `String string0 = StringSubstitutor.replace((Object) stringSubstitutor0, properties0)` - with empty Properties. Returns stringSubstitutor0.toString() with no substitution (since properties is empty). 
+
+Since the properties map is empty, any variable placeholders in the toString() output won't be found in the lookup, and StringSubstitutor's default behavior is to leave unmatched variables unchanged -- so the result should equal the original string. Oracle: `assertEquals(stringSubstitutor0.toString(), string0)`.
+
+For test46, `setValueDelimiter` is a fluent method that returns `this`, so I expect `assertSame(stringSubstitutor0, stringSubstitutor1)`.
+
+For test48, replacing with prefix and suffix both set to `}` won't find any matching pattern in `"${"`, so the string should return unchanged. Oracle: `assertEquals("${", string0)`.
+
+For test53, `setVariableSuffix` similarly returns `this`, so `assertSame` applies again.
+
+Now for test12, calling `replaceIn` with a null builder should return false. And for test21, the interpolator content `${` has no closing brace, so no valid variable substitution occurs and the result should be `assertFalse(boolean0)`.
+
+Let me look more closely at what `DEFAULT_VAR_START` actually is — whether it's a `String` or a `StringMatcher`, since that determines whether the `StringBuffer` constructor call is even valid.
+
+Given DEFAULT_SUFFIX becomes a StringMatcher while DEFAULT_VAR_START feeds directly into a StringBuffer, DEFAULT_VAR_START is likely the String "${". That means the buffer only contains "${" with no complete variable, so replaceIn should return false — I'll set the oracle to assertFalse. Now I'll move on to filling in the remaining oracles.
+

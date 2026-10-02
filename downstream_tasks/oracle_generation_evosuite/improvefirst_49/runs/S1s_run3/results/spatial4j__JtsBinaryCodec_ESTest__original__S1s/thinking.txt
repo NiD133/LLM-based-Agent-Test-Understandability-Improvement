@@ -1,0 +1,45 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now let me analyze each test and figure out what oracles are needed:
+
+**test0** (lines 33-42): Writes a point to an ObjectOutputStream. No assertion - it's testing that `writePoint` doesn't throw an exception. There's no oracle needed here, the test just verifies the operation completes without exception. But wait - the original test probably had an oracle. Let me think...
+
+Actually, looking at the test:
+- It creates a `JtsBinaryCodec` and calls `writePoint` on an `ObjectOutputStream` wrapping a `MockPrintStream`
+- There's no obvious assertion to make here other than that it doesn't throw an exception - but the test doesn't have any exception expectation
+- So test0 is a no-throw test needing no oracle beyond that
+
+**test1** (lines 44-52): Calls `writeShapeByTypeIfSupported` with a null shape and byte 0, storing the result in `boolean0`. Since the type isn't TYPE_GEOM, it falls through to the superclass's implementation, so I need to check what TYPE_GEOM's value is to understand the branching behavior.
+
+I'm now checking the BinaryCodec parent class to see what `super.writeShapeByTypeIfSupported` returns for a null shape with type 0.
+
+
+
+Now I can analyze each test:
+
+**test0** (lines 33-42):
+- Creates a `JtsBinaryCodec` and calls `writePoint` on an `ObjectOutputStream` wrapping a `MockPrintStream`
+- The `writePoint` method writes x and y coordinates via `writeDim` (which writes doubles since `useFloat` is false by default)
+- No assertion needed - this is just testing that the operation completes without exception
+- Actually, the test doesn't have a `try/catch`, so it's expected to succeed silently
+- The original oracle was probably nothing, or maybe the test was checking that no exception was thrown - so no explicit oracle needed
+- I need to reconsider - since oracles were stripped out, tests that assign a result variable likely need an assertion restored. Test1 and test2 both call `writeShapeByTypeIfSupported` and assign to a boolean, so those need assertions on that boolean value, while test3 assigns a `Shape` result that also needs checking.
+
+Tracing test1's logic: with type 0 and TYPE_GEOM being 5, the codec falls through to the parent class's write method, which hits its default case and returns false - so the oracle should assert that the returned boolean is false.
+
+Moving to test2, with type 5 matching TYPE_GEOM exactly, this triggers the JTS geometry write path using a PointImpl at origin, which should succeed and return true.
+
+For test3, I'm checking the read path with type 81, which again doesn't match TYPE_GEOM so it delegates to the parent's read method.
+
+In the default fallback case, an unrecognized type simply returns null, so shape0 should be null.
+
+Then for test5, calling typeForShape with a null shape traces through the parent's type detection, which fails all instanceof checks and returns 0 — this then gets remapped to TYPE_GEOM (5) in the JTS codec, so the expected output is 5.
+
+Finally I'm turning to test0, which has no assigned return variable, so the method appears to just perform a write operation without capturing output.
+
+Since test0 calls a void method, there's no return value to assert -- the oracle here is implicit: the call completing without throwing an exception is itself the expected behavior, unlike tests 4, 6, 7, and 8 which explicitly expect exceptions via try/catch blocks with fail() calls.
+
+Now I need to work out the remaining oracles: test1 should assert false, test2 should assert true, test3 should assert the shape is null, and test5 should assert the byte value equals 5. Tests 0, 4, 6, 7, and 8 don't need additional assertions beyond what's already there. Let me double-check test2 though -- I'm tracing through what happens when writeShapeByTypeIfSupported is called with type 5, which routes to writeJtsGeom, and I need to verify the PointImpl shape being passed is actually JTS-compatible for that path.
+
+Actually since byte widens to int, `assertEquals(5, byte0)` will work fine in JUnit. Time to write out the actual test oracles now.
+

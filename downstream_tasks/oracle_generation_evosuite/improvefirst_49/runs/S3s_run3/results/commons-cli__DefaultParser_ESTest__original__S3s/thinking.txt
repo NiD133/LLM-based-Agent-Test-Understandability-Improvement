@@ -1,0 +1,182 @@
+Let me start by reading the masked test file to understand what tests are there and what oracles need to be added.
+
+Looking at the test file, I need to identify places where oracles (assertions) should be added. The tests are testing `DefaultParser` from Apache Commons CLI.
+
+Let me analyze each test to determine what assertions are needed:
+
+1. **test00** - Parses with an option group, `stop at non-option` is true. The result is a `CommandLine` (but it's not assigned). Actually it's called `defaultParser0.parse(options1, stringArray0, properties0, true)` which doesn't store the result. This test appears to just verify no exception is thrown. No oracle needed (the method returning without exception is the oracle).
+2. **test01** - Returns a `CommandLine` but no assertion is made on it. Since `-s` was passed, I should check that `commandLine0.hasOption("s")` returns true.
+3. **test02** - Another `commandLine0` is created without assertions. With `Boolean.valueOf("s")` being false, `stripLeadingAndTrailingQuotes` is false, and option `-s` with value `s` is parsed, so I should check what `commandLine0.getOptionValue("s")` returns.
+
+4. **test03** - I'm working through the logic for `-s` with a value containing hyphens, equals signs, and quotes, tracing whether the quote-stripping logic applies given that the value doesn't have matching surrounding quotes, and considering how `stopAtNonOption` affects parsing when `-o` isn't a recognized option.
+
+5. **test04, test05** - similar patterns to trace through.
+
+6. **test06** - simple parse of a null string array with stopAtNonOption=true, returning `commandLine0`.
+
+7. **test07-test10** - tracing more cases: one where a value with a trailing quote should be returned as-is since stripping isn't the default, and two cases expecting a "Missing argument for option: s" exception via `fail()` and catch blocks.
+
+11. **test10** - parsing `-s` with value `-`, treating the single hyphen as the argument value since `-s` requires one.
+
+12. **test11** - checking `handleUnknownToken("-T")` with IGNORE action, no return value needed.
+
+13. **test12** - parsing a lone `-` as a non-option argument, returning `commandLine0`.
+
+14. **test13** - parsing `--` to signal end of options, returning `commandLine0`.
+
+15. **test14** - parsing with `stopAtNonOption=true` where args contain nulls and "d" at specific positions.
+
+16. **test15** - another exception case to verify.
+
+17-24. Working through tests16-24, most returning `commandLine0` straightforwardly while a few expect exceptions to be thrown.
+
+25. **test25** - parsing `-s#` where `s` takes a value, so the value should end up being `"#"`.
+
+26. **test26** - parsing `-s-#"J` where `s` doesn't take an argument, so the remainder becomes separate tokens.
+
+27. **test27** - Exception expected.
+
+28. **test28** - parsing `-s-#"J` as an unknown option since no options are defined, with `stopAtNonOption=true`.
+
+29. **test29** - calling `handleConcatenatedOptions("-s")` just to verify it doesn't throw, no return value to check.
+
+30. **test30** - Returns `commandLine0`.
+
+31-32. Exceptions expected for both.
+
+33. **test33** - building a `DefaultParser.Builder` with a deprecated handler set, with nothing to verify from the setter itself.
+
+34-35. Exceptions expected for both.
+
+36. **test36** - parsing `-s` as an unknown option with `stopAtNonOption=true`, which halts further processing at that point.
+
+Now I'm working out which tests actually need an oracle -- ones with try/catch/fail blocks already have their exception check built in, and calls where the result isn't stored probably don't need assertions. For the ones that do return a `commandLine0`, I'm going through each to figure out what should be asserted: test01 should check that `hasOption("s")` is true since `-s` was defined and passed, and test02 involves `-s s` with quote stripping disabled, so I need to work out the right assertion there too.
+
+For test03, `-s -o=9RUmk9vb/'-u` is parsed with quote-stripping enabled and `stopAtNonOption=true`. I'm working through whether the leading/trailing quote logic would strip anything here -- the value starts with a hyphen and has a stray quote in the middle rather than matching quotes at both ends, so I need to figure out if the stripping logic actually triggers.
+
+Since the value doesn't start and end with the same quote character, nothing gets stripped, so the value stays as `-o=9RUmk9vb/'-u`. Now I'm moving to test04, looking at the `d` option with args `["-=R};SP'-", null, null, null, null, null]`.
+
+For test04, the argument `"-=R};SP'-"` doesn't match `-d` or `--d`, so with `stopAtNonOption=true` parsing would stop immediately and yield no recognized options, meaning `commandLine0` ends up empty. I need to go through each test case and decide whether it already has exception-handling built in or whether I should add assertions checking the returned command line state instead.
+
+I should check CommandLine's API methods like hasOption, getOptionValue, getArgList, and getArgs to build proper assertions. For test01 I can assert hasOption("s") is true; for test02 I can check both hasOption and that getOptionValue returns "s"; test03 involves a trickier case with strip and stop flags where -s takes a value and the next arg looks like another option.
+
+So the value would be `-o=9RUmk9vb/'-u`, and since it starts with a dash rather than a quote character, the stripping logic shouldn't touch it. The option should register as present with that exact string as its value, so I want to verify test03 checks this specific value carefully, especially around whether the trailing quote character triggers any stripping behavior.
+
+For test04, since the argument starts with `-=` rather than matching the option prefix `-d` or `--d`, and stopAtNonOption is true, the parser should treat it as an unrecognized token and halt parsing before any options are registered.
+
+Since this is EvoSuite-generated code with stripped oracles, I need to be careful and only assert what I'm confident about, abstaining when logic is genuinely ambiguous rather than guessing at behavior I can't verify.
+
+For tests where `parse()` is called but the result isn't assigned, or the assertion target is a void method call, adding `assertNotNull` won't help - I need to instead go through each test case (test00, test08-test09, test11, test15, test18-test19, test21, test23-test24, test27, test29, test31-test35) and figure out which already have implicit oracles through exception handling versus which need something added or should be left alone.
+
+Then I'm cataloging all the remaining tests (test01-test07, test10, test12-test13) where the parser's return value is assigned to a `commandLine0` variable, which means each of these is a good candidate for adding a simple `assertNotNull` check on the parse result.
+
+Listing more parse test cases...
+
+For the ones returning CommandLine, assertNotNull is the safe fallback, though weak. I'm now going through each test individually to see which ones deserve stronger, more specific assertions based on the actual options and arguments used.
+
+For test01, since "-s" is recognized, I can assert hasOption("s") is true. For test02, I can assert both hasOption("s") and that the value equals "s". For test03, I'm working out the value passed after "-s" given the stop and strip flags.
+
+The value doesn't start/end with matching quotes even with strip=true. Since "-s" requires an argument, DefaultParser will consume the next token as its value regardless of stopAtNonOption, so getOptionValue("s") should equal that raw string starting with "-o=9".
+
+For test04, the options only define "d" as valid, so an arg starting with "-=" doesn't match any known option; with stopAtNonOption=true, this token halts parsing and gets pushed to the remaining args list, meaning hasOption("d") returns false.
+
+I need to double-check how Commons CLI's stopAtNonOption actually behaves—whether it triggers only on arguments without a leading hyphen, or also on hyphenated tokens that don't match any recognized option, since DefaultParser's exact handling here determines the correct assertion.
+
+Since test04 doesn't throw, the parser must have stopped and pushed the token to remaining args, so I'll assert commandLine0.hasOption("d") is false. For tests where I'm unsure of the exact CommandLine contents, I'll fall back to a safer assertNotNull(commandLine0) as the oracle.
+
+Going test by test now: for test01 with option "s" and args ["-s", null, null], I expect hasOption("s") to be true. For test02 with "s" taking an argument and args ["-s", "s", null,...], I expect hasOption("s") true and getOptionValue("s") equal to "s". For test03 with similar setup but args ["-s", "-o=9RUmk9vb/'-u", null,...], I'm working out what the option value should be there too.
+
+Now for test04 with option "d" taking an argument and args ["-=R};SP'-", null, null, null, null, null], the token doesn't match option "d" at all, and I'm reasoning through how Commons CLI would handle an unrecognized option-like token when stop=true.
+
+I'm doubting myself on the exact value assertions here, so I'll settle for something safer like verifying the command line object exists rather than guessing specific values. Really, the deeper principle is: for EvoSuite tests, if there are no assertions the implicit check is just that no exception was thrown, whereas when assertions were stripped out I need to reconstruct what they most likely verified originally.
+
+I'm working through each test case individually, checking hasOption for the relevant flag and asserting getOptionValue matches the expected string where an argument follows the option, like confirming "s" is set and its value is captured correctly for test02 and test03.
+
+Since the value `-o=9RUmk9vb/'-u` doesn't begin with a quote character even though it contains one internally, the strip logic wouldn't trigger since stripping requires matching quotes at both the start and end of the string.
+
+Now moving to test04, where the option `d` expects an argument and the first token is `-=R};SP'-` — since this doesn't match a recognized option, and stop=true is set, the parser should halt parsing at this unrecognized token.
+
+So `commandLine0.hasOption("d")` should return false, confirmed by checking test11 which calls `handleUnknownToken` directly with the IGNORE action, where nothing happens and there's no return value to verify.
+
+Now I'm noticing that `DefaultParser.NonOptionAction` is a public enum with `nonOptionAction` as a public field, suggesting this is the newer API version. I need to reconsider test04 since `new DefaultParser(true)` likely refers to `allowPartialMatching` rather than `stopAtNonOption`, meaning these could be separate constructor parameters or builder settings.
+
+For test04, since `stopAtNonOption` gets passed as a parse-time argument rather than through the constructor, I'm tracing through how the parser handles the first argument `"-=R};SP'-"` when `stopAtNonOption=true` -- specifically whether `=` gets recognized as a valid short option or triggers the stop condition.
+
+Comparing to test21 and test27, which both use `stopAtNonOption=false` and correctly throw "Unrecognized option" exceptions, I need to figure out whether test04's `stopAtNonOption=true` setting changes this exception path or simply stops parsing at that point instead.
+
+Now I'm working through each test case to decide what assertions to write, checking `hasOption` and `getOptionValue` calls for the clearest scenarios and falling back to `assertNotNull` where the exact behavior is less certain.
+
+I'm second-guessing myself on test16 though—the long option name itself is oddly formed as `-c=wt9`, so matching `-c=wt9` against it as a single-dash short-style arg is ambiguous, and I'm not confident whether hasOption("c") actually resolves true here.
+
+So for test16, `-c=wt9` should parse as option `c` with value `=wt9`, meaning hasOption("c") is true and getOptionValue("c") equals "=wt9". For test17 with no options defined and stopAtNonOption true, no exception should occur since it just stops at the unrecognized token, so I just need to assert the command line isn't null.
+
+Then for test20, with a required option `s4` defined only as a long option and no short form, I'm checking whether `--s` partially matches `--s4` given the default allowPartialMatching setting, which should make hasOption("s4") true. For test22, I'm working through a similar partial-matching scenario but with a longer, more chaotic argument array where one of the tokens `-=};SP'` isn't a valid option and stopAtNonOption is true, so parsing should halt there.
+
+For test25, I'm confirming that `-s#` parses as short option `s` with the attached value `#`. For test26, I'm tracing through `-s-#"J` where `s` is a no-arg option, so the parser should stop once it hits the unrecognized `-#` fragment given stopAtNonOption is true.
+
+After `s` is recognized, the next character `-` doesn't fit the concatenated-options pattern like `-abc`, so this likely triggers an exception or gets treated as unrecognized rather than parsing cleanly.
+
+Comparing test26 and test28: both feed `-s-#"J` with `stopAtNonOption=true`, and both succeed without throwing—test26 defines option `s` while test28 defines no options at all, yet the outcome is the same. I'll stop trying to fully trace the parser logic here and instead settle on assertions per test: for cases where the result is unclear I'll just check that commandLine0 isn't null, and for clearer cases like test01 and test02 I'll assert that option `s` is present and pull its value.
+
+For test03 I'll check hasOption("s"), while test04 through test06 stay ambiguous enough that a plain non-null check is safer. Test07 is interesting since it passes `-s` followed by a value starting with `-=`—I'm reasoning through whether the default parser treats that as the option's argument since `-s` requires one, which would make the value assertion valid.
+
+I'm now considering test08 where the arrangement of arguments might cause the parser to interpret a following `-` prefixed token as another option instead of a value.
+
+When both tokens are recognized options, it throws "Missing argument for option: s", but since `-=9Udvb/'--` isn't a recognized option flag, it gets consumed as the value for `-s` anyway. The `stopAtNonOption` setting shouldn't matter here since it only governs how non-option arguments are handled, not how option arguments are consumed.
+
+For test10, a lone `-` isn't recognized as an option either, so it gets treated the same way — consumed as the value for `-s`, giving `"-"` as the result.
+
+Test09 confirms this pattern: with `-s` set up to take an argument and followed by another `-s` token, it recognizes that second token as a valid option and throws "Missing argument for option: s" rather than consuming it as a value. So the rule holds — recognized options following a value-requiring flag trigger the missing-argument error, while unrecognized or ambiguous tokens like `-=9Udvb/'--` or `-` get consumed as the value itself.
+
+Now I'm drafting the actual test assertions, going with confident specific checks like `hasOption` and `getOptionValue` where I've traced the logic clearly, and falling back to weaker assertions like `assertNotNull` where the parsing behavior is murkier, particularly around whether quote-stripping applies to values that don't start with a quote character.
+
+For test04, I'm reconsidering the arg `-=R};SP'-"` — since it starts with `-=`, the parser treats it as an unrecognized short option `=`. With `stopAtNonOption=true`, this unrecognized option-like token causes parsing to halt and get added to remaining args rather than throwing, unlike test21 where `stopAtNonOption=false` triggers an "Unrecognized option" exception. So `commandLine0.hasOption("d")` should be false in test04.
+
+Now I'm looking at test05, which uses an `IGNORE`/`IGNORE` option with an argument, args set to `["-=4{};J}P'"]`, and an empty Properties object — setting up the builder and boolean flags for the parser configuration.
+
+The unrecognized option `-=` gets parsed via the `parse(options, args, properties)` overload, and I'm reasoning through whether `stopAtNonOption` defaults to false here, which would mean an exception should be thrown, yet test05 doesn't actually throw one, so I need to reconsider what's happening.
+
+Looking more closely at the Options setup, the option is added with both short and long opt set to the string "IGNORE", which is unusual since short opts are normally single characters -- I'm now wondering how Commons CLI handles a multi-character short opt like this.
+
+The actual argument passed is `"-=4{};J}P'"`, which starts with `-=`, so I'm checking whether that could match anything: the character after the dash is `=`, which isn't a valid registered option, so this looks like it should be unrecognized. Yet no exception seems to occur, which makes me suspect the `parse(options, args, properties)` overload in DefaultParser has different handling -- possibly falling back to properties-based defaults instead of throwing.
+
+I want to compare test00 through test05 to see if the difference lies in whether `stopAtNonOption` is passed explicitly, since test00 uses the four-argument variant with `stopAtNonOption=true`.
+
+Looking more closely at test05, it calls the three-argument `parse` variant, which might default `stopAtNonOption` to false — but that would still mean the unrecognized token should throw, yet it doesn't. So I'm wondering whether that string is somehow being treated as a valid option because of how `addOption("IGNORE", "IGNORE", true, "-=4{};J}P'")` is structured, where the description string just happens to match the "unrecognized" text I was checking against.
+
+Given the complexity here, I'll just move forward and add a simple assertion to keep the test passing rather than fully untangling this edge case.
+
+For test06, parsing with null args and stop=true should just return a non-null commandLine, so I'll assert that. For test07, with `-s` taking value `-=9Udvb/'--` under default parsing (no stripping), I'll assert the option is present with that exact value. For test10, I'm considering whether `-` after `-s` gets treated as the option's value or as a special stdin marker -- leaning toward it being consumed as the value since `-s` requires an argument.
+
+For test12 with just `["-"]` and no options defined, `-` should be treated as a non-option argument, so I'll assert the commandLine is non-null and check the arg list contains it.
+
+For test13 with `["--"]`, since it signals the end of options, I'll just assert the commandLine is non-null.
+
+For test14, `d` and `d` are plain non-option arguments, so again I'll simply assert non-null.
+
+For test16, the option `c` has a long alias `-c=wt9`, requires an argument, and is required - the arg `-c=wt9` parses as short option `c` with value `wt9`, so I need to verify that option is present with the correct value.
+
+Now for test17, with an empty options set and stop=true, the parser should halt on the unrecognized `-c=wt9` token before processing anything, so I need to verify the commandLine object still comes back non-null even though no options were matched.
+
+For test20, I'm working through a required-option scenario with `s4` and a null-padded args array containing `--s`, checking how the long-option parsing handles it when stop is false.
+
+For test22, I'm considering how DefaultParser handles null entries mixed into the args array, and whether that triggers a NullPointerException or gets skipped when encountering the odd token at index 23.
+
+For test25, I'm tracing `-s#` as short option `s` with concatenated value `#`, confirming hasOption and getOptionValue both check out.
+
+For test26, I'm working through `-s-#"J` where `s` is found without an argument, then figuring out how the leftover characters get reprocessed as another token.
+
+Once past `s`, the parser receives `-#"J` as the remaining chars and tries to treat each as a concatenated option; since `-` isn't a valid option character, it likely stops there, and checking that `s` was recognized as set seems like the right expectation.
+
+For test28, since no options are defined at all, `-s-#"J` shouldn't match anything, so with `stopAtNonOption=true` I'd expect the parser to halt immediately without setting "s" -- meaning `commandLine0.hasOption("s")` should be false, though I'm second-guessing whether checking for non-null is safer than asserting the option is absent.
+
+For test30, since long-option `--s4` exactly matches the defined option (partial matching doesn't matter for exact matches), I expect `commandLine0.hasOption("s4")` to be true. Test33 doesn't need an assertion since it's just testing the deprecated-handler builder path with no meaningful return value to check. And for test36, similar to test28, I'm working through whether `-s` alone with no defined options and stop-at-non-option enabled should register as present.
+
+For test03, I'm verifying the value string `-o=9RUmk9vb/'-u` doesn't have matching leading/trailing quotes, so no quote-stripping happens and the value stays as-is. Now I'm going through the full test list to pin down which cases genuinely have no meaningful oracle to assert.
+
+Test00's parse() result isn't assigned, test11 and test29 call void methods, and test33 assigns the builder's return value but it's the same instance so asserting on it would be trivial. So these four cases likely need no additional assertions beyond what's already there.
+
+I'll settle on adding `assertNotNull(defaultParser_Builder1)` for test33 as a safe minimal oracle. Now I need to go through the file and pinpoint exactly where each missing assertion should be inserted, right after the last meaningful operation in each test.
+
+I've mapped out insertion points for tests 01 through 36 based on their line numbers in the file. Now I'll work through these edits one at a time.
+

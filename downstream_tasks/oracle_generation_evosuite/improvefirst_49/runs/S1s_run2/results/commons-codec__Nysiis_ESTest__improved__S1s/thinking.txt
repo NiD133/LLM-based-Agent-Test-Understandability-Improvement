@@ -1,0 +1,226 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Now I need to understand what each test is doing and what oracle should be added. Let me trace through the NYSIIS algorithm for each test case.
+
+Looking at each test:
+
+**test00_nonStrictModeReturnsFullLengthEncoding**: Non-strict mode, input "&:ZN(sDK;@X'DhCe"
+- Need to check the length is greater than 6 or just that it's not null, or maybe that strict mode is false
+
+Actually, the test name says "nonStrictModeReturnsFullLengthEncoding" - but the comment says "Non-strict mode returns the full encoded result without truncating to 6 characters." The oracle should probably check that `nysiis0.isStrict()` is false, or check the length of the encoded string. Let me think...
+The test creates a Nysiis(false) encoder and encodes the string, so the oracle needs to confirm the output isn't truncated to 6 characters. I'm tracing through cleaning the input to uppercase letters only, then checking it against the various NYSIIS transformation patterns (MAC, KN, K, PH/PF, SCH, EE/IE, endings) to work out the expected transformed string.
+
+Continuing the trace...
+
+Finishing up: the vowel E maps to A, giving key "ZNSDCXDCA", then the trailing A gets stripped per the rule, leaving "ZNSDCXDC". So the non-strict result is "ZNSDCXDC" (full string), while strict mode truncates to the first 6 characters, "ZNSDCX".
+
+For the two tests, the natural assertion would be `assertEquals("ZNSDCXDC", encoded)` for non-strict mode and `assertEquals("ZNSDCX", encoded)` for strict mode, both using the same input string.
+
+Now I'm tracing the default constructor test with input "A" — after cleaning it stays "A", no initial or end transformations apply, and since the key is only one character, the trailing-character removal logic needs special handling since removing it would leave an empty string.
+
+Since it's strict mode by default, the encoder returns "A" (substring capped at 6 chars). But looking at the actual test, it just calls `nysiis0.encode("A")` without capturing or asserting on the return value at all — so I need to figure out what the real assertion in this test is checking.
+
+That means the oracle can't be about the encoded string; it must be verifying something about the encoder object's state instead, like `assertTrue(nysiis0.isStrict())`. Checking tests 03 and 04, they follow the same pattern — calling `nysiis()` without storing the result — so their oracles are likely also state checks on the encoder rather than the return value.
+
+For test06, I need to trace through the encoding of "org.apache.commons.codec.EncodeyException" by first cleaning it to just uppercase letters.
+
+Tracing the full NYSIIS algorithm on this long string is getting complicated, so instead I'm considering whether the oracle should simply check that the result isn't null, since the exact expected value is hard to derive by hand.
+
+Turning to the simpler test case "kSCH", I trace through the initial transforms and find the K-rule applies, converting it to start with "PA".
+
+No end-transforms match, so with key "C" I process "CSCH" char by char. At i=1, S followed by C and H triggers the SCH rule, overwriting positions with 'S','S','S' and updating key to "CS".
+
+Continuing to i=2, since chars[2] equals chars[1] (both S), it won't be appended again, so key stays "CS".
+
+Since lastChar is 'S', it gets removed, leaving key = "C", which has length 1 so the further truncation check doesn't apply. This confirms test10 encodes "kSCH" to "C".
+
+Now checking test02 with input "A": no transforms apply, key stays "A" throughout, and since it's already length 1, isStrict() returns "A" directly.
+
+For test00, I'm tracing through the harder input "&:ZN(sDK;@X'DhCe" in non-strict mode. After cleaning it becomes "ZNSDKXDHCE", none of the initial or ending transform rules match, so I start walking through the character pairs from Z-N-S-D onward to apply the main encoding rules.
+
+Continuing to trace through: K becomes C since the next letter is X, giving key "ZNSDC". Then X and D pass through unchanged as defaults, extending the key to "ZNSDCXD". Now I'm checking the H rule at position 7, which depends on whether the surrounding letters D and C are vowels.
+
+Since D isn't a vowel, H maps to the previous letter D, but it's a duplicate so it doesn't get appended, keeping the key at "ZNSDCXD". Then C stays as C, and the final E becomes A because it's a vowel, building up to "ZNSDCXDCA" with a length of 9. Now I'm checking the ending rules — last character A, not S, checking if the last two letters form an AY pattern, which they don't here.
+
+Since the ending is "A" preceded by another letter but not matching the AY exception, I remove the trailing A, giving "ZNSDCXDC" as the final key. For non-strict mode this full 8-character string is returned, while strict mode truncates it to the first six characters, "ZNSDCX". I'm now matching these expected outputs against the test assertions for test00 and test01, and considering what the oracle might be checking regarding string length or strict mode flags.
+
+Now I want to verify my trace against how `SoundexUtils.clean()` behaves, so let me check that file.
+
+
+
+Good. Now I know `clean()` keeps only letters and uppercases them.
+
+Let me trace through each test case:
+
+**test00**: Input "&:ZN(sDK;@X'DhCe", non-strict
+- Clean: keep letters, uppercase -> "ZNSDKXDHCE"
+- Initial transforms: no MAC, no KN, no K (starts with Z), no PH/PF, no SCH
+- End transforms: no EE/IE, no DT/RT/RD/NT/ND
+- key starts with 'Z'
+- Process ZNSDKXDHCE:
+- Continuing the trace, N maps to itself since it differs from Z, giving key "ZN"; then S follows since it differs from N, giving "ZNS"; then D differs from S, giving "ZNSD"; then K becomes C since the next letter isn't N, updating position 4 to C.
+
+Continuing through the sequence: C differs from D so it's appended, X differs from C so it's appended, D differs from X so it's appended, then at position 7 H maps to D but since D matches the previous character it's not appended to the key, and finally C differs from D so it's appended, building the key up to "ZNSDCXDC".
+
+Finishing the trace, E vowel maps to A, giving key "ZNSDCXDCA", then trailing A gets stripped to yield "ZNSDCXDC" for non-strict mode and truncated to "ZNSDCX" for strict mode, matching both test00 and test01 oracles. Now I'm moving to test02.
+
+For `nysiis("A")` on the strict encoder, the result isn't captured in a variable, so I suspect the oracle actually targets the constructor behavior instead—test02's name suggests it's verifying `defaultConstructorCreatesStrictEncoder`, so the oracle should be checking that `isStrict()` returns true. Tests 03 and 04 with empty string and null inputs behave similarly, with results also unused and the same `isStrict()` assertion likely applying—though it's odd that three different tests would share the identical oracle, so I want to double check the test names to see if they're really testing different aspects.
+
+Looking more closely at the naming pattern, I realize tests 02-04 are all confirming that strict mode persists across different input scenarios (default construction, empty string encoding, and null input), which explains why they share the `assertTrue(nysiis0.isStrict())` oracle. Meanwhile tests 00 and 01 do store their encoded results in variables, meaning their oracles should check the actual encoded string values rather than encoder state.
+
+Continuing through the remaining tests, I see the same pattern holds: whenever a test stores the result in a variable (like tests 06-10), the oracle checks that value directly, while tests that call the method without capturing output are checking encoder state instead.
+
+For test06 specifically, I trace "org.apache.commons.codec.EncodeyException" through cleaning to uppercase letters only, then work through the NYSIIS initial transforms (MAC, KN, K, PH/PF, SCH checks) before moving to the end transforms like EE/IE handling.
+
+Okay, the full string is 37 characters long, so tracing every step manually would take a while. I'll walk through the key-building process character by character, tracking how each new character compares to the previous one and updating the key accordingly: starting with "O", then adding "R" since it differs from "O", then "G" since it differs from "R", building up "ORG" so far and continuing forward from there.
+
+Continuing the trace, I build the key up to "ORGAPA" after six characters. Since strict mode caps the key at 6 characters, I need to determine whether the actual algorithm truncates here or whether more characters still get processed before the final truncation is applied.
+
+Tracing this 37-character string by hand is too error-prone, so I'll switch strategy: for straightforward cases I'll trust my manual NYSIIS trace, but for complex strings like this one I'll fall back to a simpler oracle like `assertNotNull(encoded)`, just confirming the encoder returns something rather than asserting an exact value.
+
+For test02, since the comment mentions the default constructor creating a strict encoder, I'll check `isStrict()` returns true directly.
+
+For test04, since null input shouldn't alter strict mode, the check should also confirm `isStrict()` stays true, and similarly for test06 the check just needs to confirm the encoded result isn't null.
+
+Now I'm tracing through the character cleanup for test07's input string, isolating just the letters and converting lowercase to uppercase to build up the expected cleaned string.
+
+Applying the initial and end transformation rules to the cleaned string, none of them trigger since the string doesn't start or end with any of the special prefixes/suffixes, so the key building starts fresh from the first letter and proceeds character by character, tracking each transformation carefully to avoid mistakes.
+
+Continuing through the string: at position 2, G is treated as default and added to the key giving "BAG"; at position 3, A is a vowel so it maps to A, appending to give "BAGA"; at position 4, W checks if the previous letter A is a vowel, which it is, so it also maps to A -- but since this A matches the previous key letter A, it isn't appended, keeping the key at "BAGA".
+
+Then O at position 5 is a vowel mapping to A again, matching the previous letter so it's skipped, keeping "BAGA". Q at position 6 maps to G, which differs from the last key letter, so it's appended, giving the final key "BAGAG". After checking the strict rules (not ending in S, not AY pattern, not ending in A), the code determines the string is strict and returns the first portion of "BAGAG".
+
+The test confirms the expected encoding matches "BAGAG". Double-checking the letter extraction for "B*(EG$;*A+w7oQ" confirms the letters are B, E, G, A, W, O, Q, giving "BEGAWOQ" as expected.
+
+Now moving to the next test case with input "|5tl0=0cuh:63pEY", I'm extracting only the letters and uppercasing them to get "TLCUHPEY".
+
+Checking the initial and end transform patterns (MAC, KN, PH, SCH prefixes, and EE/IE, DT/RT endings), none apply here since the string ends in "EY" not "EE" or "IE". I'm setting the key to 'T' and starting to walk through the character array, examining each position's previous, current, and next characters to apply the encoding rules.
+
+At position L, it stays as default and gets appended since it differs from T. At position C, same treatment. At position U, since it's a vowel, it maps to A. At position H, I check the vowel rule: since the previous character A is a vowel but the next character P is not, the condition triggers and H maps to the previous character A, which matches the last key character so it doesn't get appended.
+
+Continuing through P, E, and Y: P defaults to itself and appends since it differs from A. E, being a vowel with a non-vowel next character, maps to A and appends. Y falls through all the special cases (not a vowel, not Q/Z/M/K, no SCH or PH pattern, not H or W) so it defaults to itself and appends since it differs from A, building the key up to "TLCAPAY".
+
+After the loop finishes, I check the ending rule: the last character is Y (not S), and since the key length exceeds 2, I check if the second-to-last and last characters form "AY" - they do, so I need to delete the second-to-last character, trimming the key down to "TLCAPY".
+
+Now the last character is Y, no longer A, so the loop stops there. Since isStrict is true, I return the first six characters, giving "TLCAPY" - matching the expected test08 result.
+
+Moving to test09 with input "dIpYze0FuZfr/K1EPh%", I start by stripping non-letters and uppercasing everything, producing "DIPYZEFUZFRKEPH" as my working string.
+
+I check the initial letter-group transforms (MAC, KN, K, PH/PF, SCH) - none apply since it starts with D. I also check the ending patterns (EE/IE, DT/RT/RD/NT/ND) - the string ends in "PH" so none of those trigger either.
+
+Now I begin building the Soundex-style key starting with 'D', then walk through each character checking vowel and digit-group mappings, tracking previous/current/next characters to decide when to append new digits or skip duplicates.
+
+Continuing through positions 1-6, I derive successive key characters: A, P, Y, S, A, F, building up "DAPYSAF" - already 7 characters, meaning in strict mode the result would need truncation.
+
+I need the complete key before truncating though, so I keep processing: position 7 (U, a vowel) adds A, giving "DAPYSAFA", then position 8 (Z) maps to S.
+
+Continuing to build the key: F stays F, R stays R, and K before E (not N) maps to C, extending the key to "DAPYSAFASFRC" so far.
+
+Then E followed by P (not the "EV" pattern) becomes A as a vowel substitution, giving "DAPYSAFASFRCA". Next, P followed by H matches the "PH" digraph rule, so both letters get replaced with F,F via array copy, overwriting the original H.
+
+Continuing, the second F is a duplicate of the previous character so it gets skipped, leaving the key at "DAPYSAFASFRCAF". After the loop, none of the trailing special-case rules (S, AY, A endings) apply, so the final encoded string is "DAPYSAFASFRCAF" and I move on to checking isStrict().
+
+Since isStrict() returns true, I truncate to the first 6 characters, giving "DAPYSA" for test09, matching the oracle's expected value. Moving to test10, I confirm "kSCH" encodes to "C" as traced before, matching its oracle. For test11 with input "Bd}F:LH6ciJkN{]w^1", I clean it down to letters B, D, F, L, H, C, I, J, K, N, W forming "BDFLHCIJKNW", then check the initial transforms (MAC, KN, K, PH/PF, SCH) — none apply since the string doesn't start with those patterns — and begin checking end transforms like EE/IE.
+
+Now I'm working through the ending checks for "NW" against DT/RT/RD/NT/ND — none match. I then start building the key character by character: B stays as B, then D, F, L are each added by default since they differ from their predecessors, building up "BDFL". At position 4 (H), since L isn't a vowel, the special H-rule kicks in and returns L instead, so I'm checking whether this matches the character already in that key position.
+
+Continuing through the sequence, C gets added by default to make "BDFLC", then I vowel maps to A giving "BDFLCA", J adds by default for "BDFLCAJ", and K checks its next character — finding N right after it triggers the KN pattern, replacing both positions with N, so K becomes N and the key extends to "BDFLCAJN". I'm continuing to trace through position 9 next.
+
+So the final result is "BDFLCA", matching the expected test11 output. Moving to test12 with input "tl1[CoH5>Aeu)UA;J.", I'm cleaning it down to just the letters: t, l, C.
+
+After extracting all letters and uppercasing, I get "TLCOHAEUUAJ" - checking initial transforms (MAC, KN, K, PH/PF, SCH) and none apply, and the ending doesn't match EE/IE or DT/RT/RD/NT/ND patterns either. Setting key to 'T' and working through the character sequence T,L,C,O,H,A,E,U,U,A,J, I'm now processing position i=1 where prev=T, curr=L, next=C - applying the default rule to map L to itself.
+
+Continuing through positions 2 and 3, C maps to itself and O (a vowel) maps to A based on the surrounding context, building the key up to "TLCA". Now I'm working through the tricky H rule at position 4, checking whether the previous and next characters are vowels to determine if H should be dropped or kept.
+
+Continuing through indices 6-8, each vowel (E, U, U) maps to A but gets skipped since it matches the previous A already in the key, so it stays "TLCAHA".
+
+At i=9, A also matches the prior A and gets skipped. At i=10, J is a default consonant mapped to itself, appending to make "TLCAHAJ". Since strict mode truncates to the first 6 characters, the final result is "TLCAHA", matching the expected test output for test12.
+
+Now moving to test13 with input "@A9Q mhK(EVj%r", I clean out non-letters and uppercase everything to get "AQMHKEVJR". Checking the initial and ending transformation rules (MAC, KN, K, PH/PF, SCH, EE/IE, DT/RT/RD/NT/ND), none of them apply here, so the working string stays as "AQMHKEVJR" before building the encoding key.
+
+Working through each character: Q becomes G, M becomes N, H checks the surrounding letters and since N isn't a vowel it returns N (which matches the previous key letter, so it's skipped), and now I'm evaluating K with its neighboring E and V to determine its code.
+
+Continuing through the remaining characters, each one falls to the default case since none match the special digraph patterns, so they just get appended one by one, building the key up to "AGNCAFFJR" by index 8.
+
+Since the string length exceeds 2, the trailing checks confirm 'R' isn't 'S' and the last two characters aren't 'AY' or just 'A', so no truncation applies there. The strict encoding rule then kicks in, cutting the final key down to just the first six characters: "AGNCAF" — matching the expected test13 output exactly.
+
+Now I'm moving on to trace through test06's input string, "ORGAPACHECOMMONSCODECENCODEYEXCEPTION", character by character to verify the algorithm produces the correct Soundex-style code for it too.
+
+Since post-processing can only shorten the string, I need at least 6-7 characters worth of key to be safe. I'm now stepping through each character of the string with its neighbors to work out the phonetic transformation rules.
+
+Continuing the trace, key becomes "ORGAPAC" at i=6, then at i=7 for H with prev C and next E, since C isn't a vowel the rule returns {C} as the substitution, keeping the key building toward its final form.
+
+Since the post-processing only strips trailing characters, and the key is already at least 8 characters long, the first six characters remain unaffected regardless of what happens at the end. So the strict output is "ORGAPA" — I just need to confirm the sequence of the first six letters: O, R, G, A, P, A.
+
+The test's oracle expects `assertEquals("ORGAPA", encoded)`, and since both `encode(Object)` and `encode(String)` funnel through the same `nysiis(String)` path, they should produce identical results regardless of which overload is invoked. Now I want to trace through the actual input string more carefully to be sure of this result.
+
+I finish spelling out the uppercase letters, getting "ORGAPACHECOMMONSCODECENCODEYEXCEPTION" at 37 characters, and confirm the first few characters would map to the key sequence starting with O, R, G, A, P.
+
+Testing further with the H rule at index 7: prev is C (not a vowel) and next is E (a vowel), so the condition evaluates true, meaning H maps to the previous character C. Since that matches the last key character already added (also C), it gets skipped, so the key stays at "ORGAPAC" without adding a duplicate.
+
+Now moving to test13 with input "@A9Q mhK(EVj%r", I extract the uppercase letters to form "AQMHKEVJR" and start checking the initial transforms — none of MAC, KN, K, PH/PF, or SCH apply since the string starts with A.
+
+Checking end patterns like EE/IE and DT/RT/RD/NT/ND against the string ending in "JR" — none match, so no end transform applies here either. I'm now stepping through the encoding process character by character starting with key 'A'.
+
+Working through each position: Q maps to G (appended since it differs from prior), M maps to N (appended), then H's rule checks vowel status of neighboring characters N and K, both non-vowels, so it resolves to N which matches the previous character and gets skipped, keeping the key at "AGN" so far.
+
+Continuing, K looks ahead to E and since it's not N, maps to C, appended to get "AGNC". Then E followed by V triggers a special two-character substitution to A and F, overwriting the V slot, and I'm now tracing through how that affects the running key and what happens to the character that was originally there.
+
+Confirming chars[5]=A, chars[6]=F after transcoding, so at i=6 the key extends to "AGNCAFF" since F differs from A. Still, I need to check if the strict 6-character output and any trailing-S removal changes things once the full key is built, so I'll keep tracking i=7 where prev=F and curr=J.
+
+Continuing through the loop: J differs from F so key becomes "AGNCAFFJ", then R differs from J giving "AGNCAFFJR". After the loop, lastChar R isn't S, the last-two-char check doesn't match AY, and lastChar isn't A, so nothing gets trimmed. Applying isStrict() truncates to the first six characters, "AGNCAF" — matching what test13's oracle expects. Now I want to revisit test02, test03, test04, and test06 with the same level of care.
+
+For test02, an encoder is created and encode("A") is called without storing the result, so given the test name "defaultConstructorCreatesStrictEncoder," the oracle should just check that the encoder remains strict. Test03 encodes an empty string similarly without capturing output, and its comment implies the encoder stays strict afterward. Test04 calls nysiis on a null string, and the comment suggests null input is handled gracefully without altering the encoder's strict state.
+
+I'm reconsidering whether the oracle should instead verify the return value of these calls rather than just the encoder state, but since the results aren't stored anywhere in the existing code, I'd need to insert an assertion right after the call rather than replace it, so checking the encoder's strict setting seems like the safer, more supportable choice here.
+
+Using `assertTrue(nysiis0.isStrict())` fits better since the first call's result wasn't stored anyway. For test06, I'm tracing through the NYSIIS encoding algorithm character by character to determine the expected key, building it up incrementally by comparing each new character to the last one added.
+
+Continuing to trace through the character-by-character encoding to confirm the final strict output is "ORGAPA" with at least six characters retained.
+
+For test00's non-strict case, the encoded result "ZNSDCXDC" gives me eight characters, so the assertion could check either the exact string or simply confirm the length exceeds six, both would validly capture the non-strict truncation behavior described in the test comment.
+
+For test01's strict variant, I'll go with `assertEquals("ZNSDCX", encoded)` since exact value checks are more rigorous than just verifying length constraints. Let me re-trace test00 once more to confirm the key derivation: extracting and uppercasing the letters from the input string gives "ZNSDKXDHCE", and I'm now stepping through building the key character by character, checking each position against its previous, current, and next values.
+
+Continuing through the remaining letters, H doesn't get appended since it matches the previous stored character, but C and the final vowel E do get added, producing key "ZNSDCXDCA" after the loop finishes. Now I need to check the ending rules based on the last character and the string's length.
+
+Since the last character is A, not S or AY, I remove it, leaving "ZNSDCXDC" as the non-strict result and "ZNSDCX" for strict mode - matching what I expected. I'm now going through each test case to confirm which ones have stored expected values I can verify against versus which just check strictness flags or exception handling.
+
+Let me retrace test08 more carefully - the input "|5tl0=0cuh:63pEY" has letters t, l, c, u, h, p, E, Y which uppercase to T, L, C, U, H, P, E, Y, giving me "TLCUH..." to work through.
+
+None of the initial transforms (MAC, KN, K, PH/PF, SCH) apply here, and the ending "EY" doesn't match the EE/IE or DT/RT/RD/NT/ND patterns either, so I proceed to build the key by comparing each character against its neighbors.
+
+Continuing through the string: C differs from L so it's added, then U becomes vowel A and gets added since it differs from C, but at H the special rule checks the vowel status of neighboring characters A and P, returning A as the previous character, and since that matches the last added A it gets skipped this time, keeping the key at "TLCA". Now I'm moving to the next position to check U against its neighbors.
+
+Deleting that index gives "TLCAPY", and since the last two characters aren't "AY" or ending in "S", this is the final result, matching test08's expected output "TLCAPY". Now I'm moving to test09 with input "dIpYze0FuZfr/K1EPh%", extracting the letters d, I, p, Y, z, e, F, u, Z, f, r to begin the same encoding process.
+
+Continuing through the letters, replacing A since it repeats the previous key letter, then P becomes its own key addition, Y follows as default, Z transforms to S, and E stays as vowel A since the next letter isn't V, building the key step by step as "DAPYS" and beyond.
+
+Continuing through each character, applying the substitution rules for F, R, K, and E to build out the key string further, arriving at "DAPYSAFASFRCA" after twelve positions.
+
+Then at position 13 I hit a PH combination, which maps to double F, followed by the deduplication check that skips the redundant F at position 14. That leaves the final key as "DAPYSAFASFRCAF", and I now check the trailing conditions on the last character before assembling the final output string.
+
+Since the length exceeds 6, isStrict truncates to the first six characters, giving "DAPYSA" as the expected encoded result for test09.
+
+Now I'm moving on to verify test11, extracting the uppercase letters from "Bd}F:LH6ciJkN{]w^1" to get "BDFLHCIJKNW", then checking it against the initial transform rules (MAC, KN, K, PH/PF, SCH) — none apply since it starts with B — before checking the ending transforms like EE/IE.
+
+None of the ending patterns (NW, DT/RT/RD/NT/ND) match either, so I move into the main deduplication loop with key starting at "B" and walk through each character comparing it to the previous one, building up "BDFL" before hitting a special H-rule case where H is treated specially since the preceding letter isn't a vowel, causing it to collapse into L rather than being appended separately.
+
+Continuing the walk, C gets appended since it differs from L, then I resolves to the vowel placeholder A, and I keep tracking whether each new character differs from the last one added, building the key up to "BDFLCA" and beyond with J and K also getting evaluated against their neighbors, with K's special N-lookahead rule kicking in since the next letter is N.
+
+Finishing the trace, N doesn't duplicate against the prior N so it's skipped, W gets appended since it's not a vowel-adjacent match, and the final key comes out to "BDFLCAJNW" — nine characters — but since isStrict() truncates to the first six, the expected result for this test case is "BDFLCA".
+
+Now I move to test 12, tracing "tl1[CoH5>Aeu)UA;J." — extracting letters and uppercasing gives "TLCOHAEUUAJ", with no initial or end transforms applying. I start building the key with T, then L (differs from T so it's kept), then C (differs from L so it's kept), and now I'm at O, which is a vowel and gets mapped to A.
+
+Continuing through the character rule, position 4 has prev=A, curr=H, next=A — checking the vowel conditions shows the H-specific rule doesn't apply since prev is a vowel, so H stays as default and gets appended to the key since it differs from A, giving "TLCAH". Then at position 5, curr=A is a vowel so it maps to A, appended since it differs from H, extending the key to "TLCAHA". I'm now moving to position 6 with curr=E to continue the rule check.
+
+Since isStrict() returns just the first 6 characters, "TLCAHA" is the expected result for test12. Now I'm double-checking test07 with input "B*(EG$;*A+w7oQ", extracting the letters and converting to uppercase to get B, E, G, A, W, O, Q.
+
+No initial or ending transforms apply since the string doesn't match any special suffix patterns. Tracing through the key-building loop character by character: at position 1, the vowel A differs from key start B, extending the key to "BA"; at position 2, G is treated as a default character and appended, making "BAG"; then continuing into position 3 where A is checked against vowel rules again.
+
+Working through positions 4-6, W and O both resolve to vowel A but match the previous character so they're skipped, while Q maps to G and gets appended since it differs from the last key character, producing final key "BAGAG". Checking the ending rules confirms no further trimming applies, and since the string length is under the strict threshold, the full "BAGAG" is returned as the expected test07 result.
+
+I'm now assembling the full list of expected test outcomes across all the test cases to verify against: ZNSDCXDC, ZNSDCX, isStrict checks for tests 2-4, exception handling for test05, and ORGAPA for test06.
+
+I've compiled expected values for tests 07 through 13: BAGAG, TLCAPY, DAPYSA, C, BDFLCA, TLCAHA, AGNCAF. Now I want to make sure that for the isStrict tests, the assertion needs to be placed after the method call since it checks encoder state rather than a return value, and I should confirm assertEquals will properly compare a String against an Object return type using equals() under the hood before finalizing the edited test file.
+

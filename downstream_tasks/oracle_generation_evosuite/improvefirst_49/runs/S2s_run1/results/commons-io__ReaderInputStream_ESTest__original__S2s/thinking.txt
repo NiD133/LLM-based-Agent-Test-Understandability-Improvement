@@ -1,0 +1,42 @@
+Let me start by reading both the test file and the class under test to understand what needs to be done.
+
+Now I'll analyze each test and determine what oracles are needed:
+
+**test00**: Creates a `ReaderInputStream` and closes it. No specific assertion needed - just checks it doesn't throw. No oracle needed.
+
+**test01**: Uses Builder to create a ReaderInputStream. No assertion - it just checks construction works. No oracle needed.
+
+**test02**: Reads from `ReaderInputStream` created with null CharsetEncoder from string "{/". Looking at the code, when `charsetEncoder` is null, it defaults to the default Charset encoder (via `CharsetEncoders.toCharsetEncoder(charsetEncoder)`). The string "{/" contains characters that should be readable. 
+
+Since the constructor converts a null encoder to the default charset encoder, reading proceeds normally, and the first character `{` corresponds to ASCII 123, so that should be the value returned by `read()`.
+
+Now I need to work out the missing oracle values for other tests. For skipping 1884 bytes on a single-character string, only one byte exists, so the skip should return 1L. For skipping 727 bytes on an empty string, the result should be 0L, and a subsequent read should return -1 for EOF. I'm now working through what the expected result should be for reading from a longer string.
+
+Since the whole 11-char string is encoded with a single-byte charset, reading 6 bytes should leave 5 bytes still buffered in encoderOut, which available() would report after the read call completes.
+
+Since fillBuffer is called on empty buffer first, it fills with all 11 bytes, then the read copies 6, leaving 5 remaining, so available() returns 5. The oracles should be assertEquals(6, int0) and assertEquals(5, int1), assuming the default charset treats these ASCII characters as single-byte, which holds true for UTF-8 or similar encodings.
+
+For the next test involving setCharset, the builder returns another builder instance, so I need to verify that the returned object matches the expected builder reference.
+
+For the following test, getCharsetEncoder should return a non-null encoder object.
+
+Checking available() before any bytes are read - since the encoder output buffer starts flipped with no content, it should return 0.
+
+Then setCharsetEncoder on the builder should return the same builder instance for chaining, and reading into a zero-length array should immediately return 0 per the early-return check in the code.
+
+For test02, reading from "{/" with a null encoder means it falls back to the default charset encoder, so the first character read is `{` (123).
+
+Test03 checks skip on a 1-character string "t" - since skip is inherited and calls read repeatedly, and only 1 byte is available despite requesting to skip 1884, it should return 1.
+
+Test04 first checks skip on an empty string returns 0, then continues into another read operation.
+
+After skipping past EOF on an empty string, the follow-up read call should return -1, giving oracles of 0L for the skip and -1 for the read. Now I'm trying to trace through how the null charset encoder gets resolved in test02, thinking about the CharsetEncoders.toCharsetEncoder utility and how it falls back to a default when passed null, though I don't have direct visibility into that implementation.
+
+With the `{` character being read first (value 123), that should be the oracle for int0 in test02. I'm now going through each test method systematically to identify which ones create variables that lack assertions and therefore need oracles added -- test00 and test01 need none since they don't produce meaningful values, but test02 onward with their read/skip results need proper oracle values.
+
+Continuing through the remaining tests, I'm confident about test03 (1 byte read), test04 (empty string returns 0, then EOF gives -1), and test05 (6 chars read, with the available() count at 5 being less certain). For test07-09 I'm confident about assertSame on the builder and assertNotNull on the charset encoders, and now I'm working out the oracle value for test10.
+
+Now for test05's leftover buffer count, I'm calculating that after encoding all 11 characters of the string and reading 6, there should be 5 bytes remaining in the encoder output buffer.
+
+So `assertEquals(5, int1)` seems right. Now I'll move on to editing the test file, adding these assertions after their respective statements in each test method.
+

@@ -1,0 +1,44 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now I'll analyze each test to determine what oracles should be added:
+
+**test00**: Creates a PipedWriter and PipedReader, creates a ReaderInputStream, and closes it. No assertion needed - just tests that close() doesn't throw. No oracle needed.
+
+**test01**: Uses a Builder, sets a byte array, and gets a ReaderInputStream. No explicit assertion needed (just tests that it doesn't throw). No oracle needed.
+
+**test02**: Creates a StringReader with "{/", then a ReaderInputStream with null encoder, and reads a byte. The result is `int int0 = readerInputStream0.read()`. With a null CharsetEncoder, looking at the constructor `ReaderInputStream(Reader reader, CharsetEncoder charsetEncoder, int bufferSize)`, it calls `CharsetEncoders.toCharsetEncoder(charsetEncoder)` - so null uses default charset. 
+
+Since "{/" starts with '{' (ASCII 123), reading with the default UTF-8 encoder should return 123 as the first byte, so the oracle should assert that int0 equals 123.
+
+For test03, since "t" is a single-character string encoding to exactly 1 byte in UTF-8, skipping 1884L bytes on this InputStream should only be able to skip 1 byte, so the oracle should assert long0 equals 1L.
+
+For test04, skipping 727L bytes on an empty string source should return 0 since there's nothing to skip, and a subsequent read() call should return -1 indicating EOF.
+
+For test05, I'm working through reading 6 bytes from the string "3t8FoIT,\",/" into a byte array, which should return 6 since all characters are ASCII, then checking what available() reports about remaining buffered bytes afterward.
+
+Working through the fillBuffer logic: the string "3t8FoIT,\",/" has 11 ASCII bytes, so during the read call encoderOut gets filled with all 11, then 6 are consumed, leaving 5 remaining. So `available()` after that read should return 5.
+
+For test06, checking IllegalArgumentException with buffer size -4369, the fail() and try-catch already cover it. For test07, setting a charset on the builder returns the builder itself, so the assertion should verify the two builder references are the same object. For test08 and test09, I'm checking that the charset encoder obtained from a new builder and from a ReaderInputStream are both non-null. For test10, I'm looking at the available() count right after creating a fresh ReaderInputStream.
+
+Since the encoder output buffer starts empty with nothing flipped in, available() should return 0. Test11 mirrors test07's pattern where setting the charset encoder returns the same builder. Test12 constructs a ReaderInputStream with a null string charset, which resolves to the default charset internally, so no exception should occur. Test13 involves reading into an empty array, where a zero-length read.
+
+Now I'm going through the remaining tests to pin down expected values: reading '{' from a two-char string should yield 123, skipping a single-byte stream with a generous limit gives 1L, skipping an empty stream gives 0L while reading from it gives -1, reading six bytes from an eleven-character string leaves five available, and the builder identity check should hold again for test07.
+
+I'm also confirming the same assertNotNull pattern applies to the charset encoder in tests 09-10, the same zero-int assertion applies to tests 10 and 13, and the builder-identity assertion recurs in test11. Now I'm working out exactly where in each test method the oracle line needs to be inserted, checking the skip() and read() call sites for test02 through test04 to make sure the assertion lands right after the value is captured.
+
+Continuing to trace oracle values for the remaining tests. For test03, I'm reasoning through what skip should return for a single-character string "t" (1 byte in UTF-8) — since InputStream's default skip reads and discards bytes, skip(1884) should return 1. For test04, I'm checking that an empty string reader with skip(727) yields no bytes skipped.
+
+For test02, I'm working through what happens with a null CharsetEncoder — the code likely substitutes a default encoder, and since '{' is ASCII 123, it should read the same byte value across common charsets like UTF-8, UTF-16, or ISO-8859-1.
+
+For test05, I'm tracing through the read(byteArray0) call: the buffer starts empty and not at end of input, so fillBuffer() reads all 11 characters from the StringReader, encodes them into 11 bytes, then the read loop copies min(11, 6) = 6 bytes into the 6-byte array.
+
+So int0 = 6, and available() then returns the remaining 5 bytes still sitting in encoderOut. Confirming the string "3t8FoIT,\",/" has exactly 11 ASCII characters, so the byte count checks out.
+
+Checking the read(array, off, len) implementation to verify how it handles the length constraint...
+
+This loop fills from encoderOut when available, calls fillBuffer otherwise, and stops once endOfInput is hit or len is exhausted, so with encoderOut initially empty, it calls fillBuffer() first before reading into the buffer.
+
+Tracing through: fillBuffer reads 11 characters into encoderIn, encodes them to 11 bytes in encoderOut, then the loop copies 6 of those bytes to satisfy the read request, leaving 5 bytes remaining in encoderOut. So int0 = 6 and int1 = available() = 5.
+
+Now I need to add assertions at the appropriate places in each test method, matching the natural pattern of computed values already present in the code.
+

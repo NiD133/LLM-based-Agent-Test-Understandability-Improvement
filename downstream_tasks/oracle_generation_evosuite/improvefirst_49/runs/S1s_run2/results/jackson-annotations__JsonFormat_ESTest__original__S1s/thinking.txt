@@ -1,0 +1,190 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now I need to analyze each test method and determine what oracle (assertion) should be added. Let me go through each test:
+
+**test00** - Creates a JsonFormat.Value, no oracle needed (just construction check). Actually, we need to verify it was constructed properly - but there's no query. The test is just checking construction doesn't throw.
+
+**test01** - Constructs a Value, no assertion needed
+
+**test02** - `boolean0 = jsonFormat_Features0.get(jsonFormat_Feature0)` - All features are ADJUST_DATES_TO_CONTEXT_TIME_ZONE and are in both enabled and disabled arrays. 
+
+Since disabled is checked first, get() returns Boolean.FALSE here, and no assertion is needed for that construction. Test00 and test01 look like similar no-op constructor checks. Test03 creates a Value, calls withLocale(German), and checks equals against the original—since one has a locale set and the other doesn't, equals should be false, so I'll assert that. Test04 moves on to a default Value combined with forPattern.
+
+I'm continuing the equals comparisons across tests: different pattern strings, default lenient versus forLeniency(true), and forShape(ARRAY) versus forLeniency(false) with mismatched shapes—each case yields unequal objects, so I'm asserting false throughout. Test07 then moves to a Value constructed with a specific timezone.
+
+Comparing against a raw TimeZone object fails since it's not a Value instance, so equals returns false; testing against null and against itself gives false and true respectively. Test10 just removes from the hashMap with no assertion, then test11 checks hasNonDefaultRadix with a radix of 95, which isn't the default of -1, so it returns true, and test12 continues checking hasNonDefaultRadix under different conditions.
+
+Test13 confirms hasLenient returns true once Boolean.FALSE is set, while test14 shows it's false for a default Value with null lenient. Test15 checks that an empty Value has no timezone, so hasTimeZone returns false, and test16 begins checking another Value property.
+
+Since "O" isn't null, empty, or the default timezone marker, it gets stored, so hasTimeZone returns true for that test. Then I'm walking through the remaining assertions: hasLocale checks confirm true when GERMAN locale is set and false for the default value, and hasPattern returns false since forRadix creates an empty pattern.
+
+I'm confirming hasPattern returns true when the "FALSE" pattern string is set, hasShape returns true for BINARY shape but false for the default ANY shape, and starting to trace how the timezone string flows through the multi-argument Value constructor.
+
+For test23, the garbled string is used as both locale and timezone since neither is null, empty, or the default marker. So the locale gets parsed, and the timezone string gets stored as-is, meaning `_timezone` stays null until `getTimeZone()` is called to resolve it via `TimeZone.getTimeZone()`, at which point `hasTimeZone()` reflects whatever that lookup returns.
+
+For test24, calling `getTimeZone()` on an empty `Value` should just return null since no timezone was ever set, so the assertion should confirm the result is null.
+
+For test25, I'm looking at a Value constructed with `TimeZone.getTimeZone("-d\`")` - since that's an invalid timezone ID, Java's TimeZone.getTimeZone falls back to returning GMT.
+
+Since the constructor stores the passed-in TimeZone directly as `_timezone`, calling getTimeZone() afterward should return that exact same GMT instance. So the assertion should be `assertSame(timeZone0, timeZone1)` rather than just checking non-null.
+
+For the next test, `timeZoneAsString()` returns a String derived from that same directly-stored timezone, so I need an oracle that checks its value rather than just confirming no exception is thrown.
+
+For a default Value with radix -1, calling `withRadix(-1)` hits the early-return branch since the radix matches, so it should return the exact same instance—I can assert that with `assertSame`.
+
+For comparing two Value instances with different radix values (default vs 1398), `equals()` should return false since radix differs, so I'll assert that.
+
+For `withLenient(null)` on a Value that already has null lenient, this also hits the same-value branch and returns `this`—another case for `assertSame`. But `withLenient(TRUE)` on a Value with null lenient creates a new instance since they differ, so there's no particular assertion to make there. And testing `withShape` with the same SCALAR shape should similarly trigger the identity check.
+
+Moving to `withOverrides`, when the base Value is `Value.empty()` and it's compared against `EMPTY`, the method short-circuits and returns the override argument directly, so I can assert same-reference between the result and the overrides value. The merged-pattern case with non-empty overrides is more complex, so I'll abstain from a precise oracle there.
+
+, overrides)` triggers `withOverrides`, and since overrides equals EMPTY it returns `this`, and since base is also EMPTY, the result is base itself — oracle asserts same. For test36, merging with null overrides just returns base unchanged, so oracle asserts same. For test37, `Value.from(null)` returns EMPTY since the annotation check short-circuits.
+
+For the remaining tests I'm going through: test38 merges an array of values with no clear oracle, test39 merges two nulls and gets null (asserted with assertNull), and tests 40-43 construct Value objects with various null or default parameters (null shape defaults to Shape.ANY, "##default" locale resolves to null) — none producing a clear oracle.
+
+For test44, both Features objects are constructed with identical enabled/disabled bits (READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE), so equals compares matching values and returns true, asserted with assertTrue. Test45 compares a default Value against one built with withoutFeature applied.
+
+For test45 through test48, I'm working through equals comparisons: differing feature sets return false, comparing against a different type (Shape) returns false, comparing against null returns false, and test48 sets up a Value with pattern "FALSE", shape SCALAR, French locale, and a timezone for comparison against another Value.
+
+Since `_timezoneStr` differs (null vs "O"), equals returns false, so the oracle is `assertFalse(boolean1)`.
+
+For test49, comparing the default value against one with WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS enabled means features differ, so equals is false and I assert that. Test50 just calls toString() on a value with default pattern, ANY shape, and that feature enabled, so I'll need to check what string it produces.
+
+The toString output would be too complex to assert exactly given all the null fields and feature bitmask formatting, so I'll skip asserting on it. For test51, getFeature checks whether ACCEPT_CASE_INSENSITIVE_VALUES is enabled on jsonFormat_Value1, which it is, so I assert Boolean.TRUE is returned. Test52 builds Features objects with WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED and calls without() but doesn't need an assertion.
+
+Tests 53 through 58 chain feature/value builder calls (withoutFeature, withFeature, various Value transformations) without producing assertable results, so those need no assertions. Test59 checks that withOverrides(null) returns the same instance, so I assert assertSame on the two Features objects. Test60 compares two complex Value objects for equality — one has pattern "FALSE", SCALAR shape, French locale, a "FALSE" timezone, empty features, lenient TRUE, and radix 10 — so I need to work out what the other Value looks like before determining the equals result.
+
+Finishing the merge, radix and timezone string also carry over from the overrides, giving the final merged value, and checking equality against the override object shows pattern, shape, features, and lenient all match.
+
+So equals returns true, confirming the assertion. Then I move on to checking Shape.isStructured for null, which returns false since the method short-circuits when shapeOrNull is null, and for POJO, which returns true since it's classified alongside OBJECT and ARRAY as a structured shape.
+
+Continuing, ARRAY and OBJECT also return true for isStructured, while SCALAR returns false since it doesn't match any of those three cases. Then I check isNumeric(null), which similarly returns false.
+
+For the numeric checks, NUMBER_FLOAT, NUMBER_INT, and NUMBER all return true, while SCALAR again returns false since it's not one of the recognized numeric shapes.
+
+test71 just calls getFeatures() to confirm it doesn't throw, and test72 follows the existing try/catch/fail exception pattern. For test73, I'm verifying toString() against the exact default output string, and test74 moves on to checking getShape() on the value.
+
+For the remaining ones I'm continuing with simple null and value checks: getLocale() returns null, getLenient() returns null, and getPattern() on an empty Value returns an empty string.
+
+test79 checks isLenient() defaults to false since lenient is null. test80 confirms valueFor() returns JsonFormat.class. test81 just applies withPattern with no assertion. test82 checks timeZoneAsString() returns null when neither timezone field is set.
+
+For test83 I check getRadix() returns 1 on forRadix(1). test84 confirms getFeature for WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED returns null since features map is empty. test85 is just a hashMap.remove() call with no assertion needed, and test86 already has its exception handling in place.
+
+Now I'm going through the remaining tests to identify which ones have unasserted computed results, like test03's boolean0 variable, that still need oracle assertions added.
+
+Working through several equals() comparisons across tests - most return false when comparing different Value objects, comparing against unrelated types like timeZone0, or comparing against null, so each needs an assertFalse(boolean) oracle added.
+
+Continuing to verify hasLocale, hasPattern, hasShape, and hasTimeZone checks across various Value instances, then moving into a test that pulls a TimeZone object.
+
+Adding tests for timezone equality, the `withOverrides` and `Value.merge` methods, confirming same-instance returns when merging identical or null configurations.
+
+Continuing through more equals/feature test cases, checking Features override behavior with null, and verifying Shape.isStructured returns false for null and true for POJO types.
+
+Continuing through more test cases: isNumeric with NUMBER returns true, toString produces the default JsonFormat.Value string representation, getShape returns ANY, and various getters (locale, lenient, pattern) return their default null/empty values, with isLenient false and valueFor returning JsonFormat.class.
+
+Now I'm double-checking test23's constructor call, which builds a JsonFormat.Value with a pattern string, shape, locale string, timezone string, features, lenient boolean, and radix — verifying the parameter order and what the timezone string value actually is.
+
+Since the timezone string is non-empty and not "##default", `_timezoneStr` gets set to that raw string. When `getTimeZone()` is called, `_timezone` starts null so it resolves via `TimeZone.getTimeZone(_timezoneStr)` and caches the result, meaning a subsequent `hasTimeZone()` call now returns true since `_timezone` is populated.
+
+Now moving on to verify test25's constructor call setup.
+
+That confirms lenient is false since the string isn't "true". Now for test02, since the feature appears in both the enabled and disabled arrays, the disabled check takes priority so the result is false — but since it's only used to construct the Value object without a direct assertion, no oracle is needed there.
+
+Now I'm compiling the full list of test methods needing assertions, planning to insert them right before each method's closing brace, and double-checking uncertain cases like test34 where I'm using assertSame to compare the two Value objects.
+
+Since overrides equals EMPTY, withOverrides returns `this`, so jsonFormat_Value1 equals jsonFormat_Value0, confirming assertSame there.
+
+For test37, Value.from(null) returns the shared EMPTY singleton, and since empty() just returns that same private EMPTY instance, assertSame(JsonFormat.Value.empty(), jsonFormat_Value0) holds.
+
+Now I'm moving on to reconsider test59 involving JsonFormat.Features.
+
+Similarly, when withOverrides is called with null, it returns `this`, so jsonFormat_Features1 is the same instance as jsonFormat_Features0 — assertSame applies here too.
+
+Looking at test76, getLocale() is called but its result isn't stored, so I should add an oracle asserting it returns null.
+
+Now I'm starting to look at test77.
+
+For test50, I'm creating a Value, disabling the WRITE_SORTED_MAP_ENTRIES feature via withoutFeature, and checking the toString output, which should reflect that feature's disabled bit alongside default settings for pattern, shape, and lenient.
+
+I'm confirming WRITE_SORTED_MAP_ENTRIES is ordinal 9, giving a disabled mask of 0x200, which matches the expected toString output. Rather than asserting the full string with exact hex values, a weaker assertNotNull check might be safer since reproducing the precise format is error-prone.
+
+Working out that for test50's default JsonFormat.Value, the expected string should be "JsonFormat.Value(pattern=,shape=ANY,lenient=null,locale=null,timezone=null,features=(enabled=0x0,disabled=0x200),radix=-1)" given the empty pattern, ANY shape, and default radix of -1. Now moving on to test73 where I'm constructing a default JsonFormat.Value and calling toString on it.
+
+Now I'm sorting through which tests actually need assertion oracles versus which are just constructor calls or exception checks with no return value to verify - things like test00-01, test40-43 are pure constructors, while test27, test29-33, and others just confirm no exception is thrown during various `with` operations.
+
+For test29, calling `forRadix(1)` gives a value with null lenient, and then calling `withLenient(null)` on it returns the same object since both are null - so I could add an `assertSame` check there.
+
+For test27, the default `Value` has radix -1, so calling `withRadix(-1)` also returns the same instance since the radix already matches.
+
+For test31, constructing a `Value` with `Shape.SCALAR` and then calling `withShape(SCALAR)` again returns the same instance since the shape matches.
+
+Moving to test32, calling `withShape(BINARY)` on an empty ANY-shaped Value returns a new instance since the shapes differ, so no assertSame applies. For tests 33, 52, and 53, the oracles around `withOverrides`, `Features.without`, and chained `withoutFeature` calls are less deterministic, so I'll likely skip strict assertions there or use simple non-null checks. I'm now reviewing tests 76 and 77, where `getLocale()` and `getLenient()` are called but their results aren't stored anywhere.
+
+For these, since the result isn't saved to a variable, I'll add a fresh assertion line right after the call rather than modifying the existing statement, and I'll apply the same approach to the similar cases in tests 79 and 80. Going forward I'll work through each test systematically, adding an oracle wherever a value is computed but never checked, starting with test26 where `timeZoneAsString()` needs an assertion added.
+
+For test74, since the shape value is captured in a variable, I can directly assert it equals `JsonFormat.Shape.ANY`. Given there are many similar edits needed across the file, I'm planning to batch them together and apply each one individually since the edit tool needs exact text matches.
+
+Going through the remaining tests, most follow a similar pattern: where a boolean equality check result is stored, I'm adding an `assertFalse(boolean0)` assertion right after the comparison line, applying this consistently to test03 through test07 and beyond.
+
+Continuing this pattern for tests 08-13, I'm adding the appropriate assertion after each boolean assignment—assertFalse for the null-equality and hasNonDefaultRadix checks in some cases, and assertTrue where the value equals itself or the radix check should hold.
+
+Continuing through more assertion checks for hasLocale, hasPattern, and hasShape/hasTimeZone flags across tests 19-24, each verifying true/false boolean states after specific method calls...
+
+Adding more test assertions...
+
+Continuing through more tests: test35 and test36 show that merging a value with itself or with null returns the same instance via `assertSame`, while test37 confirms that `JsonFormat.Value.from(null)` yields the empty value singleton.
+
+Test39 checks that merging two nulls together produces a null result, then the remaining tests (44-47) verify equals() behavior — confirming true for equal Features objects, false for mismatched Values, false when comparing across different classes like Features and Shape, and false when compared against a null Object.
+
+Continuing with equals() checks, I'm adding assertions that confirm false results when comparing mismatched Value instances, and then verifying that toString() on a Value produces the expected formatted string showing pattern, shape, lenient, locale, timezone, features, and radix fields.
+
+I move on to checking that getFeature() returns the correct Boolean for enabled features, that withOverrides(null) returns the same Features instance unchanged, and that Shape.isStructured() correctly returns false for null and true for structured shapes like ARRAY or OBJECT.
+
+Continuing through isStructured tests, I verify it returns false for shapes like SCALAR, and then move to isNumeric checks, confirming it returns false for null and true for numeric shapes like NUMBER.
+
+I add test73 verifying that a default JsonFormat.Value object's toString produces the expected string representation showing empty pattern, ANY shape, null lenient/locale/timezone, EMPTY features, and radix -1, then continue toward test74.
+
+Test74 verifies the getShape() method returns ANY, test76 confirms getLocale() returns null, test77 confirms getLenient() returns null, test78 checks getPattern() returns an empty string, and test79 confirms isLenient() returns false for the default Value instance.
+
+Continuing on, test80 verifies valueFor() returns JsonFormat.class, test82 confirms timeZoneAsString() returns null, test83 checks getRadix() equals 1, and test84 confirms getFeature() returns null for a given feature. Now I need to go back and re-examine test60 more carefully, looking at how the JsonFormat.Value constructor is being invoked there.
+
+Tracing through this constructor call, I'm mapping out the fields: pattern is "FALSE", shape is SCALAR, locale is French, the timezone object comes from "FALSE", timezoneStr is null, features are empty, lenient is Boolean.TRUE, and radix is 10. Then I'm looking at a second Value constructor call with similar arguments to compare field assignments...
+
+I'm tracing through the `withOverrides` merge logic: since both values are non-null and distinct, the merged result takes the overriding pattern, shape, locale, lenient flag, and radix, combines empty features with empty features, and now moves into resolving the timezone string from the overrides.
+
+Comparing the resulting merged value against `jsonFormat_Value1` field by field, everything matches exactly, so `equals` returns true and `assertTrue(boolean1)` passes. I'm now moving on to setting up test38 with a new `JsonFormat.Value` instance.
+
+Tracing through mergeAll's loop confirms result ends up as jsonFormat_Value0 since withOverrides(this) returns itself, so I should add `assertSame(jsonFormat_Value0, jsonFormat_Value1)` to verify this.
+
+Now I'm moving on to test26, which constructs a JsonFormat.Value with shape OBJECT, Italy locale, default timezone, and calls timeZoneAsString() on it. I'm tracing through the constructor to confirm the timezone field gets set from the non-null timeZone0 argument.
+
+Since timeZoneAsString() returns _timezone.getID() when non-null, and the actual default timezone ID isn't known at test-generation time, I'll settle on asserting non-null rather than an exact string value. Then I'll shift to double-checking test60's boolean logic, specifically verifying whether the equals comparison between withOverrides' result and jsonFormat_Value1 evaluates to true.
+
+Both objects share matching pattern, shape, locale, timezoneStr, null timezone, empty features, lenient flag, and radix, so I'm walking through equals field by field to confirm they match at every check.
+
+So all conditions are satisfied, meaning equals returns true and assertTrue(boolean1) holds. I double check that the equals method only compares _timezoneStr and not _timezone directly, and since both objects have _timezoneStr = "O", that comparison also matches, confirming the result.
+
+Now looking at test44, I'm constructing two JsonFormat.Features objects from the same array of six identical READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE feature entries, then checking if they're equal to each other.
+
+Both should compute the same enabled and disabled bit masks since they're built from identical arrays, so equals() should return true — `assertTrue(boolean0)`.
+
+Now I need to move on to making all the edits, being careful that each old_string is unique. I'll go through them one by one, though some tests like test61-70 might share similar enough context that I can check if edits can be batched.
+
+For test61, checking `JsonFormat.Shape.isStructured(null)` - the closing brace and boolean declaration give unique context to identify the edit location.
+
+I'll proceed through the edits systematically. For test30, I'm tracing through `withLenient(Boolean.TRUE)` on a default Value object — since the default lenient field is null and TRUE differs from it, this should trigger the non-default branch of the method.
+
+For test32, similarly `withShape(BINARY)` on an empty Value (which defaults to ANY shape) diverges from the default, so it creates a new instance rather than returning the same one — though this alone is too weak an assertion to be useful, so I'll skip it.
+
+Test33 involves complex object construction that's hard to reason about without actually running the code, so I'll skip deriving an oracle there too.
+
+Now I'm moving on to test52.
+
+For test53, starting from a default empty Features value, calling withoutFeature twice on the same flag: the second call finds nothing changes since the feature's already disabled, so it likely returns the same Features instance rather than a new one, meaning the two resulting values could end up equal.
+
+For test54, I'm building a Features instance and a Value with matching values, then testing the withFeature transition.
+
+Tracing bit flags: the feature starts set in both enabled and disabled positions, and after withFeature flips the disabled bit off, producing a new Features(8, 0) since the state changed. Without running it I can't pin down a confident oracle here, so I'll skip this one, and skip test55-58 too since those involve complex feature interactions. Moving to test75, I'm starting to construct another JsonFormat.Value.
+
+There are quite a few edits left to make, so I'll move through them now.
+

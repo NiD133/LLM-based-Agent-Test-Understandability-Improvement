@@ -1,0 +1,82 @@
+Let me start by reading the masked test file to understand what tests are there and what oracles need to be added.
+
+Now I need to understand the NYSIIS algorithm to determine what oracles to add. Let me analyze each test:
+
+The NYSIIS (New York State Identification and Intelligence System) algorithm:
+1. Transcodes names for phonetic matching
+2. Strict mode truncates to 6 characters
+3. Non-strict mode returns full length
+
+Let me think about what I can confidently determine for each test:
+
+**test00**: Non-strict mode, `nysiis("&:ZN(sDK;@X'DhCe")`
+- Non-strict returns full encoding
+- I need to know what the encoding would be
+- After stripping special characters, the remaining letters are Z, N, s, D, K, X, D, h, C, e, but working out the exact NYSIIS transcoding rules by hand is tricky.
+
+**test01**: Strict mode (default) on the same string should yield a result truncated to 6 characters or less. Without running the actual code under test, I'll need to reason through the NYSIIS steps—uppercasing, stripping, and applying the phonetic substitution rules—to guess the expected outputs.
+
+**test03_encodingEmptyStringPreservesStrictMode**: calling nysiis on an empty string likely just checks strict mode remains true rather than asserting a specific output, so I could pair it with an assertion that the result is empty or null.
+
+For **test04_nullInputHandledGracefullyInStrictMode**, encoding null should return null.
+
+For **test10_leadingKAndSchTranscodingProducesSingleC**, the comment explicitly walks through the transformation of "kSCH" — leading K becomes C, SCH collapses to SSS, and the trailing S gets stripped — leaving just "C" as the confirmed expected output.
+
+For **test02_defaultConstructorCreatesStrictEncoder**, encoding "A" should just preserve the leading vowel as "A" since NYSIIS keeps the first letter and treats vowels uniformly afterward.
+
+I'm now considering the empty string and null cases separately — empty input likely returns null or an empty string, while null input almost certainly returns null.
+
+Looking back at the strict vs non-strict comparison tests, the key distinction is that non-strict mode returns the full encoded result while strict mode truncates to six characters, but without working out the actual NYSIIS encoding of that oddly-punctuated string, I can't pin down the exact expected value with confidence.
+
+I'm trying to trace through the NYSIIS algorithm step by step on the uppercased letters, applying the prefix and character-substitution rules to see where it leads.
+
+This is getting complex, so I'm anchoring on the one certain data point: the test case explicitly confirms that encoding "kSCH" produces "C", which I can use to verify the rules I'm applying.
+
+For simpler cases like a single character "A", no prefix or suffix transformations apply since it doesn't match any special pattern, so it should just return "A" unchanged.
+
+For empty string and null inputs, I'm less certain whether the implementation returns null or an empty string in each case, so I'm treating those as lower-confidence guesses while checking if the test names hint at default versus strict mode behavior.
+
+I'm reconsidering the test structure now — since some calls like `nysiis0.encode("A")` and `nysiis0.nysiis("")` don't assign their results to a variable, I suspect the actual assertions being tested might just be about the `isStrict()` state of the encoder rather than the return values themselves.
+
+Looking at test00 and test01, both encode the same string but one is non-strict and one strict, so the missing oracle is likely comparing lengths — asserting the non-strict result is longer than 6 characters versus the strict result being truncated to at most 6.
+
+I'm trying to trace through the NYSIIS transformation letter by letter, but I hit uncertainty around how X gets mapped and lack confidence in the full algorithm. Given that uncertainty, I decide to anchor on the cases I'm most sure about, like the explicit "kSCH" → "C" example from the comments, rather than fully deriving the harder one.
+
+For test05, the pattern shows an exception being caught for passing a non-String argument to encode, with the expected message "Parameter supplied to Nysiis encode is not of type java.lang.String" — I'm considering whether a verifyException call referencing the Nysiis class should be added inside the catch block to assert on that message.
+
+For test00, since the comment indicates non-strict mode returns the full encoding without truncation, I'm leaning toward asserting the encoded string's length exceeds 6 rather than just checking it's non-null.
+
+I'm tracing the NYSIIS algorithm by hand on the stripped letters ZNDKXDHCE — checking prefix rules (MAC, KN, K, PH, PF, SCH) which don't apply here, then suffix rules (EE→Y, IE→Y, DT/RT/RD/NT/ND→D) which also don't match since it ends in a single E, so no suffix transform applies either.
+
+Now I'm working through each remaining letter after the initial Z: K maps to C, X is uncertain (possibly stays or maps to S), H sits between two consonants (D and C) so it likely gets dropped per the NYSIIS rule about H only converting when adjacent to vowels, and the final E may map to A depending on the trailing vowel rule.
+
+Rather than keep guessing the exact commons-codec behavior for X and H, I'm pivoting to focus on assertions I'm confident about: test10 explicitly asserts the encoded result equals "C", and test02/test03 check that the default constructor produces a strict encoder whose strict flag persists. I'm now reviewing test04, which calls nysiis on a null string but doesn't seem to store the result, so I need to re-check what it's actually asserting.
+
+I'll assume Nysiis does have an `isStrict()` method and proceed with that. For test04 with a null input, the oracle likely also checks `assertTrue(nysiis0.isStrict())` since the description emphasizes null is handled gracefully without altering the strict setting.
+
+Now I'm looking at test00 and test01, which actually capture return values from `nysiis()` calls in non-strict mode - the oracle here probably compares encoded length or checks that truncation to 6 characters doesn't happen.
+
+For strict mode in test01, I'd add an assertion checking `encoded.length() <= 6` since that matches the description that strict mode truncates results. For test00's non-strict case, I'm less certain whether the encoded length exceeds 6 characters, so I'm trying to estimate how the input string would transform under NYSIIS encoding rules.
+
+Since I'm not confident about the exact output, I'll abstain from asserting a specific value for test00, but I'll add the length-bound assertion for test01, use `assertEquals("C", encoded)` for test10 since the comment states that explicitly, and check `isStrict()` for test02 through test04. For the remaining tests where I can't confidently compute the encoded values, I'll leave them without specific assertions.
+
+For test05, I'm weighing whether the catch block needs a `verifyException` call alongside the existing fail/catch structure that already documents the expected exception message, but I'm not certain that's necessary given the comment already captures the expectation.
+
+I decide it's standard EvoSuite practice to add `verifyException("org.apache.commons.codec.language.Nysiis", e)` to confirm the exception's origin class.
+
+Now I'm turning to test06, where the encoded result of a class-name-like string is stored as an Object, and I need to figure out what the actual NYSIIS encoding output would be for that input.
+
+Tracing through the NYSIIS algorithm rules manually, I'm working through the prefix and suffix transformation cases to determine the correct 6-character output for this specific string.
+
+Since this case is too complex to trace confidently, I'll abstain on it too. So my final plan: abstain on test00 and test06, assert strict mode length ≤6 for test01, assert isStrict() true for test02-04, and check the exception class name for test05.
+
+For test07 through test13, most involve complex inputs I can't confidently trace, so I'll abstain -- except test10, where the comment explicitly states the result is "C", so I'll assert that directly. I also double-check test01: since the input has letters, `encoded` won't be null, so calling length() on it is safe.
+
+For test02, the encode call's result isn't stored, so the actual oracle must just be checking `isStrict()` rather than the encoded value itself.
+
+Comparing test00 (non-strict, full length) against test01 (strict, truncated to 6), I'm reasoning the non-strict result must exceed 6 characters for the truncation to matter—otherwise both tests would behave identically. That suggests test00's assertion should check the length is greater than 6, while test01 checks it's at most 6. I want to verify this by working through what the actual NYSIIS transformation produces for the given input letters.
+
+I'm actually not fully confident about this test00 assertion since I can't verify the exact NYSIIS transformation without running the code, so I'm inclined to be conservative and abstain rather than risk a bad oracle. Test01 mentions strict mode truncating results to a fixed length, which I should look at more carefully before deciding whether to assert on it too.
+
+The length assertion should be safe since the input has letters and won't return null, and I've confirmed the class has a lowercase `nysiis(String)` method being called in the test. I'll proceed with making the edits now.
+

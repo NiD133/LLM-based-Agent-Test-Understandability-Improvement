@@ -1,0 +1,71 @@
+Let me start by reading both files to understand the test and the class under test.
+
+Now I understand the structure. Let me analyze each test and determine what oracles to add:
+
+**test00**: `tagSet0.equals(object0)` — comparing TagSet with a plain Object. Since `Object` is not a `TagSet`, this should return `false`.
+
+**test01**: `tagSet0.equals(tagSet0)` — comparing TagSet with itself. The `equals` method checks `if (!(o instanceof TagSet)) return false;` then `Objects.equals(tags, tagSet.tags)`. Since it's the same object, `tags` would equal itself, so it should return `true`.
+**test02**: For `onNewTag`, since it returns `this`, the resulting TagSet should be the same instance, so I'd check `assertSame(tagSet0, tagSet1)`. **test03-05**: These involve `valueOf` calls creating tags, including one with `preserveTagCase=true`, but there's no clear oracle beyond checking the results aren't null.
+
+**test06-09**: Several tests involve `add` and constructor calls that create new TagSets from templates, but without capturing more return info, `assertNotNull` seems like the only reasonable assertion. **test10**: For an empty TagSet's `hashCode()`, since the underlying map is an empty HashMap, I'm working out what `Objects.hashCode` would return for that empty structure.
+
+**test11**: `initHtmlDefault()` returning a TagSet, likely just needs `assertNotNull`.
+
+Going test by test: **test00** compares a TagSet against a non-TagSet object, so equals should return false. **test01** compares the same TagSet instance to itself, so equals should return true since the underlying tags reference is identical. **test02** calls `onNewTag` with a consumer argument, and I'm working through what that returns.
+
+**test03** creates two different tags via `valueOf` with different names. Since both are new entries not already in the set, they should be distinct instances, so I'm considering asserting they're not the same object.
+
+For **test04** I'm looking at a similar setup, creating another tag with a different name.
+
+For **test05**, `Tag.valueOf("kbd")` is a static factory call, so the oracle is likely just `assertNotNull(tag0)`.
+
+For **test06**, I'm examining a case involving `onNewTag` with a consumer and calling `Tag.valueOf` again on a different tag name.
+
+The `add` call's result isn't captured, so no oracle applies directly there — the test seems to be checking a consumer-based side effect rather than a return value, but that's hard to verify from just this code path. I'm working through what observable state would actually be worth asserting: likely something tied to equality checks or object construction rather than the uncaptured `add` return.
+
+I'm continuing to work through each test case's oracle by reasoning about hashCode and equals behavior on empty maps, then going back to re-derive them one by one—test00 checks inequality, test01 checks reflexive equality, test02 checks that onNewTag returns the same set instance, and test03 involves comparing two distinct tags.
+
+For test04 through test09, I'm mostly settling on assertNotSame or assertNotNull assertions, except test06 where I suspect the oracle verifies that a mock consumer was called with the tag during the add operation.
+
+For test10, the empty tagSet should yield a hashcode of 0 since the underlying HashMap is empty. Test11 might not need any oracle at all since the result isn't captured — it may just verify no exception is thrown when initializing the default HTML tag set. I'm now looking more closely at how test06 sets up the mock consumer and tag set to figure out what verification makes sense there.
+
+Registering `tag0` with `tagSet1` should trigger `consumer0`, so the oracle is likely `verify(consumer0).accept(tag0)`.
+
+But I realize `onNewTag` returns `this`, meaning `tagSet1` is actually the same instance as `tagSet0`, which is the shared static `TagSet.HtmlTagSet` field — so this test may be mutating global state rather than a fresh instance.
+
+With that in mind, once `tagSet1.add(tag0)` runs, the registered consumer0 should fire since `add` triggers `doAdd`, which calls all customizers — including consumer0 — on tag0, regardless of whether "mtext" was already a known tag. So the oracle for test06 is `verify(consumer0).accept(tag0)`.
+
+For test03, since tag0 and tag1 are different Tag objects with distinct tagNames but the same namespace, I'm unsure of Tag's equals implementation, so I'll go with the safer assertion `assertNotNull` rather than guessing equality behavior.
+
+For test10, checking the empty TagSet hashCode: since `tags` is initialized as `new HashMap<>()` rather than null, calling hashCode on it returns 0 because an empty HashMap sums to zero across its entries. So the oracle should be `assertEquals(0, tagSet0.hashCode())`.
+
+Now going through the remaining tests: test00 should assert false, test01 should assert true, and test02 should assert that tagSet0 and tagSet1 are the same object. For test03 and test04, I'm leaning toward using `assertNotNull` on the tag objects since I'm not fully confident about Tag's equals behavior, so I'll stay conservative there rather than asserting inequality directly.
+
+For test05 through test09, I'm sticking with `assertNotNull` checks on the relevant objects, and for test06 specifically I'm adding a `verify` call confirming the consumer's accept method was invoked on tag0. For test10, I'm reconsidering the hashCode case — since the TagSet is constructed fresh and hashCode() is called but its result is never captured or asserted, there's likely no meaningful assertion to add there at all.
+
+Actually, I could just add a direct assertion wrapping the call, like `assertEquals(0, tagSet0.hashCode())`, since that's likely how the original oracle looked. For test11, calling `TagSet.initHtmlDefault()` again inside an assertion would duplicate the call, so I'm reconsidering whether these tests originally had captured variables at all — the removal may have only stripped oracles, not variable assignments, meaning the current structure without stored results could be the original form.
+
+I realize I don't need to alter the existing call site, just append the appropriate assertion after each captured result. Going test by test now: for test00 I add assertFalse on the boolean result, for test01 assertTrue, and I'm working through test02's tag set comparison next.
+
+Continuing through the remaining tests, I'm assigning assertNotNull checks after tag creation calls (test03-05), a verify() call confirming the consumer was invoked with the added tag (test06), and assertNotNull for the new TagSet instances (test07-09).
+
+For test10, I'm reasoning through what hashCode() should return for an empty TagSet—since it wraps an empty HashMap and hashCode of an empty map is 0, I'll assert that value. For test11, since initHtmlDefault() isn't captured in a variable, I'll just assert it returns non-null directly in the call.
+
+Since `tagSet0.onNewTag(consumer0)` registered the consumer, calling `tagSet1.add(tag0)` should trigger `consumer0.accept(tag0)` exactly once, assuming `tagSet1` shares the same customizer list as `tagSet0`. So `verify(consumer0).accept(tag0)` looks correct, though I'd want to confirm the relationship between `tagSet0` and `tagSet1` to be sure the customizer registration carries over.
+
+For test03 and test04, I'm thinking about meaningful assertions - since tag0 and tag1 are distinct tags created with different names but the same namespace, checking that both are non-null and that they're not equal to each other seems like the right approach.
+
+For test04, tag1 is created with preserveTagCase=true this time, so its name stays "J" rather than being lowercased, unlike test03's version.
+
+I'm considering EvoSuite's typical assertion patterns - boolean results get assertTrue/assertFalse, Strings get assertEquals, objects get assertNotNull or assertSame. For these tag creation tests, I'll settle on assertNotNull for each since that matches how EvoSuite typically verifies non-null object creation. Now I want to check what test09 looks like, starting with a fresh TagSet and Tag setup.
+
+For the tag0 and tagSet1 oracles, assertNotNull seems right for both since they're freshly constructed objects. Time to finalize these edits methodically across all the test methods.
+
+Continuing through the remaining tests, I'm planning similar assertions: test02 gets a same-instance check for the returned TagSet, tests 03-05 get not-null checks for the created tags, and test06 gets a check after adding a tag to the set.
+
+For tests 07-09, I'm verifying that new TagSet instances constructed from an existing one are not null. Test10 checks the hash code of an empty tag set, and test11 needs no captured result at all since there's nothing to assert on.
+
+For test11, since `TagSet.initHtmlDefault()`'s result isn't captured in a variable, there's no value to assert against, so I'll leave that test without adding an oracle.
+
+Now I'm ready to write the edits to the test file.
+

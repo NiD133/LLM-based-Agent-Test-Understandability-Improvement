@@ -1,0 +1,51 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Let me analyze each test to determine what oracles are needed:
+
+1. **test00_smoothThrowsWhenXAndYArrayLengthsDiffer** - already has `fail()` and catch, the test is complete. No additional oracle needed.
+
+2. **test01_smoothWithWeightsReturnsExpectedValues** - calls `smooth(xValues, yValues, xValues)` and stores result in `smoothed`. Need to check the result. We need to verify the returned array has length 4. The test name says "returns expected values" but we can't easily know what the expected values are. At minimum we can check the length.
+3. **test02_smoothWithWeightsReturnsArrayOfInputLength** - here I'm looking at `smooth(xValues, xValues, weights)` where xValues has 4 elements, so the x and y arrays match in length, but the weights array has 7 elements instead. The code doesn't appear to validate the weights array length directly, so I need to trace through how weights is indexed within the smoothing window to see whether this actually throws or just completes normally.
+
+I'm checking whether the finite-check and nonzero-lookup on the weights array could cause issues, but since indexing stays bounded by xval's length (4), the extra weight entries shouldn't matter. So test02 likely succeeds, and I should verify smoothed.length equals 4 as the test name implies.
+
+For test03, it calls smooth with the same xValues for both inputs, so it should succeed too, though we mainly need to confirm the returned length is correct.
+
+For test04, with a two-point array, the smooth method's n==2 case just returns the input y-values directly, so I can assert exact values of 0.0 and 2.0. Tests 05 and 06 already have their fail()/catch blocks in place and are complete.
+
+Tests 07 through 12 all follow the same pattern — constructing invalid inputs and checking that exceptions are thrown via fail()/catch blocks — and they're all already complete. Test 12 is checking that the default bandwidth constant equals 0.3, and I need to look at how it constructs the Loess object to verify this.
+
+Now I'm going back through the tests lacking oracles, starting with test01, examining its specific x-values, y-values, weights, bandwidth, and robustness parameters to determine what the expected output should be.
+
+Rather than computing exact numeric results through the algorithm, I think it's more reasonable to check basic properties like array length for most tests, since determining precise expected values would require executing the code. For test04 though, since n==2 triggers a simple pass-through case, I can verify the exact output values of 0.0 and 2.0 directly.
+
+For the bandwidth constant test, since the constructor is trivial, the real assertion should be checking that `DEFAULT_BANDWIDTH` equals 0.3. For test01 with its more complex weighted smoothing, I'll settle for asserting the result isn't null and has length 4, since the exact smoothed values are too complex to verify by hand.
+
+I'm noticing test01's weights include a zero value at index 0, which the tricube-weighted sum formula would effectively zero out for that point's contribution, potentially causing edge cases if the total weight sums to zero.
+
+Checking the bandwidth calculation for accuracy -1094.0 with 4 points, I'm tracing through how the edge point gets selected by comparing distances from the interpolation point to the left and right window boundaries.
+
+Computing the remaining tricube weights for k=2 and k=3, this is getting tedious to trace by hand, so I'll just verify the output length instead. Moving on to check the test02 case with a different set of x-values.
+
+For test02, I notice the weights array passed in is all zeros—every index from 0 to 6 is 0.0, which means every weighted term in the sum vanishes regardless of the tricube distance calculation, so sumWeights, sumX, and everything downstream become zero too.
+
+That means meanX, meanY, beta, and alpha all resolve to NaN through division by zero, propagating into res[i] as NaN—not a runtime exception, just NaN outputs. I'm now tracing nextNonzero with an all-zero weights array to see how the algorithm handles finding the next valid neighbor when nothing is nonzero.
+
+Since the bandwidth interval never updates and weights stay zero, sumWeights ends up 0, and the smoothed results end up NaN. I'll just verify the output isn't null and has the expected length rather than trying to predict exact NaN behavior.
+
+For the length-focused tests (test02, test03), the oracle just needs `assertEquals(4, smoothed.length)` since both cases involve 4 data points. For test04 with n=2, the two-point shortcut returns the raw x-values, so smoothed should equal `{0.0, 2.0}` with length 2.
+
+For test12, I need to verify the DEFAULT_BANDWIDTH constant equals 0.3 directly.
+
+Now I'm mapping out where each assertion should be inserted into the existing test bodies, since most of them currently end right after the `smooth()` call with no verification.
+
+Adding the assertion for the default bandwidth constant, then tracing through test01's weight array where the first weight is zero -- checking whether that edge case still produces a valid four-element result rather than triggering a NaN somewhere in the interval computation.
+
+The last term at k=3 contributes zero since tricube(1)=0, so the weighted sums stay finite for test01 - that case looks like it produces a valid, non-NaN result. But for test02, all weights come out to zero, meaning sumWeights=0, which is the case that would actually trigger a division problem.
+
+Still, the returned array preserves its length regardless of NaN values, so the length assertion should pass either way. Now I'm tracing through test01's accuracy check more carefully - since accuracy is negative and the sqrt expression is always non-negative, that condition never triggers, meaning beta gets computed the standard way every time.
+
+Checking the median residual break condition similarly never fires with a negative accuracy, so all robustness iterations execute fully. With bandwidth=1.0 and n=4, bandwidthInPoints computes to 4, so I need to trace whether smooth() actually succeeds and returns a valid length-4 array given these inputs.
+
+Since bandwidthInPoints stays at least 2, no exception is thrown, and the computation proceeds normally since not all weights are zero simultaneously — the result should be a valid array of length 4, so asserting that length is correct. I'll now make the edits.
+

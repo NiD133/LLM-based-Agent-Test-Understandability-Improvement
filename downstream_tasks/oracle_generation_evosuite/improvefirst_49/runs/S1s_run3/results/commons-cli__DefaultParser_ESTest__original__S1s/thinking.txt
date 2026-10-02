@@ -1,0 +1,258 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Now I need to analyze each test to determine if any oracle (assertion) is needed and what it should be.
+
+Looking at the tests:
+
+- **test00**: Calls `defaultParser0.parse(options1, stringArray0, properties0, true)` and the result is not stored in a variable. There's no `commandLine0` variable to assert on. However, the test should verify that parsing succeeds without throwing an exception (no explicit assertion needed beyond it not throwing).
+
+- **test01**: `CommandLine commandLine0 = defaultParser0.parse(options0, stringArray0, true)` - result is stored but no assertion. An oracle could verify `commandLine0` is not null, or that `commandLine0.hasOption("s")` is true.
+- **test02**: Result is stored, and option "s" was parsed with value "s", so I could assert on that.
+- **test03**: Option "s" has value "-o=9RUmk9vb/'-u". With `stripLeadingAndTrailingQuotes = true`, I need to check whether quote stripping applies here, but since the value doesn't start and end with matching double quotes, no stripping should occur — let me reconsider this case more carefully.
+
+Going through the tests systematically to find which ones need assertions: test00 doesn't capture a return value, so it just needs to verify no exception is thrown, no oracle required. test01 sets `commandLine0` but never uses it, so I should add assertions confirming it's not null and that option "s" was recognized. Test02 involves option "s" requiring an argument, with "-s" followed by "s", and I need to think through how the strip-quotes boolean affects the result.
+
+9RUmk9vb/'-u", commandLine0.getOptionValue("s"))`
+
+For test04 (lines 81-92): option "d" has long opt "d" and requires an argument, but the input token `-=R};SP'-` has an `=` at position 1, so the parsed opt becomes "=" instead of "d". Since no option matches "=", it falls through to `handleUnknownToken`, and with the stop-at-non-option behavior, it treats it as an argument and halts parsing rather than satisfying the required "d" option.
+
+I'm rechecking whether "d" was actually marked required, since the 4-argument `addOption` overload used here doesn't set that flag by default.
+
+So parsing should succeed without a required-option exception, and with `stopAtNonOption=true` the unrecognized token gets added as a plain arg while parsing halts — meaning `commandLine0` should be non-null but not have option "d" set.
+
+Now I'm looking at test05, which uses an "IGNORE" option requiring an argument, no leading/trailing quote stripping, and default `stopAtNonOption=false`, tracing through how the input token gets handled under those settings.
+
+Tracing through `handleShortAndLongOption` more carefully: stripping the leading hyphen from "-=4{};J}P'" gives "=4{};J}P'", and finding the equals sign at position 0 means the option name before it is an empty string, which changes how this gets processed compared to what I assumed.
+
+Since the empty opt string isn't length 1 and isn't a valid Java property, this falls through to `handleLongOptionWithEqual`, where I re-parse the original token and find the equals sign at position 1, splitting it into a value of "4{};J}P'" and an option name that I still need to extract.
+
+Without fully tracing `getMatchingLongOptions`, I'm not certain what the exact parsed result should be, but since there's no exception expected in the test, I'll just verify the command line object isn't null rather than asserting specific parsed values.
+
+With opt empty and value being the rest of the string, isJavaProperty("") likely resolves to false since the lookup on an empty option returns null, so it falls through to handleLongOptionWithEqual, where I trace pos and value again for the hyphenated token.
+
+Now I'm checking getMatchingLongOptions("-") — since none of the defined long options (like "IGNORE") match a bare "-", matchingOpts comes back empty, which routes to handleUnknownToken for the full token "-=4{};J}P'", and I'm verifying that path treats it as starting with "-" with length greater than 1.
+
+With nonOptionAction set to THROW (since the test calls the three-arg parse which resolves stopAtNonOption=false), this should throw UnrecognizedOptionException — but that contradicts the test not expecting an exception, so I need to double-check which parse overload is actually invoked and re-examine how the option "IGNORE" was added to options0.
+
+I'm now digging into whether Commons CLI actually allows a multi-character string like "IGNORE" as a short option, and tracing through handleShortAndLongOption to see how the token gets matched against it.
+
+Since EvoSuite generated this test, it must have executed without throwing, so I'm trying to trace why. With `properties0` empty, `handleProperties` likely does nothing and parsing continues normally, so I'm tracing through `handleShortAndLongOption`: after stripping hyphens the token becomes `=4{};J}P'`, and the equals sign sits right at position 0.
+
+Since `opt` ends up empty, `isJavaProperty` returns false, so control falls to `handleLongOptionWithEqual`, and now I'm working out what `pos` and `value` become for the full original token there.
+
+I trace through `getMatchingLongOptions("-")` and see nothing matches, so `matchingOpts` is empty, which routes into `handleUnknownToken`. Since the token starts with `-`, has length greater than 1, and the non-option action is THROW, this ultimately throws an `UnrecognizedOptionException`.
+
+But that's odd given the test doesn't appear to catch or expect that exception. I'm double-checking that the parse call chain really resolves to `NonOptionAction.THROW` rather than STOP, tracing through the overloaded `parse` methods with the `false` argument, and confirming it does indeed become THROW — so something else must explain why the generated test doesn't fail here.
+
+Let me check the `handleUnknownToken` logic to see if the token actually satisfies the condition that triggers throwing, since it depends on the token starting with the option prefix and the action being THROW.
+
+The token `-=4{};J}P'` starts with `-`, has length greater than 1, and the parse method here defaults `stopAtNonOption` to false which maps to `NonOptionAction.THROW` — so this should throw an exception, yet the test has no try/catch, which means my reasoning must be missing something, perhaps about how leading hyphens get stripped from the token before this check happens.
+
+So that branch matches, routing into handleShortAndLongOption. Tracing through it, stripping the hyphens gives "=4{};J}P'" with the equals sign right at position 0, so opt ends up empty and value becomes "4{};J}P'" — I'm checking what happens when opt has zero length rather than one character.
+
+Since the single-character checks fail, this falls into handleLongOptionWithEqual instead, where opt becomes just "-" and it tries to find matching long options for that stripped-down prefix — I'm now tracing how getMatchingOptions handles a bare hyphen against the registered "IGNORE" long option.
+
+That means the option "IGNORE" ends up set with the value from the quoted string, since stripping quotes is off. This matches the expected outcome of no exception, with the command line having "IGNORE" set to that value—so I want to confirm this by checking how `Options.getMatchingOptions` actually behaves rather than assuming.
+
+Since I can't fully verify that behavior, I'll settle on adding a safe oracle like asserting the command line isn't null, and add more specific assertions where I'm confident. Going test by test: for test01, I'll check the command line isn't null and that it has option "s"; for test02, I'll check the same plus that the option value matches "s" since quote stripping is off there too.
+
+For test03, I'm tracing through whether the value `-o=9RUmk9vb/'-u` has balanced quotes to strip -- since it doesn't start and end with matching quote characters, no stripping happens, so I'll assert the raw value stays intact.
+
+Moving to test04, I'm checking the "d" option with the input `-=R};SP'-` and quote stripping enabled to determine the expected behavior.
+
+For test05 and test06, I just need `assertNotNull(commandLine0)` after parsing, including the null-args case.
+
+For test07, the "s" option requires an arg, and I'm tracing through whether `-=9Udvb/'--` gets treated as an option token or as the argument value based on the isArgument/isOption/isNegativeNumber logic.
+
+Since option "s" has no long option defined, getMatchingLongOptions returns empty and getLongPrefix finds nothing, so isLongOption returns false and the token is classified as an argument rather than an option—meaning it becomes the value for option "s".
+
+I'm checking that the command line correctly captures "s" with that literal value, with no quote stripping since it doesn't start or end with double quotes. Moving to test10: option "s" requires an argument, and here it's followed by a bare hyphen "-", which handleToken treats specially—since the token equals "-" exactly, it's not processed as an option and instead falls through to handleUnknownToken.
+
+I'm tracing through the logic: since the token length is only 1, it doesn't hit the "unrecognized option" error path; instead it checks whether it should be treated as an argument, verifying isOption("-") returns false so isArgument("-") evaluates true, meaning the hyphen gets added as the value for "s".
+
+So the oracle expects a valid CommandLine where "s" has value "-". Moving on to test11, I'm looking at how nonOptionAction being set to IGNORE affects handling of the token "-T" -- since it's not THROW, no exception is thrown despite the token starting with "-" and having length greater than 1.
+
+Since the condition combining length check and non-IGNORE action evaluates false, addArg isn't invoked and skipParsing remains false; since this is a void method, there's nothing to assert beyond confirming no exception occurs. For test12, parsing just "-" with stopAtNonOption true treats it as an unknown token that triggers STOP, setting skipParsing to true and adding it as an argument.
+
+Moving to test13: parsing "--" with stopAtNonOption false matches the default long option prefix, so skipParsing becomes true with no options matched, and the oracle just checks the command line isn't null. For test14, I'm examining a string array with nulls interspersed with "d" tokens, where null tokens get skipped by handleToken and "d" as an unknown token triggers STOP behavior on the first occurrence.
+
+Then in test16, I'm tracing through handleShortAndLongOption for the token "-c=wt9", finding the equals sign at position 1 within "c=wt9" and checking whether the prefix before it is a valid single-character option.
+
+Since opt="c" has length 1, it looks up the required option "c", confirms it accepts an argument, and processes "wt9" as its value. The oracle confirms option "c" is set with value "wt9".
+
+Moving to test17 (lines 244-251), I see it defines no options and tests the same input `-c=wt9` with stopAtNonOption=true.
+
+Now tracing `handleShortAndLongOption` for `-c=wt9`: opt="c", value="wt9", but this time `options.getOption("c")` returns null since no option was defined, so it falls through to `handleUnknownToken`. Since nonOptionAction is STOP rather than THROW, no exception is thrown here.
+
+Working through the second condition: the token doesn't start with `-`, but the third clause (length > 1 and nonOptionAction != IGNORE) evaluates true, so the token gets added as an arg and skipParsing is set true since nonOptionAction is STOP. The oracle expects a non-null command line where hasOption("c") is false.
+
+Now I'm setting up test20: a required option "s4" with long opt "s4" taking no argument, testing against "--s" at index 2 with stopAtNonOption false, tracing into handleLongOption for "--s".
+
+Since there's no equal sign, it goes into handleLongOptionWithoutEqual, stripping "--s" down to "s" and finding partial matches — "s" matches "s4" via prefix matching, giving a single match so "s4" gets selected as the option. The oracle expects a non-null command line with hasOption("s4") true.
+
+Moving to test22: setting up an option "js4" with an empty-string long opt that requires an argument, testing token "-=};SP'" at index 23 with stopAtNonOption true.
+
+Tracing through handleShortAndLongOption, I strip leading hyphens to get "=};SP'", find the equals sign at position 0, then work out opt as empty string and value as "};SP'" — since opt length isn't 1 and it's not a valid Java property, it falls into handleLongOptionWithEqual, recomputing the equals position and extracting value and opt substrings from the original token.
+
+I'm uncertain whether getMatchingOptions("-") would match an option with an empty long opt string, so I'd rather not spend more time reasoning about Options internals and instead default to simple assertNotNull oracles for tests where the exact match behavior is unclear. I'm now scanning through the tests to identify which ones declare a CommandLine but never actually assert against it — noting test01, test02, test03, test04, test05, test06, test07, test10, test12, test13, and test14 so far as candidates.
+
+For tests 16, 17, 20, 22, 25, 26, 28, 29, 30, and 36, the same pattern holds — CommandLine created but never checked, so assertNotNull is the safe fallback. Test11 calls handleUnknownToken which is void, so no return-value oracle is possible there, and test33 returns a builder from setDeprecatedHandler that I could either assert is the same builder instance or just wrap in assertNotNull. My plan is to use assertNotNull broadly wherever I'm confident the object was created without exception, and reserve specific value assertions for cases I'm more sure about — which means I need to check the Util class next to understand how stripLeadingAndTrailingQuotes behaves.
+
+
+
+Now I understand `stripLeadingAndTrailingQuotes` only strips balanced double quotes (not single quotes), and `stripLeadingHyphens` strips at most `--` prefix or `-` prefix (not multiple hyphens).
+
+Let me now plan the oracles for each test:
+
+**test01** (lines 40-51): Option "s" in an option group, `-s` is provided.
+- `assertNotNull(commandLine0)`
+- `assertTrue(commandLine0.hasOption("s"))`
+
+**test02** (lines 53-65): Option "s" requires arg, `-s s`. stripLeadingAndTrailingQuotes=false.
+Since the value "s" has no quotes, stripping has no effect and the option value should just come through as "s" -- so the option is present and its value equals "s".
+
+**test03** (lines 67...) moves on to another option scenario I need to trace through next.
+
+Since no long option matches, it's treated as an argument value rather than an option, and quote-stripping doesn't apply since the quotes aren't balanced. So the parsed command line should have option "s" set, with the argument value remaining unchanged.
+
+Moving to test04, I'm tracing how option "d" (requiring an argument) handles the token "-=R};SP'-". After stripping leading hyphens, it finds an equals sign at position 0, meaning the option name is empty and everything after the equals becomes the value.
+
+Since the extracted option name is empty rather than a single character, the logic falls through to check for a long option with equals sign instead: stripping the leading hyphen again gives an empty string for matching, and since all long options technically "start with" an empty prefix under partial matching, this matches option "d" as the sole candidate.
+
+So the option gets set to "d" with the value "R};SP'-", confirming that `commandLine0.hasOption("d")` is true and its value equals `"R};SP'-"`.
+
+Then for test05, I trace through a similar case with an "IGNORE" long option requiring an argument: matching against "-" input, the prefix matches to "IGNORE", and the value ends up being "4{};J}P'" after quote-stripping logic is applied.
+
+I'm now double-checking whether "IGNORE" can actually function as a short opt name, since it's multi-character — I want to verify how Option.getKey() handles this before trusting the assertion.
+
+Given the complexity, I'll take a pragmatic approach: add `assertNotNull(commandLine0)` as a safe oracle wherever commandLine0 lacks assertions, and only add more specific assertions where I'm confident, covering test01-test06, test10, test12-test14, test16-test17, test20, test22, test25-test26, test28-test30, test33, and test36.
+
+Working through each test case now, deciding whether to add just a null check or also assert specific option presence based on my confidence in the CLI parsing behavior.
+
+For test16 I'm confident `-c=wt9` matches option "c", and for test20 I'm checking whether `--s` partial-matches against option "s4" through the long option matching logic.
+
+I should look at how `Options.getMatchingOptions` strips leading hyphens before matching.
+
+
+
+Now I understand `getMatchingOptions`:
+1. It strips leading hyphens from `opt` to get `clean`.
+2. If `longOpts` has key `clean`, return it as a single match.
+3. Otherwise, return all long opts that start with `clean`.
+
+So for `getMatchingLongOptions("-")`:
+- `clean = Util.stripLeadingHyphens("-") = ""` (empty string - "-" starts with "-" but not "--", so returns "".substring(1) = "" - wait no. `stripLeadingHyphens`: if starts with "--", return str.substring(2). 
+
+If it starts with "-", return str.substring(1), so "-" strips down to an empty string. Since no option is likely to have an empty long opt, checking whether it starts with an empty string returns true for every long opt, meaning all long opts would match — this matches what I concluded earlier.
+
+Working through test04 and test05: for "d" with long opt "d", clean="" gives all long opts, but only "d" exists so matchingOpts has one entry, no ambiguity, and since hasLongOption("-") is false, the key resolves to "d" with value "R};SP'-". Similarly for test05, "IGNORE" resolves cleanly to itself with value "4{};J}P'".
+
+Now for test20 with "--s": stripping the leading hyphens gives "s", and since no long option is exactly "s", I check the loop for options starting with "s" — "s4" matches, giving matchingOpts = ["s4"], a single unambiguous match, and I'm checking whether "--s" itself is a registered long option.
+
+For test22, I'm tracing an option "js4" registered with an empty-string long option, and checking how the matching logic handles a query of just "-" against that empty key — since stripping hyphens leaves an empty string, it matches directly, producing a single-element result of [""], and I need to verify whether "-" itself is treated as a registered long option.
+
+I'm now checking whether `commandLine0.hasOption("js4")` would actually pass, which depends on whether Option's constructor treats an empty string long opt as null or as a real long option key.
+
+
+
+I need to see the `hasLongOpt()` method in Option to understand when an option has a long opt. Let me look for `hasLongOpt` and `getLongOpt`.
+
+So `hasLongOpt()` returns true if longOption is not null. For `options0.addOption("js4", "", true, "-=};SP'")`, `longOption = ""` which is not null, so `hasLongOpt()` is true. And `longOpts.put("", option)` would be called.
+
+Now let me also check `OptionValidator.validate` to understand if "js4" or "IGNORE" are valid short option names.
+
+Actually for EvoSuite tests, I'll just trust that the tests compile and run. The key question is whether I can add meaningful assertions.
+I should also check how `CommandLine.hasOption` behaves.
+
+
+
+Now I have enough information. Let me plan the oracles for each test:
+
+**test01** (lines 40-51):
+- Option "s" in an option group, `-s` provided at [0]. stopAtNonOption=true.
+- `-s` is processed → option "s" is selected.
+- `assertNotNull(commandLine0)` + `assertTrue(commandLine0.hasOption("s"))`
+
+**test02** (lines 53-65):
+- Option "s" requires arg. `-s` at [0], `s` at [1]. stripLeadingAndTrailingQuotes=false.
+- Expect hasOption("s") true and the value equal to "s".
+
+**test03** (lines 67-79):
+- Option "s" requires arg, with stripLeadingAndTrailingQuotes=true. The argument `-o=9RUmk9vb/'-u` has no double quotes to strip, so it stays unchanged.
+- Expect hasOption("s") true and the value equal to "-o=9RUmk9vb/'-u".
+
+**test04** (lines 81-92):
+- Option "d" (long opt "d") requires arg, with stripLeadingAndTrailingQuotes=true and stopAtNonOption=true, given token `-=R};SP'-`.
+- Tracing handleShortAndLongOption: leading hyphens get stripped to `=R};SP'-`, an equals sign is found at position 0, leaving an empty opt string and value "R};SP'-", then it moves into handling the long option with equals sign.
+
+Continuing the trace: the equals position resolves to 1, giving value "R};SP'-" and opt "-", so getMatchingLongOptions on an empty cleaned string matches "d" (since everything starts with ""), and since "-" isn't directly a long option key, it resolves to "d" as the matched option. The value "R};SP'-" passes through processValue unchanged since there are no balanced double quotes to strip, and the resulting commandLine confirms hasOption("d") is true with that value, matching the oracle's assertions.
+
+Now I'm moving to test05, checking whether the "IGNORE" multi-character option name would pass OptionValidator's validation, then examining how the leading `-=4{};J}P'` token parses similarly -- resolving matchingOpts to ["IGNORE"] and extracting "4{};J}P'" as the value, while I reconsider whether hasOption("IGNORE") behaves correctly for multi-char short options.
+
+For test06, parsing with null args just returns an empty CommandLine object, so I only need assertNotNull there.
+
+Moving to test07, I'm tracing how "-s" requiring an argument interacts with a following token like "-=9Udvb/'--" under stopAtNonOption=true, checking whether that token qualifies as a short option since it starts with "-" but isn't length 1.
+
+Tracing through, the equals sign at position 1 makes optName empty, so isShortOption returns false. Then checking isLongOption: no matching long options exist since there's only a short "s" option defined, so it falls through to examining the long prefix logic, stripping hyphens and scanning backward through the string.
+
+This confirms isOption returns false and isArgument returns true for this token, so it gets processed as a value for option "s" with quote-stripping applied — no double quotes present, so the raw string passes through unchanged. The oracle expects the command line to have option "s" set with this exact value. Now I'm moving to look at test10, starting around line 168.
+
+Since token equals "-" exactly, it falls through to handleUnknownToken, and since STOP mode with length 1 and the token matching "-", it gets added as an argument via addArg, then parsing stops. For the oracle here, asserting the command line isn't null is safest, though I could also check the arg list contains "-".
+
+Moving to test13, I'm parsing with "--" and checking stopAtNonOption behavior.
+
+Now continuing to test14, tracing how "d" tokens surrounded by nulls get handled—since "d" doesn't start with "-", it triggers handleUnknownToken with STOP mode, adds "d" as an argument, then sets skipParsing to true so the next "d" also gets added directly.
+
+Moving to test16, tracing an option "-c=wt9" where the parser splits on the equals sign to get opt "c" and value "wt9", finds the matching short option "c" which accepts an argument, then proceeds to process that value.
+
+For test17, with no options defined at all, parsing "-c=wt9" similarly splits into opt "c" and value "wt9", but since no matching option exists, it falls into the unknown token handling path instead.
+
+In the STOP mode, since the token starts with "-" and has length greater than 1 but the action isn't THROW, the check evaluates to true, so it just adds "-c=wt9" as a raw argument and halts further parsing. The oracle confirms commandLine0 exists but hasOption("c") returns false.
+
+Then for test20, a required option "s4" is defined with long form "s4" and no argument, and I'm tracing what happens with the partial token "--s" when stopAtNonOption is false, following it into the long option matching logic to see what candidates come back.
+
+The prefix matching finds "s4" as the sole candidate for "--s", so it resolves to that option directly, and the oracle expects hasOption("s4") to be true.
+
+Now I'm tracing test22, where option "js4" has an empty long opt name and requires an argument, and the token "-=};SP'" gets processed through the short/long option handler with stopAtNonOption true, stripping the leading hyphen and locating the equals sign at position 0 to split into an empty option name.
+
+Tracing further, the actual key comes from the Option constructor, which stores "js4" as its key rather than the empty string, so shortOpts.get("") returns null but longOpts.get("") returns the option itself, meaning it's found and its value gets processed successfully. So the "js4" option ends up registered in the command line.
+
+Moving to another test case, I'm now working through a short option "s" that requires an argument, parsing the token "s#" to find where the value begins.
+
+Since the token length doesn't match i+1, this calls processValue with "#" as the value, setting option "s" to "#" and matching the expected oracle assertions. Now I'm moving to test26, which involves option "s" with no argument, testing the string "-s-#"J" with stopAtNonOption enabled.
+
+Since "s" has no argument, currentOption stays null so it doesn't break the loop. At i=2, "-" isn't a recognized option, so it hits the unknown token handling — with stopAtNonOption true and i>1, it should pass the substring starting from i to handleUnknownToken, so I'm tracing through what token.substring(2) actually evaluates to.
+
+That gives "-#\"J", which starts with "-" and has length greater than 1, and since nonOptionAction is STOP not IGNORE, this becomes an added argument, then parsing stops. So option "s" ends up selected with no argument, matching the oracle's expectation that commandLine0 exists and hasOption("s") is true.
+
+Now I'm moving to test28, which has no options defined and stopAtNonOption set to true, tracing how handleShortAndLongOption and handleConcatenatedOptions process the "-s-#\"J" token when nothing matches.
+
+Actually the parse call's result isn't stored, and handleConcatenatedOptions is void too, so there's no return value to assert on—the test just checks no exception is thrown.
+
+Moving to test30: with a required long option "s4" and no argument, I trace through handleLongOption and handleLongOptionWithoutEqual, confirming "s4" resolves to a single match and gets selected, then I note the oracle should assert something about the resulting state.
+
+For test33, setDeprecatedHandler on the builder just assigns the field and returns `this`, so the correct oracle is asserting the returned builder is the same instance as the original one.
+
+Moving to test36: with no options defined and stopAtNonOption set to true, "-s" gets treated as an unknown token that triggers the STOP behavior, adding it as an argument rather than throwing, so the oracle should check the command line is non-null and that it doesn't report having option "s". I'm now also checking test00, which parses with an options and string array plus properties argument.
+
+For tests where parse results into a stored `commandLine0` variable but no assertions currently exist on it, that's a strong signal for where oracles are needed - I'm compiling that list across tests 01 through 36, noting which have actual assertable command line results versus void calls like `handleConcatenatedOptions` where parsing results go unused.
+
+My plan is to add conservative oracles: `assertNotNull(commandLine0)` as a baseline everywhere it makes sense, and `hasOption` checks only where I've traced the logic carefully enough to be confident. I'm now going through each test one by one to finalize these additions.
+
+Still writing test assertions...
+
+Now I'm going back to look at the test file to figure out where each of these generated assertions should actually be inserted, starting with test02's quote-stripping behavior.
+
+Checking test03: after `-s`, the value token `-o=9RUmk9vb/'-u` is treated as an argument since it doesn't start with quotes, so quote-stripping leaves it unchanged and confirms the expected value.
+
+For test07, I'm tracing through the same value-processing logic after `-s` sets currentOption.
+
+The token `-=9Udvb/'--` is also treated as an argument, and since it doesn't start with a quote, the quote-stripping function returns it unchanged, matching the expected value. Now I need to locate where in the test file to insert these oracles, adding each one right after the last statement in its corresponding test method before the closing brace, then write the edit.
+
+
+
+I need to read the current state of the file to find the right context for test30 and test36.
+
+Now I need to find test30. Let me search for it.
+
+Tests 28, 29, 30 are already done. Now I need to add test36's oracle.

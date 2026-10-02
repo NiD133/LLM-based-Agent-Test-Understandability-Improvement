@@ -1,0 +1,151 @@
+Let me start by reading both the test file and the class under test to understand what oracles need to be added.
+
+Now let me analyze each test to determine what oracles need to be added:
+
+**test00**: Creates a StringTokenizer with a char array and mocked StringMatcher, then calls `toString()`. The result is stored in `string0` but no assertion. Since no tokens have been produced yet (the mocked matcher returns 0), `toString()` should return "StringTokenizer[not tokenized yet]". Wait, let me look at the mock setup - there's no `doReturn` for `isMatch`. Actually in test00 there's no doReturn for isMatch, so isMatch might return a default value (0 for int). 
+
+The toString() would depend on whether tokens is null since we haven't triggered tokenization yet, so it returns "StringTokenizer[not tokenized yet]".
+
+**test01**: Creates a StringTokenizer, calls `previousToken()` which returns null since there's no previous token, then calls `toString()`. Calling `previousToken()` triggers `hasPrevious()` which forces tokenization, so I need to figure out what tokens result from tokenizing a single null char with the mock matcher returning 0 for isMatch.
+
+Since isMatch is mocked to return 0, the delimiter never matches, and the char '\0' isn't treated as a delimiter, quote, or trimmed character, so it would be added as a regular token character rather than causing a split.
+
+For test00, since no method triggers tokenization, the tokens field stays null, so toString() should just return "StringTokenizer[not tokenized yet]" without any actual parsing occurring.
+
+For test01, calling previousToken() forces checkTokenized(), and since the delimiter matcher always returns 0 (never matches), the null character gets treated as a regular character rather than a delimiter, producing a single token containing "\0". This makes the exact resulting toString() output hard to predict confidently, so I'll abstain on asserting it precisely.
+
+For test02, since the tokenizer starts with an empty string, calling previousToken() should yield no tokens at all, so the result should be null.
+
+For test03, setTrimmerMatcher returns the same tokenizer instance (this), so the returned object should be identical to the original one.
+
+For test04, I'm now considering what happens when null is explicitly passed as the trimmer matcher.
+
+For test05 and beyond, I'm working through similar null-matcher scenarios for setIgnoredMatcher, and noting that constructing a TSV instance with null content requires no assertion since nothing is returned or checked.
+
+For the previousToken tests, before any nextToken() call the position is at zero so hasPrevious() is false and null is returned. Then for the CSV tokenizer case with a single unquoted token, calling nextToken() then previousToken() just gives back that same trimmed token since there's no whitespace to strip. An empty tokenizer's nextToken() also just returns null with nothing to verify.
+
+Now I'm working through the forEachRemaining test, where a string tokenizer splits "6j*-yw_2R-]" using the multi-character string matcher "Am]OPZN#;`mL" as the delimiter, consuming all tokens through the consumer.
+
+Since it's not trimmed and doesn't match the delimiter, the whole string stays intact as a single token, so the consumer gets called once with that exact value—so I'd expect `verify(consumer0).accept("6j*-yw_2R-]")` as the assertion here.
+
+For test15, getContent() just returns the underlying string, so I'd assert equality against "add() Ss unsup!oted". For test16, clone() should just produce a non-null object, so assertNotNull covers it. For test17, previous() after next() on a CSV-delimited string needs me to trace how the comma splits the token stream to know what value comes back.
+
+Confirming previous() returns "" for tokenPos 0.
+
+Now for test18, the delimiter string matches the whole input, splitting into two empty strings, and since ignoreEmptyTokens defaults to true, both get dropped, so size() should be 0.
+
+For test19, previousToken() before calling next() should return null since hasPrevious() is false at the start.
+
+For test23, setIgnoreEmptyTokens(false) returns the same instance via `this`, so I'll assert with assertSame.
+
+For test25, previousIndex() equals tokenPos minus 1, which is -1 for a fresh tokenizer, and for test26, nextIndex() equals tokenPos, which is 0. For test29, previousToken() again returns null since hasPrevious() is false before any next() call.
+
+For test30, getTokenArray() on an empty tokenizer returns an empty array with nothing to assert. For test33, I'm working through a TSV tokenizer on whitespace input with trimming enabled but empty tokens preserved, tracing how the space and tab characters split into tokens after trimming.
+
+Since previousToken() is called before any next(), it should return null regardless of the token structure. Test35 is similar - calling previousToken() before any next() call on a CSV tokenizer returns null since hasPrevious() is false.
+
+Revisiting test09 with the CSV instance parsing "%*dR|": since there's no comma delimiter and no ignored characters configured, and no whitespace to trim, this produces a single token "%*dR|".
+
+For test17 with a doubleQuoteMatcher and input ",OF0)2fR[p0$": the tokenizer sees a comma right at position 0, so it emits an empty string as the first token, then "OF0)2fR[p0$" as the second. After calling next() once (returning the empty string), calling previousToken() should step back and return that same empty string again.
+
+Now for test01, I'm tracing through a mock StringTokenizer where the delimiter matcher always returns 0 (no match) and toString always returns null, with a single null character as the input. Since the trim, ignore, and delimiter matchers are all essentially no-ops here, I need to work out what checkTokenized() actually produces when previousToken() triggers tokenization on this single-character input.
+
+This is getting complicated enough that I should abstain from asserting a confident output for test01. For test00, since the mock doesn't stub isMatch at all, calling toString() alone (without triggering tokenization) should just hit the initial `tokens == null` branch and return something like "StringTokenizer[not...".
+
+Now going through each test case one by one to figure out the right oracle: test00 gets that "not tokenized yet" assertion, test01 I'll abstain on since the '\0' tokenization result isn't certain, test02 needs a null check for previousToken() on an empty string, and test03/test04 need same-instance assertions since setTrimmerMatcher returns `this`.
+
+Continuing through the list: test05's setIgnoredMatcher(null) also returns `this` so it's another same-instance check, test06 has no result to assert on since it's just construction, test07/test11/test12 all check that previousToken() returns null before any next() call, test09 asserts the specific token string returned by previousToken() after a nextToken() call, test10 produces no storable result, and test13 verifies the mock consumer was invoked with the expected token.
+
+Continuing through the remaining cases: several more expect specific string or boolean outcomes from operations like add(), previous(), and size(), while others like test23, test25, and test26 check same-instance returns, index values before any iteration, and default index positions.
+
+Several tests around test30-35 involve construction alone or previousToken() calls before next() has run, expecting null returns since no prior element exists. I'm now double-checking test13's forEachRemaining behavior, tracing whether the delimiter string matcher actually finds a match at position 0 for the given input and delimiter pattern.
+
+Since the input doesn't start with the delimiter's first character, no match occurs, leaving a single token that gets passed to the consumer, which should work fine since Consumer<Object>.accept can take a String. Now I'm moving to test18, checking how default tokenizer settings handle a case where the delimiter string exactly matches the entire input.
+
+Tracing through the tokenize loop: at position 0, the entire input matches the delimiter (length 12), producing an empty token before it that gets skipped since empty tokens are ignored by default, and then the position lands exactly at the end so no trailing token is added either, so the loop terminates with no tokens produced.
+
+Now checking the CSV tokenizer case for ",OF0)2fR[p0$" where empty tokens aren't ignored - the comma at position 0 creates an empty first token that does get added, then I trace forward to parse "OF0..." as the next token.
+
+I'm compiling the resulting token list ["", "OF0)2fR[p0$"] and determining that next() returns the empty string first, so previousToken() would return that same empty string after advancing. I'm going through the test file to figure out which tests are missing assertions and need oracles added, checking test01's mock behavior where isMatch returns 0.
+
+For test09, the CSV format trims whitespace but "%*dR|" contains none, so nextToken() then previousToken() both resolve to that literal string. For test17, I've confirmed the CSV token sequence starts with an empty token, matching my earlier analysis that previous() returns "".
+
+Going through the remaining tests to check which need oracles added versus which are already complete: several results are captured but never asserted (test00, test02, test03-05, test07, test09), so I need to add appropriate assertEquals, assertNull, or assertSame calls, while test01 stays abstained due to complex mock behavior, and test06/test08/test10 already have what they need or don't require an oracle.
+
+Continuing through the remaining tests, several calls like previousToken and getTokenArray have their results discarded without being stored, so no oracle is possible there; the rest mostly need null assertions or assertEquals added where a value is captured but unchecked, while ones with try/catch blocks are already complete.
+
+Now I'm considering test13 more closely — since `forEachRemaining` invokes the mock consumer once with the extracted token, I could add a verify statement checking that the consumer's accept method was called with the expected token string, though I need to confirm the exact token value produced given the delimiter string used.
+
+Since String extends Object, passing it to the Consumer<Object> mock should work fine for verification.
+
+Now I'm going through each test case one by one, adding the appropriate assertion based on what the method call returns: assertEquals for the toString output, abstaining on the mock interaction case, assertNull for the previousToken result, and continuing through the remaining tests for setTrimmerMatcher and beyond.
+
+For test09, I'm double-checking whether the CSV tokenizer trims whitespace before settling on the expected previousToken value.
+
+Then for test11, I expect another null return, and test12 is another previousToken case I need to trace through similarly.
+
+For the remaining cases, I'm working through each test's expected assertion: forEachRemaining should trigger the consumer with the string "6j*-yw_2R-]", getContent should return "add() Ss unsup!oted", clone() should produce a non-null object, previous() should return an empty string, and size() should equal 0. I'm continuing to trace through the next test involving another string token operation.
+
+Then I'm checking previousToken() returns null, setIgnoreEmptyTokens returns the same tokenizer instance, previousIndex returns -1, nextIndex returns 0, and two more previousToken calls both return null. Now I want to revisit test18's input more carefully to make sure the size assertion is correct.
+
+For test18, the input string equals the delimiter string exactly, length 12, so the matcher matches the whole string as a delimiter right at position 0. This means an empty token would be found immediately, but since ignoreEmptyTokens is true, that empty token gets skipped, the position advances to the end of the string, and the loop terminates without any tokens being added.
+
+Now I'm confirming this leads to size()=0, matching the oracle's assertion of 0. Turning to test17, I need to check the CSV tokenizer behavior on the input ",OF0)2fR[p0$".
+
+Since the string starts with a comma and ignoreEmptyTokens is false, the first token found is an empty string added to the list, advancing past position 0. I'm now walking through the remainder of the string to find the next delimiter.
+
+The remaining text has no comma or quotes, so it becomes a single token, giving tokens ["", "OF0)2fR[p0$"]. Calling next() then previous() should return the empty string first, matching the expected assertion, and since the delimiter has nothing before it there's no trimming to worry about. I'm confident in this analysis and ready to write out all the file edits now.
+
+
+
+The test11 has `'\u0000'` not `' '`. Let me use the exact string.
+
+The issue is the `'\u0000'` character, not `' '`. Let me use the correct string from the file.
+
+I keep failing because of the `'\u0000'` char. Let me try using a more unique context around it.
+
+The problem is that the actual character in the file is `'\u0000'` but my string has `' '`. Let me re-read the file around test11 to see exactly what's there.
+
+Bash is restricted. Let me try a different approach - use a wider context that definitely includes some unique surrounding text.
+
+The issue is definitely with the character literal `'\u0000'` vs `' '`. The Read tool shows `'\u0000'` but my edit strings are using `' '`. Let me try the actual unicode escape in the old_string.
+
+Wait, the Read tool showed `'\u0000'` but the actual bytes in the file would be the literal `\u0000` characters or the escape sequence? The file is Java source, so the actual bytes are `'\u0000'` as a character escape in Java source code. So the old_string needs to have `'\u0000'` as text.
+
+Let me try with the literal \u0000 escape:
+
+The issue is with the special character `'\u0000'`. When the Read tool shows it, it's displaying the unicode escape. The actual bytes in the file might be the literal null character or the escape sequence. Let me try using a regex approach - using the Grep tool to check what's actually in the file.
+
+Good, so the file has `'\u0000'` literally in it. Let me try the Edit with the correct character.
+
+Wait, the Grep tool shows `'\u0000'` in the file. This means the file literally contains the text `\u0000` (backslash-u-0-0-0-0) as a Java unicode escape sequence. My edit strings had `' '` (a space) because the Read tool displayed `'\u0000'` but I typed `' '` in my replacement string. The issue is that I need to use the exact characters `\u0000` in my old_string.
+I need to figure out how JSON escaping interacts with this — a double backslash before u0000 would produce the literal text, whereas a single backslash would be interpreted as an actual null character, and the grep output confirms the file contains the literal backslash-u-0-0-0-0 sequence rather than a real null byte.
+
+
+
+I see the issue - I keep typing `' '` in my old_string parameter but it needs to be `'\u0000'`. Let me be very explicit this time and pass the exact unicode escape in the JSON string. In JSON, I need to represent the literal text `'\u0000'` which means I need `'\\u0000'` in JSON... but in JSON string, `\\` is a literal backslash. So in the JSON parameter value, `'\u0000'` (with actual backslash-u-0-0-0-0) needs to be `'\\u0000'`.
+
+But when I'm writing the parameter value in the function call, the tool parsing handles the JSON. Let me write the old_string to have `'\u0000'` by typing those characters: apostrophe, backslash, u, 0, 0, 0, 0, apostrophe.
+Actually, `\u0000` in JSON gets decoded to an actual null character, not the literal backslash-u sequence, so to represent the literal text I'd need `\\u0000` instead. Since I'm not hand-writing raw JSON but filling in a parameter field, I should just type the exact characters the file actually contains, which the grep confirmed is the literal six-character sequence.
+
+I realize the file actually contains the literal text `\u0000` (backslash-u-zero-zero-zero-zero), not the null byte itself. So to match it, I need to pass a double-escaped `\\u0000` in my parameter so the JSON encoding produces the literal backslash-u-0000 text.
+
+
+
+Looking at the error message, the display shows `' '` - it seems like the system is converting `\u0000` (the actual null character U+0000) to a space or just not showing it properly. The file has the literal text `'\u0000'` (8 characters: ', \, u, 0, 0, 0, 0, '). 
+
+Let me try a completely different approach - don't include the `'\u0000'` part in the old_string at all, and just match on unique surrounding content.
+
+Actually I realize what's happening. When I type `'\u0000'` in the parameter field, the system reads it as a JSON string value. 
+
+So there's a mismatch between the decoded null character my old_string contains versus the literal backslash-u-zero sequence in the file. I need to escape the backslash itself so it comes through as literal text rather than a Unicode escape, so I'll try typing it with a doubled backslash instead.
+
+I can target the end of test11 by matching up through the start of test12's declaration, then insert `assertNull(string0);` right before the closing brace—avoiding the problematic character entirely.
+
+
+
+Good, that worked. Now let me continue adding oracles for the remaining tests. But wait - test11's `assertNull(string0)` got added to the block ending before test12. That's correct since test11 ends before test12. 
+
+Now let me also check - I added `assertNull(string0)` after `String string0 = stringTokenizer0.previousToken();` which is in test11. But the edit matched `String string0 = stringTokenizer0.previousToken();` followed by `}` then `@Test...public void test12()`. There's only one such occurrence (before test12), so that's test11. Good.
+Next, moving on to test12.
+

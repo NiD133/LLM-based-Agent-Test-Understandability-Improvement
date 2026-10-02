@@ -1,0 +1,137 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Now I understand the code. Let me analyze each test and determine the appropriate oracles:
+
+1. **directFieldMutationOfTagNameBreaksEquality** - When tagName is directly set (bypasses normalName update), and clone's `name()` is called (updates normalName), the original has mismatched tagName/normalName, so they won't be equal. → `assertFalse(isEqual)`
+
+2. **tagsWithDifferentNamespacesAreNotEqual** - One has namespace "t", other has HTML namespace → `assertFalse(isEqual)`
+
+3. **knownHtmlTagIsNotEqualToCustomUnknownTag** - Known HTML tag vs unknown custom tag, different names and options → `assertFalse(isEqual)`
+4. Continuing through the remaining tests: clone equals original, and a tag equals itself, both returning true; a tag compared against a plain Object returns false. For the last one, I'm working through whether a known tag from `valueOf` would differ in options from a freshly constructed tag with the same name, since equals checks tagName, namespace, normalName, and options together — and "I" isn't a predefined tag so I need to trace what options `valueOf` assigns in that case.
+
+A directly constructed `new Tag("I")` would also end up with tagName="I", normalName="i", namespace=HTML, options=0, seemingly identical—so I need to dig into `preserveTagCase()` behavior in `valueOf` to understand why the test expects these to differ.
+
+Maybe the tagset lookup for "I" is case-insensitive, finding "i" and setting some options like Known or Block, while `new Tag("I")` keeps options=0 — that would explain why they end up unequal. So it likely comes down to `preserveTagCase()` and how `TagSet.Html().valueOf` normalizes the case during lookup.
+
+Given the test name "knownTagCreatedViaValueOfIsNotEqualToNewTagWithSameName", I'll go with `assertFalse(isEqual)` since the known tag has different internal options and casing than the manually constructed one.
+
+Moving through the remaining test cases: textState should return Rcdata when the RcData option matches, so I'd write `assertEquals(TokeniserState.Rcdata, tag.textState())`. Similarly for the Rawtext case, the cloned tag with the data option set should return `TokeniserState.Rawtext`, giving `assertEquals(TokeniserState.Rawtext, cloned.textState())`.
+
+For the remaining tests, I'm working out the oracles: no text state option means `assertNull(tag.textState())`; setting form submittable makes `isFormSubmittable` true while custom tags default to false; setting preserve whitespace makes `preserves` true while custom tags default to false; and I'm moving into the static isKnownTag test for standard HTML elements.
+
+Continuing through the known-tag checks: "var" should be known, a garbled name like "iLUa^" should not, an h6 tag found via valueOf should be known, but a tag created with the plain `new` constructor should not be known. Now I'm looking at how a single-arg Tag constructor defaults to the HTML namespace and isn't self-closing.
+
+Then for the option combinations: 28 encodes SelfClose plus other flags, so that tag should be self-closing; setting just the Void option also produces a self-closing tag. But setting SeenSelfClose alone shouldn't make it self-closing — I need to figure out how to check that since there's no direct variable for it, likely checking that isSelfClosing stays false.
+
+Continuing through the remaining properties: Void directly makes isEmpty true, while a custom tag defaults to not empty. Tags without a block option are inline by default, but h6 is a block tag so isInline is false, formatAsBlock is true, and isBlock is true — while custom tags default to false for both formatAsBlock and isBlock.
+
+For parser options, h6 has option 128 set while a custom tag has none. Then I'm working through clearing flags: clearing FormSubmittable on an unknown tag marks it as known, and I need to verify clearing the Known flag leaves the tag unknown while preserving other defaults.
+
+Now I'm testing localName and prefix parsing: names without colons return the full string for localName and empty string for prefix, while prefixed names split correctly at the colon.
+
+I'm also verifying that the namespace setter mutates and returns the same tag instance, and that empty namespace strings are handled correctly on the getter. For hashCode, I'm noting it should be derived from tag name and namespace together, though I'd need to verify the exact expected value against the implementation.
+
+The only meaningful oracle would require computing Objects.hash with the exact namespace string, which I can't verify without knowing NamespaceHtml's precise value—likely "http://www.w3.org/1999/xhtml"—so I'll settle for a consistency check like asserting hashCode() equals itself across calls rather than guessing the exact numeric value.
+
+I'll abstain on that hashCode assertion since I can't determine the namespace value without more context, and move on to the other straightforward getter tests: toString returning tagName, name() returning the raw tagName, normalName() always lowercasing, and getName() preserving original case.
+
+Now I'm figuring out where each assertion needs to be inserted, since the existing tests compute values but never check them. For the RCDATA text state test, since `TokeniserState` is package-private and accessible from the same package, I can add an assertion that `textState()` returns `TokeniserState.Rcdata` after setting the matching static option.
+
+I'm going through the remaining test methods one by one, adding `assertFalse` for tests checking inequality (mutated tag names, different namespaces, custom vs known tags) and `assertTrue` for tests checking equality (cloned tags, tag equals self).
+
+Now I'm reasoning through the tricky case of comparing a tag created via `valueOf` against a freshly constructed tag with the same name -- since `valueOf` with preserve case can still resolve to the known lowercase tag with its stored options, while a plain `new Tag("I")` keeps the raw casing and no options, they'd differ in both name and flags, confirming the test's expectation that they aren't equal.
+
+Adding more assertions...
+
+Adding more assertions...
+
+For `h6BlockTagIsNotInline`, I'll add `assertFalse(isInline);`. Then for `h6HasFormatAsBlockSet`, I'm reasoning through whether h6 has the InlineContainer option set—since heading elements are block-level but their children are inline content, h6 likely has InlineContainer enabled, meaning formatAsBlock() should return true.
+
+I'm working through the remaining assertions similarly: block/inline checks, formatAsBlock defaults for custom tags, and parser option flags, adding the appropriate assertTrue/assertFalse calls based on each test name's expected outcome.
+
+For the tag-clearing tests, I'm confirming that clearing a known flag makes the tag unknown while other defaults remain, and clearing an unknown tag's flag marks it known.
+
+For the local name tests, I'm adding equality checks for the expected substring returned when a prefix is or isn't present in the tag name.
+
+For the prefix tests, I'm working out what `prefix()` returns for tag names with and without colons, adding assertions for the empty string case and the substring before the colon.
+
+For the namespace setter test, I'm confirming that calling `namespace()` returns the same tag instance, and that the getter returns an empty string when no namespace is set.
+
+Now I'm moving to the hashCode test, checking how the hash is derived from tag name and namespace.
+
+For toString and name getter tests, I'm filling in expected values for the tag name and normalized lowercase name, and starting to work out what getName() should return for the "Oc2:{" tag.
+
+For the hashCode test, I'm stuck since asserting the value against its own computation would be circular. I want to find the actual NamespaceHtml constant value so I can write a concrete, non-trivial assertion instead of just checking self-equality.
+
+I also want to verify whether h6 has the InlineContainer setting alongside Block in jsoup's tag definitions—heading elements typically carry both since they're block-level containers holding inline content, so formatAsBlock() should return true. Let me look up how NamespaceHtml and the h6 tag are actually defined in the source.
+
+
+
+NamespaceHtml = "http://www.w3.org/1999/xhtml"
+
+Now let me look at the TagSet to understand how h6 is defined and what options it has.
+
+Line 239-240 shows "h6" is included in a group, and line 259 also includes "h6". Line 284 shows `inlineContainers` is set with `Tag.InlineContainer`. Looking at line 259, h6 is in the `inlineContainers` group. So h6 has InlineContainer option set. Therefore `h6.formatAsBlock()` returns `true`.
+
+Now let me check if h6 also has Block option set and if it has InlineContainer. From lines 239-240, h6 is in one group (block elements), and from line 259, h6 is also in `inlineContainers`. Let me read more of the TagSet file to understand the full configuration.
+
+Now I understand the tag initialization. For h6:
+1. It's in `blockTags` → gets `Tag.Block` set
+2. It's in `inlineContainers` → gets `Tag.InlineContainer` set
+
+The `set()` method does `options |= option; options |= Tag.Known;`
+
+After being in blockTags: `options = Block | Known = 4 | 1 = 5`
+After being in inlineContainers: `options |= InlineContainer | Known = 5 | 8 | 1 = 13`
+
+So h6 has: Block (4), InlineContainer (8), Known (1) set. 
+
+With options=13, checking each method against the bitmask confirms formatAsBlock, isBlock, and isKnownTag all return true while isInline correctly returns false, since the Block bit is set.
+
+Now looking at `Tag.valueOf("h6")`, this resolves through the HTML tagset lookup with preserveCase, finding h6 as a known tag with options=13. For checking `hasParserOption(128)`, I need to see what option 128 represents in HtmlTagOptions.
+
+
+
+Special = 1 << 7 = 128.
+
+h6 is in SpecialTags (line 38-39). So `h6.hasParserOption(128)` → `(parserOptions & 128) != 0` → true.
+
+Now for `customTagHasNoParserOptions`:
+`new Tag("", "")` - tagName="", namespace="". The namespace is "", not NamespaceHtml ("http://www.w3.org/1999/xhtml"), so `optionsFor("", "")` returns 0. So `tag.hasParserOption(128)` → false.
+Since h6 is found in the TagSet with the Known option, `isKnownTag()` should return true there too. Now I'm tracing through how `Tag.valueOf("I")` resolves via the TagSet lookup to check whether a known tag created this way differs from a freshly constructed Tag with the same name.
+
+
+
+Now I understand the full picture. Let me trace through `Tag.valueOf("I")`:
+
+1. `Tag.valueOf("I")` → calls `TagSet.Html().valueOf("I", null, NamespaceHtml, true)` (preserveCase=true because ParseSettings.preserveCase.preserveTagCase() = true)
+
+2. Inside `valueOf("I", null, NamespaceHtml, true)`:
+   - `get("I", NamespaceHtml)` → looks for "I" in namespace HTML → not found (tagset has "i" not "I")
+   - `normalName = ParseSettings.normalName("I")` = "i"
+   - since tagName stays "I" with preserveTagCase=true, it finds the known "i" tag, clones it because "I" differs from "i", sets the clone's tagName to "I", registers it, and returns that clone -- which ends up with tagName="I", normalName="i", and the same inline-tag options as "i". Now I need to work through what happens with `new Tag("I")` instead.
+
+For `new Tag("I")`, normalName resolves to "i" and namespace is HTML, but options is 0 since it's not marked Known -- unlike `Tag.valueOf("I")` whose options equal 1 because it inherited the Known flag from the registered "i" tag. So these two tags differ in their options field, which means the knownTag comparison between them won't match.
+
+For the hashCode test on "Oc2:{", I'm reasoning that since this isn't a registered tag, it creates a fresh Tag object with the lowercased normalName and HTML namespace, and the hash is derived from those fields via Objects.hash -- I can't compute the exact numeric value by hand, so I need a way to verify it without hardcoding a specific hash number.
+
+Actually, I realize I can compute it manually by working through how Java's array hashCode algorithm combines the string and namespace hashes step by step.
+
+Computing that first hash gives 75957439, but hashing the full URL string by hand isn't practical, so I'll abstain on that oracle value. Moving on, I'm now examining the setSeenSelfCloseDoesNotMakeSelfClosing test case.
+
+Setting SeenSelfClose alone doesn't set the SelfClose or Void bits, so isSelfClosing() should return false—I need to add an explicit assertFalse call for that. Next I want to verify the namespace getter test that checks a Tag constructed with empty namespace and empty name strings.
+
+I finish the prefix assertion with `assertEquals("", tag.prefix());`, then move to the textState tests: when RcData's bit matches the current options value, textState() returns TokeniserState.Rcdata, so I add that assertion; and when Data's bit is set on a cloned tag, textState() should return TokeniserState.Raw... which I need to verify against the actual enum name.
+
+Now I'm compiling the full list of assertions to insert across all the equality and textState test methods, including verifying null is returned for a tag with no options set, and confirming several tag-equality tests expect false due to differing names, namespaces, or known-vs-custom status.
+
+Adding more test case assertions...
+
+Adding more test assertions...
+
+Continuing through the remaining test cases up through #45, then I pause on #41's hashCode test since it just calls `tag.hashCode()` without asserting a specific value, so I need to figure out what to abstain on versus what expected output to derive.
+
+I consider weaker assertions like checking the hash isn't zero, but I'm not confident that holds for this input either. I need to trace back through what `Tag.valueOf("Oc2:{")` actually resolves to before I can commit to any assertion, so I'll keep abstaining for now.
+
+Tracing through clearingAnOptionOnUnknownTagMarksItAsKnown: creating a tag from an unrecognized string means it starts unknown, but calling clear on a bit that isn't actually set flips the tag to Known anyway, so isKnownTag() ends up true. Now I'm moving to the next test about clearing the Known flag while preserving other default properties.
+

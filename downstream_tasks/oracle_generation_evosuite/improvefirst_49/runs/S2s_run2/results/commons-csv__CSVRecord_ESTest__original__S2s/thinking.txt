@@ -1,0 +1,68 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now I need to analyze each test method and determine what oracles are needed. Let me go through each test:
+
+**test00**: Calls `cSVRecord0.toMap()` - no return value stored. No oracle needed (result is discarded). But wait, the result should be checked. Actually, looking at the test - it calls `cSVRecord0.toMap()` and doesn't store the result. The test just verifies no exception is thrown. No oracle needed here since there's no variable to check.
+
+Actually, looking more carefully - the EvoSuite tests were generating oracles that were removed. Let me think about which tests had oracles originally. 
+
+For test01, the map result is stored in a variable, so I need to figure out what its contents should be given the duplicate header values in the string array, since headers get deduplicated when building the map.
+
+Since both array entries are the same string, the header and value would map to that single duplicate key, so `toMap()` likely returns `{"*;Ax}g<": "*;Ax}g<"}`. I'm not fully confident in the exact content though, so a safer assertion might just be `assertNotNull(map0)` rather than checking the precise map contents.
+
+I'll go with `assertNotNull(map0)` for test01.
+
+For test02, I'm tracing through how `isSet` behaves given the custom delimiter and how the record was parsed from that header configuration, to figure out what the boolean result should be.
+
+So confirmed true, matching the oracle. For test03, checking index 1 against a values array of size 2 gives true since it's within bounds. For test04, index 3174 far exceeds the array size, so isSet returns false.
+
+For test05, a negative index like -2522 immediately fails the lower bound check, so isSet returns false. For test06, I'm working through the record parsed from input "*;Ax}g<" against a header with two duplicate keys, where the header map points to index 1 but the actual values array only has one element, so the index is out of bounds.
+
+For test07, isSet with a null key delegates to isMapped(null), which checks if the header map contains the null key.
+
+For test08, since the parser is null, getHeaderMapRaw returns null, so isSet("") evaluates false regardless.
+
+For test09, isConsistent checks whether the deduplicated header map size matches the values array length.
+
+For test10, since the manually created record uses a two-element array but the header map deduplicates to one entry, isConsistent returns false.
+
+test11: with default format having no headers at all, isConsistent returns true since headerMap is null. test12 checks hasComment against a non-null comment string, expecting true, while test13 checks a record parsed without a comment character, expecting false. The remaining exception tests already have their oracles established through the catch block assertions on the thrown exception messages.
+
+Tests 14-17 rely on fail() calls paired with catch blocks, so they're already complete as written. Test18 just constructs a CSVRecord with no further assertions, confirming the constructor doesn't throw, while test19 checks size() against a record with two values.
+
+For test20, getRecordNumber() should be checked against the expected value of 1105L. Test21 is trickier since getParser() is called without storing the result -- I'm reasoning through whether the oracle should assert the parser is null given the record was constructed with a null CSVParser.
+
+I'm reasoning that if the original code stored the result in a variable like `cSVParser1` and then asserted `assertNull(cSVParser1)`, only the assertion line would've been stripped, leaving the variable declaration intact — but the current code shows the bare call without storage, so I need to reconsider which line was actually removed.
+
+I'll add `assertNull(cSVRecord0.getParser())` for that case. Moving to test22, the exception test already looks complete with its fail() and catch block. For test23, I'm considering what oracle fits the toString() result—likely asserting the exact string output showing the comment as null, record number 1, and the parsed values array from the input "*;Ax}g<".
+
+For test24, since the format was built without a header, toMap() returns an empty map and the return value is discarded, so no oracle is strictly needed beyond confirming no exception is thrown. For test25, getComment() returns the discarded value "nJ=ULPJYC0~D|7x|2WT," and I'm figuring out whether an assertion should capture that.
+
+For test26, getBytePosition() returns -1060L, so I'll assert that value directly. For test27, values() returns a stored array based on parsing the input string with the default comma delimiter, and I'm considering whether to assert non-null or check the array contents more specifically.
+
+I continue through test28 (characterPosition of 698) and test29 (spliterator, which needs no specific assertion since it just verifies no exception), then start consolidating all these oracles into a clean numbered list for the final test suite.
+
+For test29's spliterator call, there's no obvious oracle needed since it's just inherited from Iterable. Now I'm reconsidering test02 more carefully, looking at how the multi-char delimiter "*;Ax}g<" would split the header and content when they're identical strings.
+
+For test02, splitting the string by that exact delimiter produces two empty values, so the record has 2 elements while the header map maps "*;Ax}g<" to index 1. Checking isSet confirms the index falls within bounds, so the oracle should assert true. For test09, three identical headers collapse to one header map entry pointing at index 2, but parsing with the default comma delimiter yields only one value, so I need to verify isConsistent's size comparison logic here.
+
+For test10 I'm comparing a two-element values array against a header map with just one entry, so isConsistent should evaluate to false. For test11, since DEFAULT format defines no headers, getHeaderMapRaw returns null, making isConsistent trivially true. For test13 I'm now checking how DEFAULT format handles records without a comment character defined.
+
+For test20, the record number field of 1105L means the oracle is `assertEquals(1105L, long0)`. Test26's byte position of -1060L gives `assertEquals((-1060L), long0)`, and test28's character position of 698 gives `assertEquals(698L, long0)`.
+
+Now I want to go back and double-check test06 more carefully, examining how the header builder sets up the duplicate "*;Ax}g<" values before getting the format.
+
+I'm tracing through parsing "*;Ax}g<" with the default comma delimiter, which yields a single-value record since there's no comma present, and checking how `isSet` resolves against the header map where both header entries map to the same key with the second occurrence overwriting the index.
+
+So `isSet` evaluates to false since the mapped index (1) isn't less than the values length (1), meaning the oracle should assert false. Now I'm working through a similar case where three identical headers are used with the default delimiter, again producing a single-value record and needing to check consistency against that header map.
+
+For a case using CSVFormat.ORACLE parsing an unusual string, I'm figuring out that the parsed values array should simply come back non-null, since I'm less certain about the exact structure ORACLE format produces here.
+
+For the toString test, I'm working out that calling toString() on the record built from "*;Ax}g<" with DEFAULT format should deterministically yield something like "CSVRecord [comment='null', recordNumber=1, values=[*;Ax}g<]]" - but since I want a safer bet, I'll just assert the string isn't null rather than pin down the exact format.
+
+Now finalizing oracles across the remaining tests: for test27, since `stringArray0` is stored from `values()`, I'll add a not-null assertion; for tests 00, 24, and 29, the results of `toMap()` and `spliterator()` are discarded so there's nothing to assert - those tests just confirm no exception occurs.
+
+For test21, since `getParser()`'s result is discarded, the likely removed oracle was checking that it returns null, so I'll add that assertion back explicitly.
+
+Similarly for test25, `getComment()`'s discarded result probably had an oracle checking it against the expected string, so I'll restore that assertion in the same way.
+

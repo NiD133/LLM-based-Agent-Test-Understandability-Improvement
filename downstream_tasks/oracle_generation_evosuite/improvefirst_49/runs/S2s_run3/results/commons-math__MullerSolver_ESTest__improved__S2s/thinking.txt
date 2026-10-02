@@ -1,0 +1,54 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Now I need to analyze each test and determine what oracles need to be added.
+
+1. **test_solveCbrt_largeInterval_returnsZero**: The comment says "the solver should converge to 0.0 within a generous tolerance". The result should be approximately 0.0. I should add an assertion like `assertEquals(0.0, root, 1.0);` or `assertTrue(Math.abs(root) < 1.0);`
+
+2. **test_solveSin_exceedsMaxEvaluations_throwsRuntimeException**: Already has a try/catch with `fail("Expecting exception: RuntimeException")`. 
+
+But I still need to verify the caught exception type in the catch block, since the empty catch isn't sufficient. I'm considering using EvoSuite's `verifyException` helper to confirm it's a `TooManyEvaluationsException`, or alternatively adding a direct assertion on the exception.
+
+For the exception verification, I'd call verifyException with the TooManyEvaluationsException class name and the caught exception. For the cbrt test, I'm uncertain of the exact root value near zero, so I'm considering asserting the root is close to zero with a reasonably tight tolerance, possibly around 3.06e-7 as the comment suggests, though I'm not fully confident in that precise figure.
+
+For the remaining tests, I need to add assertions verifying NaN for the zero polynomial case, confirming the upper bound is returned unchanged when it's the identified root, and checking the ULP test returns essentially the starting point within a small tolerance.
+
+I'm also digging into how the solve method with just a starting point actually works in AbstractUnivariateSolver versus MullerSolver's doSolve, since the ULP function evaluated near 1.59 seems to just return the starting value itself rather than converging through the typical bracket-based approach.
+
+With only two parameters passed, the function value accuracy falls back to its default, likely around 1e-15, and since ulp(1.5902) is roughly 2.22e-16 which is smaller than that, the check `abs(fInitial) < functionValueAccuracy` passes, so the solver returns the initial value directly without iterating—meaning the result equals the starting point.
+
+For the cbrt test with the huge interval, since cbrt's only root is at zero, I expect the solver to converge near 0 with a generous tolerance like `assertEquals(0.0, root, 1.0)`. For the sin test that exceeds max evaluations, the try/catch with `fail` already serves as the oracle, though I should check whether EvoSuite's typical pattern also expects a `verifyException` call inside the catch block.
+
+I'm weighing whether to add a `verifyException` call confirming the specific `TooManyEvaluationsException` class, since the CUT imports that exception, but I suspect the fail+catch structure alone might already serve as the oracle without needing that extra verification.
+
+Now let me move on to the next test case, solveCbrt_intervalAroundZero_returnsNearZeroRoot.
+
+For this one, since the comment mentions the root is approximately 3.06e-7, I'll write a tolerance-based assertion checking the root is close to zero within a reasonable margin like 1.0E-5, since I can't pin down the exact value.
+
+For test_solveZeroPolynomial_returnsNaN, I need an assertion checking that the result is NaN using Double.isNaN.
+
+Now for test_solveCbrt_upperBoundNearZero_returnsUpperBound, I'm working through the math on whether cbrt of 4.8e-220 falls within the solver's function value accuracy threshold - computing that the cube root works out to roughly 10^-73, which doesn't seem near zero enough, so I need to reconsider what the expected behavior actually is here.
+
+For test 1, cbrt is evaluated over [-2825.0795, 2.79e85]. Neither endpoint is near zero (cbrt(-2825.08) ≈ -14.12, and the huge upper bound also isn't small), so the solver has to bracket toward the actual root at 0, and with over a million evaluations it should converge extremely close to 0.0, matching the comment about a generous tolerance.
+
+I'll settle on `assertEquals(0.0, root, 1.0E-6)` for that case, since that's the solver's default absolute accuracy, and apply the same tolerance to test 3, where the smaller evaluation count (2331) still lands within 1e-6 of 0—consistent with the noted approximate result of 3.06e-7.
+
+For test 6, since the ulp function's magnitude is far below the default functionValueAccuracy of 1e-15, the solver likely just returns the starting point unchanged, so I'll write `assertEquals(startingPoint, result, 0.0)`. But I need to double check the solve signature being used here—it's the single-argument form with just a start value rather than a bracketing interval, which changes how the solver behaves internally.
+
+Here the four-arg version with min and max but no explicit start value would compute the midpoint automatically since `AbstractUnivariateSolver` defaults startValue to (min+max)/2 before calling `doSolve()`. I need to be careful matching which oracle result corresponds to which test signature.
+
+Looking at test 2's structure, the try block expects a RuntimeException with `fail()` if none is thrown, but the catch block lacks a verification call - I should add `verifyException` for `TooManyEvaluationsException` there, since that's the typical EvoSuite pattern when max evaluations gets exceeded.
+
+For the remaining tests, I'm mapping out the assertion types needed: test 1 and 3 use assertEquals with a small tolerance for root values, test 5 checks against the upper bound, and test 6 checks against the starting point. For test 4 (solveZeroPolynomial), I need to trace through the MullerSolver logic more carefully since a zero polynomial makes every point trivially a root, so I want to verify whether NaN is actually the correct expected result before finalizing that assertion.
+
+Since min/max would be NaN without an interval, I'm wondering how the solver avoids failing verification and instead reaches NaN. The zero polynomial evaluates to 0 everywhere, so maybe the solver's convergence check treats that trivially and short-circuits to NaN rather than actually bracketing a root.
+
+For the other case with a bracketed interval near a boundary, I'm checking whether the function value at the upper endpoint is already small enough to be accepted as the root, since cbrt of a tiny number is itself extremely small and would satisfy the accuracy threshold immediately.
+
+For test 6, with both endpoints NaN, the solver falls back to the initial starting point since ulp evaluated there is small enough to pass the threshold, so the expected result equals the starting point itself.
+
+Now for test 1, this uses the four-argument solve variant with a huge max bound around 2.79e85 and a negative min near -2825, so the initial guess would be roughly the midpoint of that enormous interval, and I need to trace how the solver narrows toward the actual root at zero from there.
+
+For test 3, the interval [-1321.9, 2331] is much more tractable, with cbrt sign change bracketing the root, and 2331 evaluations should be plenty to converge to approximately 0 within the 1e-6 tolerance, consistent with the noted result around 3.06e-7.
+
+Now I'll write these oracle assertions into the test file.
+

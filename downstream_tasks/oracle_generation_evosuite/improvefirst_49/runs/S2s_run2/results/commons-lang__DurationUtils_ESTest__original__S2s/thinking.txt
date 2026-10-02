@@ -1,0 +1,81 @@
+Let me start by reading both the test file and the class under test to understand what needs to be done.
+
+Now I need to analyze each test and determine what oracle(s) to add. Let me go through each test:
+
+**test00**: 
+```java
+Duration duration0 = DurationUtils.getMillis("g\"*8?I", (-9223372036854775808L));
+long long0 = DurationUtils.toMillisLong(duration0);
+```
+`getMillis("g\"*8?I", -9223372036854775808L)` - the key "g\"*8?I" is not empty, so it calls `Long.getLong("g\"*8?I", Long.MIN_VALUE)`. Since this is not a system property, it returns the default value `Long.MIN_VALUE` = `-9223372036854775808L`. So `duration0 = Duration.ofMillis(Long.MIN_VALUE)`.
+Calling `toMillisLong` then converts this back to milliseconds via `toMillis()`, and I need to check whether reconstructing seconds and nanos from `Long.MIN_VALUE` round-trips correctly back to the same value.
+
+I'm working through the exact division and remainder logic Java's Duration.ofMillis uses to compute seconds and nanoseconds, tracing how Long.MIN_VALUE gets split into secs and nos fields with the negative-remainder correction step.
+
+Checking whether `-9223372036854776000` fits in long range, it doesn't since it's below `Long.MIN_VALUE`, so the multiplication overflows and throws ArithmeticException. This gets caught and since the duration is negative, the method returns `Long.MIN_VALUE` as the result, matching the expected oracle value.
+
+For the next test case, `ChronoUnit.FOREVER.getDuration()` gives an extremely large positive duration whose `toMillis()` call overflows, so the caught exception path returns `Long.MAX_VALUE` since the duration is positive—matching that oracle too. I'm now looking at a third test involving `TimeUnit.DAYS` and a corresponding ChronoUnit.
+
+Continuing through similar tests, `toChronoUnit` correctly maps `TimeUnit.HOURS` to `ChronoUnit.HOURS` and `TimeUnit.SECONDS` to `ChronoUnit.SECONDS`, each with straightforward equality oracles.
+
+For test05, MICROSECONDS maps to ChronoUnit.MICROS, and test06 shows NANOSECONDS maps to ChronoUnit.NANOS. Then test07 moves to `isPositive`, checking a Duration constructed with both negative seconds and negative nanos to see whether it's correctly flagged as non-positive.
+
+For test08, `getMillis` with a null key falls back to the default value since a null key counts as empty, returning `Duration.ofMillis(-1048L)` with nothing else to assert.
+
+**test09**:
+Since `FailableBiConsumer.nop()` does nothing and `accept` is called with a null Duration, the method just skips execution and returns void.
+
+There's nothing meaningful to assert here since the consumer isn't a mock and no exception is thrown—the test passing is the only verification we get. I'll mark this one as `// ABSTAINED`.
+
+For test10, same story: with a null consumer and a duration of zero, the method silently does nothing, so again nothing to assert—another `// ABSTAINED`.
+
+Moving to test11, I'm looking at a case that converts `TimeUnit.MILLISECONDS` to a `ChronoUnit` and then calls `DurationUtils.get` with a string, that chrono unit, and a negative value—need to work out what the expected result should be.
+
+Tracing through, since the key isn't an actual system property, `Long.getLong` falls back to the default of -210, so the resulting duration ends up as `Duration.ofMillis(-210)`. I should add assertions for both the chrono unit conversion and the resulting duration value.
+
+Now I'm moving on to test12, which involves a `FailableRunnable`.
+
+I'm reconsidering what ViolatedAssumptionAnswer actually does here — it likely throws AssumptionViolatedException whenever the mocked run() is invoked, since that's the whole point of this Mockito answer type used to signal skipped tests.
+
+Assume.assumeTrue(false) throwing AssumptionViolatedException actually skips the test in JUnit rather than failing it, but if the mocked runnable.run() throws this when invoked, boolean0 would never get assigned—so I'm tracing through how of(FailableRunnable) propagates that exception to figure out what actually happens.
+
+If that's the case, AssumptionViolatedException propagates up and of() throws it, meaning the test gets skipped before reaching the boolean0 assertion. But I need to reconsider what ViolatedAssumptionAnswer actually does with a void method call from the mock—whether it silently returns or throws is the key question I need to pin down from EvoSuite's actual behavior.
+
+I can't be confident about the exact behavior here, so I'll abstain on test12. Moving to test13: `getMillis` with a non-empty key falls back to `Long.getLong`, which returns the default 3831L since it's not a system property, and then I need to trace what `isPositive` returns for that duration.
+
+For test14, I'm computing `toDuration(-866, MINUTES)` as -51,960,000 milliseconds, then tracing what `toMillisInt` does with that value when checking the long-to-int range conversion.
+
+For test15, I'm working through a test where a no-op FailableConsumer is timed, expecting a duration close to zero, then checking what `getNanosOfMiili` extracts from it.
+
+With EvoSuite's non-deterministic JVM mocking enabled, `Instant.now()` likely returns a fixed value both times, so the duration should end up being zero, making the nanos-of-milli result 0.
+
+Given my uncertainty, I'll ABSTAIN on test15 to be safe. For test16, instantiating `DurationUtils` doesn't require a specific oracle, but there should still be a basic assertion for the object.
+
+For test17, `getSeconds` with a nonexistent system property key falls back to the default value -913L, producing `Duration.ofSeconds(-913)`. Then `accept` runs the no-op consumer with that duration's milliseconds and nanosecond-of-milli component, both non-null so the call proceeds normally.
+
+Since the consumer is a genuine no-op rather than a mock, there's nothing to verify about the interaction—no return value, no state change, no exception. Same issue applies to test09 (`accept(nop, null)`) and test10 (`accept(null, duration)`), where either the consumer or duration is null and the method short-circuits with no observable effect I can assert against. I'm now going back through tests 02-06 to check whether their computed values still need assertions added.
+
+For test15 though, I'm reconsidering the timing dependency—with EvoSuite's mocked JVM nondeterminism, `Instant.now()` would return a fixed value each call, which could make the outcome deterministic and testable after all.
+
+For test12, I'm checking whether a mocked no-op runnable behaves the same way under Mockito's ViolatedAssumptionAnswer, tracing through what that answer implementation actually returns for void methods.
+
+Actually, since EvoSuite generated and verified this test, maybe the assumption violation on a void mock method doesn't propagate as expected, or ViolatedAssumptionAnswer just returns null for void calls. I'll abstain on test12 since I'm not confident about the oracle.
+
+For test08, `getMillis(null, -1048L)` treats the null string as empty and returns the default, so `Duration.ofMillis(-1048L)` is the expected result to assert.
+
+Reconsidering test00, `getMillis` with a non-empty key calls `Long.getLong`, which falls back to `Long.MIN_VALUE` since it's not a system property, giving `Duration.ofMillis(Long.MIN_VALUE)`. I'm tracing what happens when `toMillisLong` calls `.toMillis()` on that duration — it should overflow and throw an ArithmeticException, which gets caught and handled based on whether the duration is negative.
+
+Since this duration is negative, the catch block returns `Long.MIN_VALUE`, confirming the test00 oracle as `assertEquals(Long.MIN_VALUE, long0)`. I'm now compiling the full set of assertions across all the tests, matching each one to its expected ChronoUnit or long value.
+
+For tests 16 and 17, I'll add assertNotNull and abstain respectively since there's nothing computed to check. Thinking more about the void-method tests (09, 10, 17), I'm reconsidering whether they truly need an ABSTAINED marker at all -- if the test simply verifies no exception occurs and there's no return value to inspect, then no oracle is genuinely needed there.
+
+I'm now finalizing my plan for adding assertEquals calls to each test where a computed value goes unchecked, covering the long, boolean, int, duration, and ChronoUnit results across the various test cases.
+
+Continuing with test14 expecting -51960000 for int0, then test15 needs abstaining since it's timing-dependent, and test16 checking durationUtils0 isn't null. I'm reconsidering test15 though—since the nop consumer does nothing with the Instant parameter, `now(consumer::accept)` just gets the mocked `Instant.now()`, calls the no-op consumer, and returns that same value, so calling `since()` on it should actually be deterministic.
+
+Since `Duration.between(T, Instant.now())` returns zero when both calls return the same mocked instant, `getNanosOfMiili` on that zero duration should just be 0, so I'll assert `int0` equals 0 instead of abstaining. For test12, tracing through the mock runnable with the violated-assumption answer, I see the exception gets thrown when `runnable.run()` executes inside the consumer, which then propagates up through the call chain.
+
+If that exception fires before `duration0`/`boolean0` are computed, JUnit would skip the test as an assumption violation, meaning there's no meaningful oracle to add for `boolean0` -- so I'll abstain on that assertion since the code path never actually reaches it.
+
+With that decided, I'll move on to writing the updated test file.
+

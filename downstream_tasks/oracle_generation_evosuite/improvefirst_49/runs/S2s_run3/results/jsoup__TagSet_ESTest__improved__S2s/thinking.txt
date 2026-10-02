@@ -1,0 +1,52 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Let me analyze each test method and determine what oracles are needed:
+
+1. **`equals_withNonTagSetObject_returnsFalse`**: `tagSet.equals(plainObject)` should return `false` since plainObject is not a TagSet.
+   - Oracle: `assertFalse(result);`
+
+2. **`equals_withSameInstance_returnsTrue`**: `tagSet.equals(tagSet)` should return `true` since it's the same instance.
+   - Oracle: `assertTrue(result);`
+
+3. **`onNewTag_returnsThisForMethodChaining`**: `tagSet.onNewTag(secondConsumer)` should return `tagSet` (same instance for method chaining).
+   - Oracle: `assertSame(tagSet, returnedTagSet);`
+
+4. For `valueOf_withSameNormalName_returnsSameTagInstance`, I'm tracing through how the tag set resolves tag names against the shared normal name, since both calls use different tag names but the same namespace and normalized name, and I need to verify whether the second lookup finds the tag created by the first call before creating a new one.
+
+5. For `valueOf_withPreserveTagCase_preservesOriginalTagName`, I'm tracing a similar sequence but now with preserveTagCase set to true on the second call, checking whether the existing tag gets returned as-is or a clone is made to preserve the different original casing.
+
+I'm also weighing whether to assert on `tag.tagName` directly, since it's package-private, or use the public `tagName()` method, given the test lives in the same package but a public accessor is safer.
+
+I also notice `tagSet.valueOf(...)` is used elsewhere and returns a Tag, so I should check how the Tag class exposes its properties there.
+
+Working through more cases: "kbd" should register as a known tag since it's in jsoup's inline tags list, adding mTextTag with a customizer registered should trigger that customizer, and the copy constructor with a customizer should produce an equal copy.
+
+The trickier case is comparing the copy against htmlTagSet -- since HtmlTagSet is populated via `initHtmlDefault()` calling `add(tag)` repeatedly, its `tags` map isn't actually empty, so I need to trace through whether the copy constructor properly replicates that populated map for the equals check to pass.
+
+For the `hashCode_onEmptyTagSet_doesNotThrow` test, the point is simply confirming no exception occurs when calling `hashCode()` on an empty set, though I could also assert the actual returned value equals 0 since an empty map's hash code is zero.
+
+Now for `initHtmlDefault_returnsNonNullTagSet`, the oracle should verify the returned tag set isn't null.
+
+Reconsidering test 4: for `valueOf_withSameNormalName_returnsSameTagInstance`, since both calls share the same normalName and preserveTagCase=false, the oracle should be `assertSame(firstTag, secondTag)`. For `valueOf_withPreserveTagCase_preservesOriginalTagName`, since preserveTagCase=true clones the tag and stores the original name, the oracle should check the preserved tag's name equals "J". For `add_withCustomizerRegistered_appliesCustomizerToAddedTag`, I need to verify the mock customizer was invoked with the added tag when `add(mTextTag)` was called.
+
+Now I'm working through the oracle for the preserveTagCase test more carefully, tracing through how the tag name gets trimmed to "J", the first lookup returns null, and preserveTagCase being true means the resulting tagName should stay "J" while the normalName lookup on the second call returns the tag from the first call.
+
+Since preserveTagCase is true and "J" differs from the normalized name, I trace the clone-and-rename logic where the tag gets cloned, renamed to "J", and re-added under the new key — confirming the oracle should assert the tagName equals "J", checking that Tag exposes a tagName() accessor in jsoup. I'm now moving to trace the next test case involving same normal name returning the same tag instance across calls.
+
+Since the names match exactly, no cloning happens and the second lookup returns the same firstTag instance, confirming assertSame is valid. With that confirmed, I now have my full list of test oracles compiled, covering the boolean results, same-instance checks, tag name equality, known-tag status, customizer verification, and the copy equality assertions.
+
+For the "doesNotThrow" test, I'm leaning toward adding an explicit assertion that an empty HashMap's hashCode is 0, since the task calls for meaningful oracles even when the title implies just checking for no exception. I'm also revisiting the customizer-registered copy constructor test, tracing through how htmlTagSet gets set up via the static initializer and how the customizer mock is registered on it.
+
+Since `equals` compares only the `tags` map and not customizers, registering the customizer shouldn't break `createsEqualCopy` as long as both objects have identical tags, which the deep-copy constructor preserves.
+
+Since HtmlTagSet's onNewTag call mutates the static field, I want to settle on `assertEquals(htmlTagSet, copy);` as the oracle for test 8. Looking at the copy constructor, since template.source is null but template.tags isn't empty, the copy should carry over the customizers (including the mock) and then reconstruct tags from the template.
+
+The equality check ultimately depends on Tag.equals working correctly to compare the deep-copied tags against the originals, and since I don't have visibility into that implementation, I'll trust the test name "createsEqualCopy" as my guide. Now I'll finalize all the oracles and make the edit to the file.
+
+
+
+The error is that `Tag` doesn't have a `tagName()` method. I need to find the correct method name. Since I can't re-read the Tag class (it's not in my CUT files), I need to check the TagSet.java code which uses `tag.tagName` as a direct field access. The test is in the same package `org.jsoup.parser`, so I might be able to access the field directly.
+
+Let me replace `preservedTag.tagName()` with `preservedTag.normalName()` or just use `// ABSTAINED` since I can't confirm the API. Actually, I should abstain here since I can't determine the correct method name confidently.
+Actually, since `tagName` is a package-private field and the test lives in the same package, I could try direct field access, `preservedTag.tagName`, without parentheses.
+

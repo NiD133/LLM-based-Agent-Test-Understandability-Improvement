@@ -1,0 +1,36 @@
+Let me start by reading the masked test file to understand what needs to be filled in.
+
+Now I need to analyze each test and add oracles where needed. Let me go through each test:
+
+1. `testLengthAfterClose_returnsAggregatedLength` - The test creates a GroupedRandomAccessSource with 8 sources, where the base has 6 bytes. But the sources array contains duplicates (buffered is used 4 times, base is used 2 times, independent wraps buffered and is used 2 times). The comment says "reports the total length even after close()". So we need to call `grouped.length()` and assert on it. But wait, the method calls `grouped.close()` and there's no assertion. The test name says "returns aggregated length". Looking at the data: base has 6 bytes, so each source reports 6 bytes. 
+
+Since all 8 sources wrap the same 6-byte base, the total aggregated length should be 8 * 6 = 48, and this should hold even after calling close() on the grouped source.
+
+For the next test, I'm reasoning about a window with offset 807 and length 807, while the actual data only spans indices 0-5. Since position 196 falls before the window start, reading there should return -1, and I'm moving on to consider the next test case involving a negative buffer offset and length.
+
+Continuing through the remaining tests, I'm working out expected results for each edge case: negative position reads return -1, reading at position zero returns a zero byte, and reading beyond the end of a 6-byte source returns only the available bytes rather than the full requested count.
+
+I'm also checking the window-with-negative-length case, confirming the grouped length should mirror the negative value, and noting that the array-index-out-of-bounds test already has its assertion pattern in place. Now I'm double-checking whether the length assertion for the closed-buffer test needs to happen before or after calling close, since the test currently only invokes close without checking length afterward.
+
+Computing the total: each of the 8 sources in the group has length 6 (base, buffered wrapping base, and independent wrapping buffered, all referencing the same 6-byte base repeated), so 8 × 6 = 48, and this cached total should still be reported even after close() is called.
+
+Now I'm looking at the second test, where a window starting at offset 807 means position 196 falls before it, so get() should return -1. I need to trace how GroupedRandomAccessSource maps a position to a source when the requested position is outside the window's start offset.
+
+Tracing through, the base source only has 6 bytes so position 1003 is out of range, returning -1, and I'm unsure whether the grouped source propagates that -1 or clamps it to 0. Given the buffer offset of 1318 also exceeds the destination array's bounds, I'll trust the test's expectation and assert that bytesRead equals -1, then move to examining the negative buffer offset/length test case.
+
+For test 7, reading 4 bytes at position 4 from a 6-byte source only returns 2 remaining bytes, so `assertEquals(2, bytesRead)`.
+
+For test 8, a WindowRandomAccessSource built with negative length -645 reports that same negative value, so `assertEquals(-645L, length)`.
+
+Test 9 already has its oracle via the try/fail/catch pattern, so I move on to double-checking test 1's assertions.
+
+Since the length aggregation test calls close() without capturing the length value afterward, I decide to capture `grouped.length()` before closing and assert it equals 48L, matching the "total length even after close" comment.
+
+Verifying the math: 8 sources built from a 6-byte base source gives a total of 48 bytes, so that value checks out.
+
+Now I'm moving to the window source test case, working out that a WindowRandomAccessSource with offset 807 and length 807 defines the length based on that third constructor argument.
+
+Given that setup, position 196 falls within the window's range (0-806), which maps to base position 807+196=1003 -- but since the base only has 6 bytes, `get(1003, ...)` should return -1, confirming the expected test outcome despite the oddly large offset/length parameters (1318) passed into the destination buffer.
+
+For test 8, the window starts at -2147 with length -645, so the grouped source's length equals the window's length, giving -645L. Now I'll go ahead and make the edits.
+

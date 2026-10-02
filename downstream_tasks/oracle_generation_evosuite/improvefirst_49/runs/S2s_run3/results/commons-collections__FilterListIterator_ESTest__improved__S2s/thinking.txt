@@ -1,0 +1,37 @@
+Let me start by reading both the test file and the class under test to understand what needs to be done.
+
+Now I need to analyze each test method and determine what oracles (assertions) should be added.
+
+Let me analyze each test method:
+
+1. **`previous_throwsNoSuchElementException_whenIteratorIsEmpty`** - Already has `fail()` in try block, and the catch block is empty. This test is complete - no oracle needed (the exception check is already the oracle via `fail()`).
+
+2. **`next_throwsNoSuchElementException_whenIteratorIsEmpty`** - Same as above - the `fail()` is the oracle.
+
+3. **`add_throwsUnsupportedOperationException`** - Same pattern.
+4. **`remove_throwsUnsupportedOperationException`** and **`set_throwsUnsupportedOperationException`** also follow this same pattern, needing no additional oracle.
+
+5. For `hasNext_returnsFalse_whenNoElementsMatchPredicate`, the `hasNext` variable is computed but never asserted, so I need to add `assertFalse(hasNext)`.
+
+6. For `hasNext_isIdempotent_whenCalledTwice`, similarly `secondHasNext` is computed without a following assertion, and the test list contains a single element I need to account for.
+
+Now I'm tracing through `hasNext_returnsFalse_afterForwardAndBackwardTraversal`, where I have to carefully follow how the underlying LinkedList iterator's position changes across `next()` and `hasPrevious()` calls before a second iterator gets created on the same underlying iterator, since the ordering of these calls determines what state `previousObjectSet` ends up in.
+
+Tracing through this more, after secondIterator.next() advances the shared underlying iterator, calling filterIterator.hasNext() triggers clearPreviousObject then setNextObject, and since the iterator is now past the single element in the list, hasNext ends up returning false — so the test needs an assertFalse there. Moving to the next scenario, I'm now tracing a case where hasPrevious is computed after hasNext buffers an element forward, checking how setNextObject behaves in that setup.
+
+Tracing through the recursive call: it moves the iterator back to find `element` again, sets `previousObject` and `previousObjectSet = true`, and returns `true`. Then back in the outer call, after that recursion succeeds, it calls `clearPreviousObject()` to undo what the recursive call just set, since that state was only needed transiently to reposition the iterator correctly.
+
+Since the outer while loop then finds no more previous elements, `setPreviousObject()` ultimately returns `false`, meaning `hasPrevious` should be asserted false in that test case. Moving on, I notice the `hasPrevious_returnsTrue_afterNextFollowedByHasPrevious` test also computes `hasPrevious` but never actually asserts anything on it.
+
+returns `true` immediately, so this test needs `assertTrue(hasPrevious)`.
+
+Moving to test 11, `hasPrevious_returnsFalse_afterHasNextOnNestedFilterIterator`, where `hasPrevious` gets computed but isn't asserted. Tracing through: `outerFilter.hasNext()` calls `setNextObject()`, which delegates to `innerFilter.next()` to find an element matching `UniquePredicate`, which passes since it's the first occurrence, setting `nextObjectSet = true` on the outer filter. Then `outerFilter.hasPrevious()` triggers `setPreviousObject()`, which sees `nextObjectSet = true`, clears it, and recursively calls itself to walk backward through the iterator.
+
+Since `innerFilter`'s underlying `listIterator` sits at position 1 after the earlier `next()` call, calling `innerFilter.hasPrevious()` moves the list iterator back to position 0, confirms the element satisfies `equalPredicate`, and sets `previousObjectSet = true` on the inner filter, returning `true`. I need to double-check whether `outerFilter` then calls `innerFilter.previous()` through its own iterator reference.
+
+If `setPreviousObject()` then calls `UniquePredicate.test(element)` again, it would return false since the element was already seen — but I need to retrace this more carefully, since `outerFilter.hasNext()` triggers `setNextObject()`, which loops on `innerFilter.hasNext()`, which itself calls `innerFilter.setNextObject()` to pull `element` from the underlying list iterator via `innerFilter.next()`.
+
+Tracing through, `UniquePredicate.test(element)` returns true the first time so `nextObjectSet` becomes true, but when `outerFilter.hasPrevious()` triggers `setPreviousObject()`, it clears the next object and recurses. Following the recursive path through `innerFilter.hasPrevious()`/`previous()`, `UniquePredicate.test(element)` is invoked a second time and now returns false, causing the loop to end and `hasPrevious()` to ultimately return false — so this test needs `assertFalse(hasPrevious)`.
+
+Going through the remaining test cases one by one, I'm working out what each missing assertion should be based on tracing the FilterListIterator's internal state (nextObjectSet, previousObjectSet, nextIndex) through each scenario: false for hasNext after exhausting matches, true for idempotent hasNext, false after forward/backward traversal, false/true for various hasPrevious buffering cases, zero for nextIndex after next-then-previous, zero and negative-one for a fresh empty iterator's nextIndex/previousIndex, negative-one after setListIterator, and null checks for predicate/listIterator when constructed partially. I'm compiling all nineteen of these assertions now so I can apply them to the test file in one edit.
+

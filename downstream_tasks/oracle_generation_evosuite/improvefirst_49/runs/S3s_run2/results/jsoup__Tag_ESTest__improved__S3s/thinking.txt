@@ -1,0 +1,83 @@
+Let me start by reading the masked test file to understand what needs to be filled in.
+
+Now I need to understand the `Tag` class and add oracles (assertions) to each test method. Let me analyze each test method:
+
+1. **`directFieldMutationOfTagNameBreaksEquality`** - sets tagName directly on original, then clones and calls `name()` on clone. The key is that original has `tagName="b5 ;cl"` but `normalName` still is ` |eOx/>T!` (lowercase since it's set from constructor). After clone + `name("b5 ;cl")`, clone's normalName is updated. So `original.equals(cloned)` should be `false` because their normalNames differ.
+2. **`tagsWithDifferentNamespacesAreNotEqual`** should expect `false`, **`knownHtmlTagIsNotEqualToCustomUnknownTag`** should expect `false`, **`clonedTagEqualsOriginalTag`** and **`tagEqualsSelf`** should expect `true`, and **`tagIsNotEqualToNonTagObject`** should expect `false`.
+
+For **`knownTagCreatedViaValueOfIsNotEqualToNewTagWithSameName`**, I'm trying to figure out whether `Tag.valueOf("I")` and `new Tag("I")` would be equal — they'd share the same tagName and normalName but differ in "known" status. Since "I" isn't a standard HTML tag, `Tag.valueOf("I")` likely creates an unknown tag too, so I need to reconsider whether jsoup's equals() actually factors in the known flag at all.
+
+I recall jsoup's `Tag.equals()` compares `tagName`, and `Tag.valueOf("I")` normalizes to lowercase "i" while `new Tag("I")` preserves the uppercase "I" - so their tagNames would differ, making them unequal.
+
+Now I'm considering the next test: it sets `tag.options` and `Tag.RcData` to the same bitmask value (512), then calls `textState()` expecting it to return the "rcdata" tokeniser state.
+
+I'm not fully certain this `textState()` method matches standard jsoup public API - it might be from a different version, but based on the test names, it seems to map tag option flags to corresponding tokeniser states: RcData returns Rcdata state, another option returns Rawtext state, and tags with no matching flag return null.
+
+For the null case, I can confidently assert `assertNull(tag.textState())`, but for the non-null returns I'll need to be cautious about the exact enum value without seeing the actual class. Moving on, I'm noting the form submittable tests should check true/false booleans depending on whether the setting option was applied.
+
+For whitespace preservation, similar boolean assertions apply—true when set, false by default for custom tags. Then I'm working through the static `isKnownTag` tests: it should return true for "var" since that's a standard HTML tag, false for the garbage string "iLUa^", and true when looking up "h6" via `valueOf`.
+
+Continuing into constructor and self-closing behavior tests: a tag created with `new` isn't automatically known, a single-arg tag defaults to HTML namespace and isn't self-closing, but setting SelfClose or Void options makes it self-closing. I'm now checking the `setSeenSelfClose` test since it calls that method without capturing a result variable, so I need to figure out what's actually being asserted there.
+
+Continuing through the remaining tests: Void option also makes a tag empty, custom tags aren't empty by default, tags without the block option default to inline, h6 is block (not inline) with formatAsBlock set to true, and custom tags don't format as block by default.
+
+Then I move to block-status tests: h6 is a block tag and has parser option 128, while custom tags have no parser options and aren't block by default. For the clearing tests, I need to figure out what to assert after clearing an option—likely that the tag remains known after clearing FormSubmittable, and that clearing the known flag leaves the tag unknown while preserving its other defaults.
+
+Next come localName and prefix tests: localName returns the full tag name when there's no colon prefix, or the substring after the colon when one exists; prefix returns an empty string when there's no colon, or the substring before the colon otherwise.
+
+Then namespace tests: the setter returns the same tag instance, and the getter returns an empty string for an empty namespace. For hashCode, since there's no clear expected value to assert against, I might just check it's consistent or abstain. toString returns the tag name, and the name getter returns the value passed to the constructor.
+
+For normalNameIsAlwaysLowercase, since the tag was created via valueOf("MJ", ...), normalName should come back as "mj". Then for getNameReturnsOriginalCaseTagName with a tag from Tag.valueOf("Oc2:{"), I need to figure out whether valueOf normalizes case—if it does, getName() would return the lowercased version, but the test name suggests it preserves original case, so I'm weighing how jsoup's version-specific behavior affects this assertion.
+
+For directFieldMutationOfTagNameBreaksEquality, I'm working through how directly setting tagName bypasses the normalName update: the clone initially retains the lowercase normalName from the original, and only calling name() on the clone updates both tagName and normalName together.
+
+Given the mismatch between original and clone's normalName, I expect assertFalse for isEqual there. For the remaining cases — different namespaces, known vs custom tags, cloned vs original, self-equality, non-Tag objects, and valueOf-created tags — I'm inferring the expected assertions (true or false) directly from what each test name implies about equality behavior.
+
+For the RcData state test, since I can't verify the exact TokeniserState enum without reading the source, I'll settle for a safer assertion like checking that textState() returns something non-null rather than guessing the specific state value.
+
+Working through the remaining assertions: form submittability checks (true for the option-set tag, false by default for custom tags), whitespace preservation checks (same true/false pattern), and null checks for tags without text state options.
+
+Then I'm confirming known-tag lookups—standard HTML elements return true, non-HTML names return false, valueOf-created tags are known while new-constructor tags aren't. Finally I'm checking self-closing behavior: single-arg tags default to not self-closing, but setting SelfClose or Void options makes them self-closing.
+
+Continuing through the tag test expectations: h6 should be a block tag with parser option 128 set, while custom tags default to neither block nor having parser options. For clearing an option on an unknown tag, I expect it becomes known afterward, and I'm now checking a case where clearing the known flag leaves a tag unknown while preserving its other defaults.
+
+I'll settle on `assertFalse(cleared.isKnownTag())` as the key assertion for that test.
+
+For the localName test, I'm reasoning that since the tag name has no colon, `localName()` should just return the full tag string as-is, preserving whatever casing or characters were originally passed in.
+
+I recall that jsoup's Tag class separates tagName from normalName, with the latter lowercased. So localName() likely strips any prefix from normalName, meaning for "<KN-^%U" with no colon, the result should be the fully lowercased "<kn-^%u".
+
+Given my uncertainty about exact case-handling behavior in these edge cases, I'm leaning toward abstaining on some of these and concentrating on the tests where I'm more confident.
+
+For an empty prefix test, the assertion should check that `tag.prefix()` returns an empty string when there's no colon. For the "Oc2:{" tag, prefix should return "oc2" since that's the part before the colon after normalization to lowercase, and I'm now moving into checking the namespace setter test's assertions.
+
+Checking that the setter returns the same tag instance, that namespace() returns an empty string when unset, and considering whether to just verify hashCode consistency trivially. Then confirming toString returns the tagName like "|=$:#:mei1", name() returns an empty string for a tag constructed with empty values, and normalName always lowercases the input tag.
+
+For getNameReturnsOriginalCaseTagName, I'm working through whether Tag.valueOf without explicit ParseSettings normalizes to lowercase via the HTML default settings, meaning getName() would return "oc2:{" rather than preserving the original casing "Oc2:{" despite the test's name suggesting otherwise.
+
+I'm now cataloging which tests lack a captured result variable, like textStateReturnsRcdataWhenRcDataOptionMatchesCurrentStaticValue, so I can figure out where to place the assertion in each case.
+
+I'm realizing these tests have their oracle assertions stripped out entirely, so I need to go through each one and add proper assertions—either direct null/value checks or capturing results before asserting, since simply calling the method without checking anything leaves the test meaningless.
+
+For hashCode, I'll just verify it's stable by calling it twice and checking equality, or leave it as a no-exception check. For setSeenSelfClose and the unknown-tag-clearing test, I'm adding assertions that confirm the tag isn't self-closing and that clearing an option marks it as known. Now I need to check jsoup's TokeniserState to figure out the correct return type for textState assertions.
+
+For the RCDATA test case, I'm considering just replacing the bare `tag.textState();` call with an assertion directly, like `assertNotNull(tag.textState());`, avoiding the need to capture and know the exact return type.
+
+Now I'm working through each test method and deciding which assertion to add: RCDATA and raw text checks should be `assertNotNull`, while the no-text-state-option case should be `assertNull`. I'm also starting to list out the equality-related assertions I feel confident about, like `assertFalse(isEqual)` for the field mutation and namespace difference tests.
+
+Continuing to map out the remaining test cases: form submittability defaults, whitespace preservation behavior, and the various static/instance methods for checking known tags across different construction paths (valueOf vs new constructor).
+
+I'm also covering the self-closing and empty/void tag option assertions, tracing through how setting options like selfClose, block, and void flags affect the resulting tag state.
+
+Continuing to work through more test cases covering tag prefix, namespace, toString, and name getter behaviors...
+
+I'm also flagging a few tests I'm less confident about—ones involving text state enums, local name parsing with prefixes, and hash code computation—since I'm unsure of exact return types or case-sensitivity handling for these.
+
+For the textState tests, I'll use `assertNotNull` rather than checking specific enum values, since that should compile regardless of the exact type. For `localNameReturnsFullTagNameWhenNoPrefixPresent`, I'm reasoning through the constructor behavior to determine the expected lowercase result.
+
+Working through the remaining cases: the prefix test expects "oc2" as the part before the colon, and for `getNameReturnsOriginalCaseTagName` I'm considering how `Tag.valueOf` normalizes case through the htmlDefault namespace.
+
+I'll settle on the conservative interpretation and add those oracle assertions, then move to editing the test file directly—adding assertions after each `tag.textState();` call and similar calls across the remaining test cases.
+
+Preparing the full file with all edits at once...
+

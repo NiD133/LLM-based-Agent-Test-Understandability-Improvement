@@ -1,0 +1,127 @@
+Let me start by reading the masked test file to understand what tests are there and what oracles need to be added.
+
+Now I need to analyze each test and determine what oracle (assertion) should be added. Let me go through each test:
+
+1. **test00**: Creates a CSVRecord, calls `toMap()`. No return value captured. This test just checks that no exception is thrown.
+
+2. **test01**: Creates a CSVRecord with a parser that has headers `["*;Ax}g<", "*;Ax}g<"]`, and stringArray0 with same values. Calls `toMap()`, captures `map0`. What should we check about map0?
+   - The record has stringArray0 = `["*;Ax}g<", "*;Ax}g<"]` as values
+Since both header entries are duplicates, the resulting map should collapse to a single key "*;Ax}g<" mapped to the record value, so I'm thinking the right assertion is `assertEquals(1, map0.size())`.
+
+For test02, I'm working through what `isSet("*;Ax}g<")` returns given the delimiter matches the header string itself—parsing the input against that delimiter would split it into empty fields, so the header index mapping likely resolves to position 0, meaning the check should return true.
+
+For test03, I'm now considering `isSet(1)` on a two-element string array.
+
+Test04 checks `isSet(3174)`, which should be false since it's out of bounds. Test05 checks `isSet(-2522)`, also false since negative. Test06 mirrors test02 but with the default comma delimiter instead—parsing gives only 1 field, so the header map still points to index 1, which falls out of bounds against a single-value record, meaning `isSet` should return false there too.
+
+Moving on, test07 calls `isSet(null)` against a header with three duplicate entries; since none of the header keys are null, this should also return false. Test08 has no header at all, so any `isSet` call returns false by default. Test09 starts looking at another scenario with the same triplicate header, parsing "*;Ax}g<" again.
+
+Checking Apache Commons CSV source, `isConsistent()` returns true only if the mapping size equals the values length. Since the header map from duplicate keys collapses to 1 unique entry while stringArray0 has 2 values, 1 != 2 means it should return `false`.
+
+For test11, with CSVFormat.DEFAULT and no header defined, isConsistent() should return `true` since there's nothing to compare against. Test12 checks hasComment() with a non-null, non-empty comment string, which should return `true`.
+
+For test13, parsing with DEFAULT format means no comment character is defined, so hasComment() should return `false`. Tests14-17 already have their expected exception oracles in place, and test18 just verifies object creation works without throwing. Test19 checks that size() correctly returns 2 for a CSVRecord backed by a two-element string array.
+
+Test20 confirms getRecordNumber() returns 1105L as set during construction. Test21's call to getParser() with a null parser isn't captured in a variable, so it's really just checking no exception occurs rather than needing an assertion. Test22 already has its exception oracle, and test23 is examining toString() on a record parsed from "*;Ax}g<" with a single value.
+
+Since I can't be certain of the exact string format, `assertNotNull(string0)` is the safer bet. Now for test24, I'm working through toMap() on a CSVRecord built from a parser with no header set - I need to figure out whether that throws an exception or just returns something when headerNames is null, since the test doesn't wrap the call in a try-catch.
+
+The comment getter isn't captured either, so no assertion there. Test26 checks bytePosition returns -1060L correctly. Test27 for values() just needs a non-null array check, and test28 moves on to examining characterPosition with a zero value in the constructor.
+
+So getCharacterPosition() should return 698, confirming that assertion. test29 just calls spliterator() with no result to check, so no assertion needed there.
+
+Now I'm working through test01, where toMap() is called on a record with duplicate values in both positions of the array, and I need to figure out how the header mapping resolves when the same key appears twice.
+
+Since both header entries are the same string, the resulting map should collapse to a single key with size 1 - I'll go with asserting the map size equals 1, or alternatively checking that it's not empty as a safer fallback.
+
+Moving to test02, which checks isSet with the same delimiter string used as a key.
+
+Confirming the delimiter split gives two empty fields, so values.length is 2, and with duplicate headers mapping to index 0 or 1 both satisfy the bounds check, so isSet returns true again for test06 without a custom delimiter, using the default comma against the same duplicate header setup.
+
+For test07, checking isSet(null) against a header map that only contains the key "*;Ax}g<" — since null isn't present, it returns false.
+
+For test08, with a null CSVParser meaning no header mapping exists, isSet("") should also return false since there's no mapping to check against.
+
+Now for test09, I'm working through isConsistent() with a header containing three duplicate entries that collapse to one unique key, while the parsed record only has one value — since the header count (3) doesn't match the value count (1), this should return false.
+
+Checking the actual Commons CSV source, `isConsistent()` compares the header map's size (unique keys) against the record's value count, not the raw header array length. So for test09, the header `["*;Ax}g<", "*;Ax}g<", "*;Ax}g<"]` collapses to 1 unique key in the map, and the parsed record also has 1 value, so `1 == 1` evaluates to `true`, meaning `assertTrue(boolean0)` should hold rather than `assertFalse`.
+
+For test10, the header again collapses to 1 unique key, but the record has 2 values (a two-element null array), so `1 == 2` is `false`, and `assertFalse(boolean0)` is correct.
+
+For test11 using `CSVFormat.DEFAULT` with no header configured, `mapping` is `null`, so `isConsistent()` returns `true` immediately, meaning `assertTrue(boolean0)` is right there too. I want to double-check whether CSVParser actually consumes the first row as a header when headers are explicitly set in the format, since that affects what record test09 ends up reading.
+
+Since each header entry maps to its index in order, duplicates simply overwrite, so the final map only keeps the last index. That gives `{"*;Ax}g<" → 2}`, so `mapping.size()` equals 1, matching `size()` of 1, making the assertion true for test09. For test10, the same logic applies with a two-element header array, producing map `{"*;Ax}g<" → 1}`, so again the sizes should match at 1.
+
+Wait, checking test10 more carefully now — with `values.length == 2` compared against mapping size of 1, this comes out `1 == 2`, which is false, so the assertion should be `assertFalse`.
+
+Now I'm re-examining test06 with a similar setup: parsing "*;Ax}g<" with a comma delimiter yields just one value, and checking `isSet` against the header map (which has the key at index 1) means `1 < 1` evaluates to false, so `isSet` returns false and the test should use `assertFalse`.
+
+Moving on to test02, I'm setting up a CSVFormat with the same duplicate header and using the same string as the delimiter.
+
+I'll go with `assertFalse(map0.isEmpty())` for test01. Then for the remaining tests, I'm working through the isSet oracles: test02 checks `isSet("*;Ax}g<")` returns true, test03 checks `isSet(1)` returns true since index 1 is within the 2-element array, test04 checks `isSet(3174)` returns false since it's out of bounds, and test05 checks `isSet(-2522)`.
+
+For the rest, I'm continuing through negative index bounds and null/empty key cases — test06 expects false since the index exceeds the array length, test07 checks a null string key returns false since it's not in the map, and now I'm considering test08 with an empty string key, where the CSVRecord was built with a null parser so there's no header mapping to look up against.
+
+Then I move to test09-test11 checking isConsistent(), returning true, false, and true respectively depending on whether the parser has a header mapping and matching field counts, and test12 checking hasComment(), which returns true since the comment field is set to a non-null, non-empty string.
+
+Continuing on, test13 checks hasComment() for a record parsed with the DEFAULT format that has no comment character configured, so the comment field should be null and hasComment() returns false. Tests 14-18 already have their oracles in place, test19 verifies size() equals 2 based on the string array, and test20 checks getRecordNumber() matches the constructor's 1105L parameter. For test21, I'm considering whether getParser() needs an assertion, but since its result isn't being captured in a variable, I need to look more closely at how that method call is actually used.
+
+Since the task says every oracle was removed entirely, I realize the original test likely had `assertNull(cSVRecord0.getParser())` and I should restore it. Moving to test23, `toString()` on a record parsed with the DEFAULT format from "*;Ax}g<" should produce a predictable string I can assert with `assertEquals`, though I need to work out the exact format.
+
+For test24, `toMap()` isn't captured in a variable, so I likely just need to verify no exception is thrown. For test25, `getComment()` also isn't captured, but since the record was constructed with comment "nJ=ULPJYC0~D|7x|2WT", I can restore the oracle as `assertEquals("nJ=ULPJYC0~D|7x|2WT", cSVRecord0.getComment())`.
+
+For test26, I'm figuring out `getBytePosition()` against the CSVRecord constructor arguments — trying to pin down whether the parameter order is recordNumber, characterPosition, bytePosition or some variant, since Commons CSV's constructor signature isn't immediately clear to me.
+
+This confirms bytePosition=-1060 for test26 and characterPosition=698 for test28, matching the assertions expected. I'm now checking test27's values() call, test29's spliterator call for exception-only checks, and moving on to reconsider tests where return values weren't captured, starting with test00.
+
+For the remaining tests, I'm deciding whether uncaptured calls like toMap() or getParser() need new assertion lines added after them, and identifying that getComment() should assert against the expected comment string.
+
+For test29 I'll add a not-null check on spliterator(), and for test21 an assertNull on getParser(). Then I'm going through the boolean tests methodically, confirming isSet() results against array bounds and index values for tests 03, 04, 05, and 11.
+
+I'm also confident about the comment-related assertions: test12 and test13 check hasComment() true/false based on whether a comment string exists, test19 checks size() equals 2, test20 confirms the record number matches 1105L, and test25 checks the exact comment string returned. Now I'm starting to note which tests I'm less sure about, beginning with test01's map assertion.
+
+The rest are trickier: several depend on how duplicate headers get handled, how the delimiter parsing behaves, and how header/values mappings resolve for isConsistent() and isSet(null). I'm also uncertain about behavior with a null parser, toString() being non-null, and the exact values for getBytePosition() and the returned string array.
+
+For isSet(null), since CSVRecord likely just checks whether the mapping contains the null key without throwing, and the test has no try-catch, I'm leaning toward it returning false. Similarly for isSet("") when the record has a null CSVParser, I need to consider what the mapping becomes in that case.
+
+For getBytePosition, the constructor parameters map directly to bytePosition = -1060L, so I'm confident that's the expected result. For getCharacterPosition, I'm checking the constructor arguments again to confirm the value being asserted.
+
+Now for isConsistent with three duplicate header entries and a single parsed value, the header map deduplicates to size 1, matching the single value, so isConsistent should return true.
+
+So with the deduped header map size 1 and a record value length of 1, `1 == 1` gives `isConsistent()` returning true for test09. For test10, the record has 2 elements but the unique header map size is still 1, so `1 == 2` is false and `isConsistent()` returns false. Now I'm moving on to check what test01 verifies about the `toMap()` result.
+
+I'll go with `assertEquals(1, map0.size())` since the deduplicated header produces just one unique key, so the resulting map should have a single entry mapping that key to the last record value.
+
+Now moving to test02, checking isSet behavior with the custom delimiter header.
+
+The delimiter here equals the full input string, so parsing splits it into two empty fields, giving values.length = 2. With the header map mapping the delimiter string to index 1, isSet returns true since 1 < 2, so I'm confident in asserting true.
+
+For the next test with the default comma delimiter, the same input string has no commas so it parses as a single field, making values.length = 1. Since index 1 isn't less than 1, isSet should return false here, and I'm confident in that oracle too.
+
+Now I'm turning to test27, which checks the values() output from a CSVRecord parsed from a builder class name string using the ORACLE format.
+
+`assertNotNull(stringArray0)` seems the safest oracle here, though I considered checking the array length is greater than zero.
+
+For test23's toString() call, `assertNotNull(string0)` is the safe choice too.
+
+Looking at test29 next, which calls spliterator() without capturing the result — I'm weighing whether an oracle is even needed there, since the original test doesn't assign or assert on the output.
+
+I'll do the same review for the other tests: for test00 and test24 where `toMap()` isn't captured, I'll abstain since I can't be sure what the original assertion checked. For test25, I can add `assertEquals("nJ=ULPJYC0~D|7x|2WT", cSVRecord0.getComment())`, and for test21 I'll add `assertNull(cSVRecord0.getParser())` since the parser wasn't set.
+
+Since getParser() returns null here, the missing oracle is probably `assertNull(cSVRecord0.getParser())`. I could either add that as a new assertion line after the existing call, since calling the getter twice is harmless for an idempotent method, or treat the existing bare call as the leftover and wrap it into the assertion directly.
+
+Let me work through this same pattern for the other tests: adding assertions right after calls that discard their return value, matching the observed result (e.g. `assertFalse(map0.isEmpty())` for the toMap() test, `assertTrue(boolean0)` for the isSet() tests).
+
+Adding more assertions...
+
+Adding remaining assertion edits for test28 and test29, then skipping test00 and test24 since they just verify no exception is thrown. Now I want to double-check test09's assertion by re-examining the duplicate headers and delimiter parsing logic.
+
+For test10, I need to verify that the mismatch between mapping size and record size correctly produces a false result for consistency. I'm also confirming test02's delimiter and parsing setup lines up with the expected outcome.
+
+I'm working through whether using the delimiter itself as the input text produces two empty fields when split, giving a values array of length 2, and checking that isSet returns true since the header index falls within that range. I'm also considering the edge case of whether nextRecord() even returns a valid record when the entire input matches the delimiter string.
+
+Since no exception is expected for the multi-character delimiter, newer Apache Commons CSV versions must support it, so I'm confident about the assertTrue result for test02. Now I'll move forward and apply all the edits together in one batch.
+
+
+
+Let me run the compile check.

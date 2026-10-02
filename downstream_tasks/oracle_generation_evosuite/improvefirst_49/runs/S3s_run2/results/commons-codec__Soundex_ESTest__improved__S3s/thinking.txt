@@ -1,0 +1,70 @@
+Let me read the masked test file to understand what needs to be filled in.
+
+Now I need to analyze each test and add appropriate oracles. Let me go through each test:
+
+**test00**: Encodes "vyHWF);{" with US_ENGLISH. Non-letter chars are stripped, H and W are silent. The letters are: v, y, H, W, F. H and W are silent. So the effective letters are v, y, F. Soundex of "vyHWF);{":
+- First letter: V (code 1)
+- y: no Soundex code (0 in US mapping), skipped
+- H: silent
+- W: silent  
+- F: code 1 (same as V, skip)
+Let me reconsider the actual mapping values: A=0, B=1, C=2, D=3, E=0, F=1, G=2, H=silent, I=0, J=2, K=2, L=4, M=5, N=5, O=0, P=1, Q=2, R=6, S=2, T=3, U=0, V=1, so I need to work out what code results for this input.
+
+Mapping out the full Soundex digit table now, then applying it to v, y, H, W, F: V=1, y=0, H=0, W=0, F=1.
+
+For test00 I land on "V100" as the encoded result. Then I move to test01, checking that encoding a null input returns null, and noting the test also has a commented-out assertion about max length that I need to address.
+
+I'm confident encoding null returns null in Soundex, so I'll add an assertNull check on that call even though it means invoking encode twice. Moving on to test04, which covers encode(Object) delegating to encode(String).
+
+Now I'm tracing through the custom mapping string character by character to figure out what code each letter maps to, since only indices 0-13 (A-N) are actually defined and the mapping contains non-digit characters that could cause unexpected behavior.
+
+Given the ambiguity in how non-digit mapping values would be handled, I don't feel confident computing an exact expected result for this test case, so I'll abstain on it and move to the next difference test.
+
+Working out the soundex code for the first string gives "X512". Now I'm tracing through the letters of "org.apache.commons.codec.EncoderException" to compute its soundex value, mapping each consonant to its digit and skipping vowels.
+
+Comparing "X512" against "O623" position by position, none of the characters match at any index, which gives a score of 0 — but that seems off given how the comment describes similarity scoring, so I think I need to double-check my soundex encoding for the second string.
+
+Given my uncertainty here, I should just ABSTAIN on this one. Looking at test08, it compares two identical all-digit strings with no letters at all, so encoding them via US_ENGLISH soundex likely returns null since there's nothing alphabetic to encode.
+
+For test09, setMaxLength(0) on the shared US_ENGLISH instance is likely just checked for not throwing an exception rather than any specific oracle value.
+
+For test10, the default constructor should initialize maxLength to 4, so I'd assert that value.
+
+For test11, the (String, boolean) constructor with specialCaseHW=false should also default maxLength to 4, and test00 seems to store a result without any oracle assertion applied to it.
+
+Now I'm working through the encoding logic for "vyHWF};{" character by character—V starts the code, y is skipped as a vowel, and H/W are silent under the Soundex rules, tracing how the codes merge when adjacent letters share the same digit.
+
+I'm trying to figure out whether Y counts as a vowel-like separator between same-coded consonants in Soundex, since different implementations (like Apache's) treat AEIOUY as code 0, which affects whether V and F get merged or coded separately.
+
+With Apache's US_ENGLISH default, H and W typically don't act as separators between same-coded consonants (specialCaseHW=true), so V and F would still be treated as adjacent same-coded letters despite the H and W between them.
+
+So F gets skipped, leaving just V with no further digits, giving "V000" once padded. Though I'm second-guessing whether the zero-coded Y itself might break the adjacency between V and F in some implementations.
+
+I'm getting too uncertain here—I'll abstain on test00, test04, and test05 rather than guess wrong. For test08, comparing two empty strings, both would encode to null or empty, and calling difference on that pair could either throw an NPE or return 0 depending on how the static US_ENGLISH instance handles it.
+
+Given the ambiguity, I should abstain on test08 too. I'm most confident about test10, where the default constructor initializes maxLength to 4, matching the comment directly.
+
+For test09, since setMaxLength() on the static instance doesn't affect separately constructed instances, the local soundex should still report maxLength 4. Test11 similarly defaults to maxLength 4 regardless of the constructor variant used, so I can assert that confidently.
+
+For test00 and test04, which store results without assertions, I'll abstain since I lack confidence there.
+
+For test05 and test08, both store diff values without assertions, so I'll abstain there too—though I want to double check test08 since it compares two identical digit-only strings, and I'm trying to work out what US_ENGLISH.soundex() does when there are no letters present at all in the input.
+
+That comment claiming difference is 0 for identical strings is suspicious since matching Soundex codes should score higher, so I'm not confident enough to trust it — I'll abstain on test08. Similarly for test05, the comment suggests a low similarity score but I can't verify it confidently, so I'll abstain there too and mark test00 as abstain as well.
+
+For test01, since encode already runs on a null String and Apache's Soundex implementation is known to return null for null input, I'll add an assertion confirming that. For test04 I'll abstain, but tests09, 10, and 11 all clearly reference a max length of 4, so I'll add straightforward assertions confirming getMaxLength() and maxLength equal 4 in each case.
+
+H and W get special treatment as transparent characters that don't break adjacency between same-coded consonants, so W after V=1 doesn't count as a separator. But F also codes to 1, so I need to figure out whether the y (code 0) in between breaks that chain — Y isn't H or W, so it should count as a real separator, meaning F wouldn't be skipped as a duplicate of V.
+
+So the question is whether Y truly acts as a vowel separator versus a silent letter like H/W. If Y separates same-coded consonants like a vowel does, F gets encoded, giving "V100"; if Y doesn't count as separating them, F would be skipped as adjacent-duplicate. I need to pin down Apache's actual treatment of Y in this edge case.
+
+Working through v-y-H-W-F: since H/W don't update the last-code tracker in specialCaseHW mode, the code-0 vowel y would act as a separator, letting f get encoded despite H/W sitting between. That traces out to "V100" for test00, though I want to double-check the exact sequencing of how the last-code variable updates.
+
+So F gets added giving "V1" padded to "V100" -- but I'm uncertain whether y actually resets lastCode or just gets silently skipped, which would instead give "V000". Without the actual source I can't resolve this ambiguity, so I'll abstain on test00 and focus on the ones I'm confident about: test01 (null encodes to null), and tests 09-11 confirming getMaxLength/maxLength equals 4.
+
+For test01, I'm thinking the cleanest fix is adding a separate `assertNull(soundex.encode((String) null));` line rather than restructuring the existing discarded call into a captured variable, since that's simpler and still valid.
+
+But I'm second-guessing whether Apache Commons Codec's Soundex actually returns null for null input or throws/returns empty—I need to verify that behavior before committing to assertNull.
+
+Actually, the test01 comment confirms it: "Encoding a null string returns null without throwing an exception." So assertNull is right, and I'll add it as a new statement before moving on to make the actual edits.
+

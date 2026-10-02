@@ -1,0 +1,44 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now I understand the test and the class. Let me analyze each test method to determine what oracle should be added:
+
+1. **toMillisLong_returnsDefaultMillis_whenPropertyKeyDoesNotExist**: 
+   - `DurationUtils.getMillis("g\"*8?I", Long.MIN_VALUE)` - property key doesn't exist, so returns `Duration.ofMillis(Long.MIN_VALUE)`
+   - `DurationUtils.toMillisLong(duration)` - should return `Long.MIN_VALUE`
+   - The test comment says "toMillisLong then converts that Duration back to the same long without overflow"
+   - Oracle: assert the result equals Long.MIN_VALUE
+
+2. **toMillisLong_returnsLongMaxValue_whenDurationOverflowsMilliseconds**: uses `ChronoUnit.FOREVER.getDuration()`, an extremely large duration that overflows milliseconds, so `toMillisLong` should clamp the result to `Long.MAX_VALUE` — oracle asserts equality with `Long.MAX_VALUE`.
+
+3. For **toChronoUnit_returnsDays_forTimeUnitDays**, I need to check what TimeUnit.DAYS maps to when converted via toChronoUnit.
+
+Then I'm covering the remaining TimeUnit-to-ChronoUnit mapping tests: HOURS should map to ChronoUnit.HOURS, SECONDS to ChronoUnit.SECONDS, and MICROSECONDS to ChronoUnit.MICROS, each with straightforward equality assertions.
+
+Next I'm checking getMillis with a null property key and negative default, expecting a non-null Duration result. Then I'm considering the accept test with a null duration—since accept just checks for null and does nothing, that test only needs to confirm no exception is thrown.
+
+With a non-existent property key and millis unit, this resolves to Duration.ofMillis(-210L), so the oracle should just assert the duration isn't null. For test 13, since the mock runnable does nothing, elapsed time should be near-zero, meaning isPositive should return false for that duration.
+
+Test 14 checks that a positive default (3831L millis) converts to a positive Duration, so isPositive should return true. Test 15 then moves to negative minutes (-866L), converting via toDuration into a negative-minute Duration for further checks on toMillisInt.
+
+Working through -866 minutes converting to -51,960,000 milliseconds, so toMillisInt should equal that value. Then I'm considering test 16, where a nop consumer runs essentially instantly, making the elapsed duration near-zero, so getNanosOfMiili should return 0 nanoseconds of the millisecond component -- though I'm second-guessing this since very short durations in the nanosecond range might behave unexpectedly.
+
+Tracing through the actual call path: `of(FailableConsumer)` invokes `since(now(...))`, giving `Duration.between` on a near-instant no-op action, so elapsed nanoseconds could realistically be a small nonzero value like 1000ns, not necessarily 0 — meaning the test's assumption that the nanoseconds-of-milli part is 0 may not hold for real (non-mocked) execution.
+
+But given `mockJVMNonDeterminism = true` in the EvoSuite runner params, the JVM clock itself is likely mocked to return identical instants, making `since()` yield `Duration.ZERO` and thus `getNanosOfMilli` genuinely 0 — so the oracle `assertEquals(0, nanosOfMilli)` makes sense in that mocked context. Moving on to check whether the constructor can simply be instantiated.
+
+For tests 10, 11, 17, and 18, the pattern is that they just confirm no exception is thrown — `DurationUtils()` can be constructed, and `accept()` with a no-op consumer and a seconds-based duration completes without error — so none of these need explicit assertions. I'm now organizing which tests need added oracles versus which just need the no-throw check, and reconsidering test 1 more carefully, since `getMillis` with `Long.MIN_VALUE` seconds is an edge case worth double-checking before finalizing.
+
+I need to verify whether `Duration.ofMillis(Long.MIN_VALUE).toMillis()` throws an ArithmeticException or safely round-trips back to `Long.MIN_VALUE`, since that determines whether the oracle should assert equality or expect an exception.
+
+I'm tracing through the exact integer division and modulo behavior for Duration.ofMillis with Long.MIN_VALUE, checking how Java's truncating division combined with the negative-nanos normalization logic produces the final seconds/nanos values.
+
+Now I'm checking toMillis(): multiplying the seconds back by 1000 overflows long range, throwing ArithmeticException, so the fallback path catches it and returns a boundary value since the duration is negative.
+
+This confirms my analysis matches the expected oracle: the asserted result is Long.MIN_VALUE, since the round-trip conversion from the original long back through Duration and millis preserves the original boundary value without overflow. With that confirmed, I can move to filling in the oracle for the next test, which checks that near-zero elapsed durations return zero nanoseconds when the mocked clock returns a fixed instant.
+
+Adding assertion oracles for the remaining tests...
+
+Adding more assertions...
+
+For that test, expecting zero for the nanos-of-milli value. The void-return tests like the accept* methods and constructor instantiation test don't need assertions added. Now I'll go ahead and make all these edits.
+

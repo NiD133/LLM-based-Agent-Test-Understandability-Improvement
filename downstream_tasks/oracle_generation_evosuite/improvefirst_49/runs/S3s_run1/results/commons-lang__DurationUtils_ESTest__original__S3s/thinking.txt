@@ -1,0 +1,59 @@
+Let me read the masked test file to understand what needs to be filled in.
+
+Now I need to analyze each test and determine what oracles (assertions) should be added. Let me analyze each test:
+
+**test00**: 
+- `DurationUtils.getMillis("g\"*8?I", (-9223372036854775808L))` - getting millis with a string key and Long.MIN_VALUE
+- `DurationUtils.toMillisLong(duration0)` - converting to millis long
+- The long0 variable is computed but not used. Need to add an assertion.
+- With Long.MIN_VALUE as millis, the duration would be `Duration.ofMillis(Long.MIN_VALUE)`. So `toMillisLong(duration0)` would return `Long.MIN_VALUE`.
+- Oracle: `assertEquals(-9223372036854775808L, long0);`
+
+**test01**: this one looks at `ChronoUnit.FOREVER.getDuration()` converted through `toMillisLong`. I'm working out whether that huge duration overflows when converted to milliseconds, since FOREVER is essentially `Duration.ofSeconds(Long.MAX_VALUE, 999_999_999)`. I suspect the utility method wraps `toMillis()`, which could throw an ArithmeticException on overflow, so I need to figure out what the test actually expects if it's meant to pass without an exception.
+
+Without access to the source, I can't verify how overflow is handled, so this test case may require abstaining. I'll move on to check the other test cases: test02 expects TimeUnit.DAYS to map to ChronoUnit.DAYS, and test03 expects TimeUnit.HOURS to map to ChronoUnit.HOURS.
+
+Continuing to verify: test04 expects TimeUnit.SECONDS maps to ChronoUnit.SECONDS, test05 expects TimeUnit.MICROSECONDS maps to ChronoUnit.MICROS, and test06 expects TimeUnit.NANOSECONDS maps to ChronoUnit.NANOS. For test07, a negative duration of -105 seconds and -105 nanos should make `DurationUtils.isPositive` return false, and I'm checking what test08 covers next.
+
+For test08, calling `DurationUtils.getMillis` with a null string doesn't need an oracle since it's just verifying no exception is thrown, and the same applies to test09 and test10 which pass null Duration and null consumer respectively without any variable assignment to check. Test11 involves converting TimeUnit.MILLISECONDS to ChronoUnit.MILLIS and then calling `DurationUtils.get` with a string key, the chrono unit, and a numeric value, which I need to trace through further.
+
+For test12, `DurationUtils.of` times a mocked runnable that does nothing, so the duration is likely zero given EvoSuite's deterministic timing. `isPositive(duration0)` on a zero duration should return false, so the oracle is likely `assertFalse(boolean0);`, though I'm not fully certain about the timing behavior.
+
+For test13, `DurationUtils.getMillis` builds a 3831ms duration and `isPositive` should return true for it, giving `assertTrue(boolean0);`.
+
+For test14, `DurationUtils.toDuration(-866L, TimeUnit.MINUTES)` creates a negative duration and `toMillisInt` converts it to an int number of milliseconds, which I'm calculating as roughly -51,960,000, well within int range.
+
+For test15, `DurationUtils.of` times a no-op consumer, so the resulting duration should be essentially zero, meaning `getNanosOfMiili` returns 0 nanoseconds within the current millisecond.
+
+Test16 just instantiates DurationUtils with nothing to assert, and test17 begins exploring another DurationUtils method.
+
+For test00, I'm confident that converting a Duration built from `Long.MIN_VALUE` millis back via `toMillisLong` should return `Long.MIN_VALUE` exactly. For test01, I'm less sure how `toMillisLong` handles the FOREVER duration since it likely overflows, so I should be cautious about asserting a specific value there.
+
+For the remaining tests, I'm mapping TimeUnit values to their corresponding ChronoUnit equivalents — DAYS to DAYS, HOURS to HOURS, SECONDS to SECONDS, MICROSECONDS to MICROS, and NANOSECONDS to NANOS — each with a straightforward equality assertion based on the expected conversion.
+
+Then I check test07, where a negative duration correctly evaluates isPositive as false. Tests 08-10 don't assign variables so they only need to verify no exception occurs, while test11 needs the ChronoUnit.MILLIS assertion but I'm uncertain whether the duration variable itself needs a separate check. For test12, I'm looking at how DurationUtils.of behaves with a mocked runnable given EvoSuite's mocked JVM time non-determinism.
+
+With the mocked clock, the measured duration would come out as zero, so isPositive on Duration.ZERO returns false, giving the assertFalse oracle for test12.
+
+For test13, I work out that a 3831ms duration is positive, so assertTrue is the expected oracle. For test14, converting -866 minutes to milliseconds gives -51,960,000, matching assertEquals. For test15, the mocked timing again yields zero nanoseconds, so assertEquals(0, int0) is the oracle, while test16 and test17 need no oracle at all. I want to double-check my reasoning on test14 though.
+
+Now thinking through test12: with ViolatedAssumptionAnswer, a mocked `FailableRunnable.run()` being void means the answer has no real effect, so the mock executes near-instantly. Since `mockJVMNonDeterminism` controls the simulated clock, the duration returned by `of(runnable)` would depend on EvoSuite's mocked timing rather than actual execution time, so I need to figure out what `isPositive` should evaluate to under that mock.
+
+I'm reasoning that `DurationUtils.of` likely captures a start instant, runs the runnable, then captures an end instant. With mocked time, those two calls to `Instant.now()` probably return the same fixed value, making the duration zero. So for `isPositive` on that zero duration, the expected result should be `false`, meaning I'll assert `assertFalse(boolean0)` for test12.
+
+For test15, I'm applying similar logic to work out the expected assertion.
+
+So `getMillis(String, long)` likely takes a name parameter and constructs a Duration from Long.MIN_VALUE milliseconds, and calling `toMillisLong` on it returns Long.MIN_VALUE back. Now I'm considering test01, where `ChronoUnit.FOREVER.getDuration()` produces an enormous Duration, and I need to trace what `toMillisLong` does when called on it - recalling that this method simply delegates to Duration's own `toMillis()`.
+
+Since FOREVER's Duration uses Long.MAX_VALUE seconds plus extra nanos, converting to millis should overflow and throw ArithmeticException, yet the test seemingly expects a normal result without exception handling. I'm wondering if `toMillisLong` actually catches that overflow internally and returns a capped value like Long.MAX_VALUE instead of propagating the exception.
+
+Without seeing the actual source, I don't have enough confidence to assert what `long0` should equal, so I'll abstain on this test case and move on to examining test11, which calls `DurationUtils.get` with a string, a chrono unit, and a negative long value.
+
+The clearest oracle I can identify is on `chronoUnit0`, confirming it equals `ChronoUnit.MILLIS`. Since I can't determine what `duration0` should hold without knowing the method's internals, I'll leave that assertion out and finalize my analysis with what I'm confident about.
+
+Continuing through the remaining test cases, I'm finalizing oracles for tests 10 through 17, covering ChronoUnit comparisons, boolean assertions, and numeric values. I also pause to double-check test12, considering how EvoSuite's ViolatedAssumptionAnswer mock behaves when a runnable's run() method is invoked.
+
+Since it's a void method the mock's return doesn't matter, and with mocked JVM nondeterminism returning identical Instant.now() calls, the duration would land at zero rather than positive, confirming assertFalse is correct there. Now I'm working through each test to pinpoint exactly where each removed oracle should be reinserted, starting with test00 right after the DurationUtils.toMillisLong call.
+
+test13-15: after the respective return value assignments, add assertions; tests16-17 have no oracle needed since they're just constructor calls or void methods. Time to make these edits.
+

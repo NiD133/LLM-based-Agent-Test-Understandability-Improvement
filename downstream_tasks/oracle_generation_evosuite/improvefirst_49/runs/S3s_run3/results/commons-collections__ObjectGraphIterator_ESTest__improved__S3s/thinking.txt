@@ -1,0 +1,56 @@
+Let me start by reading the masked test file to understand what's there and what oracles need to be added.
+
+Let me analyze each test method and determine which ones need oracles:
+
+1. **testRemoveAfterNext_whenBackedByMutableListIterator_succeeds** - calls `graphIterator.next()` then `graphIterator.remove()`. The test verifies this doesn't throw. No oracle needed other than the implicit "no exception thrown" behavior. But wait, we could verify the list is now empty after remove. Let me think... The test already expects no exception. An oracle could check `list.size() == 0` or `list.isEmpty()` after remove().
+
+2. **testFindNextByIterator_withNullTransformer_doesNotThrow** - Just calls `outerIterator.findNextByIterator(innerIterator)`. 
+
+There's no return value to check, and we can't know the expected result without more context, so this seems like a pure "no exception" test that doesn't need an additional oracle. Moving on, the next couple of tests already have try/catch blocks with fail() calls, which serve as their own oracle — no changes needed there either.
+
+the constant transformer's value, so the outer iterator's next() should just return rootValue (419), giving me `assertEquals(rootValue, result)`. Looking at test 7, `findNext` with an iterator argument recurses into it with no return value to check, and test 8 is just a construction test with no oracle needed.
+
+Now I'm going back through each test systematically since every oracle was stripped out with no markers left behind, so I need to figure out from context exactly what assertion belongs where.
+
+For the removeAfterNext test, after calling `graphIterator.remove()`, I should verify the removal happened by checking `assertTrue(list.isEmpty())` since the list had one element that got removed. For the findNextByIterator test with a null transformer, I'm considering checking `outerIterator.hasNext()` afterward, since with a null transformer ObjectGraphIterator likely just returns the root object as-is, though I'm not fully certain about the internal behavior here.
+
+Moving to the sibling iterator test, I think checking `firstIterator.hasNext()` or its state afterward would confirm the original reference wasn't mutated. For the manual findNext test, I definitely need `assertEquals` comparing the returned Integer against the expected root value. The remaining tests around `findNext` with an iterator argument and construction with a null transformer likely just need basic state or non-null checks.
+
+For the mutable list iterator removal test, since the only element gets removed, I should assert the list is now empty with `assertTrue(list.isEmpty())`. For the manual findNext test on the inner iterator, I trace through how the constant transformer always yields 419, so after `findNext` primes the inner iterator, calling `outerIterator.next()` should return that same rootValue — confirming `assertEquals(rootValue, result)` is the right oracle.
+
+For the null transformer test, I'm reasoning through how `ObjectGraphIterator` treats a null transformer as an identity function, meaning traversal just returns the root object directly rather than transforming it, so `findNextByIterator` should still successfully locate the root as the next element.
+
+I'm deciding to be conservative and only add assertions where I'm confident about the expected behavior, starting with the simpler case of checking that a list is empty after certain operations.
+
+For test 6, I'm tracing through the ObjectGraphIterator logic: since rootValue (419) is an Integer rather than another Iterator, findNext should set innerIterator's next state directly to that value rather than recursing further, which supports asserting the result equals rootValue.
+
+Right, when constructed with just an iterator, the transformer is null, and findNextByIterator pulls elements from currentIterator, checking if each is itself an Iterator to recurse into. Since innerIterator already has hasNext=true and next=419 cached, calling outerIterator.next() should propagate that cached value through.
+
+Since the transformer wraps 419 to itself repeatedly, calling next() again could loop, but for a single call it should just return 419 as the first value, so `assertEquals(rootValue, result)` seems like a reasonable oracle. For the null-transformer test, I'm not confident about the exact resulting state after the call, so I should abstain there rather than guess. I'm now moving on to look at the remaining tests one by one to judge which assertions are safe to make.
+
+Since trueValue isn't itself an Iterator, findNext should just set next=trueValue directly without recursing further, meaning outerIterator.hasNext() becomes true and outerIterator.next() should return Boolean.TRUE. I'm trying to pin down whether findNext's protected logic checks for Iterator type before assigning next, which determines this outcome.
+
+For the next test, testConstruction_withObjectGraphIteratorRootAndNullTransformer_doesNotThrow, I just need to confirm the constructor doesn't throw an exception.
+
+Now I'm consolidating the oracles I've decided on across all these tests, going through each one and noting whether I'm confident enough to assert or should abstain.
+
+Actually, test 1's implicit oracle might just be that no exception is thrown during remove(), with list.isEmpty() as an optional additional check. I should be more conservative here - tests 3 and 4 already have solid exception-checking oracles, while test 6 clearly needs one since it has an unused result variable. For the remaining tests that just verify no exception occurs, I'll treat the absence of a thrown exception as the implicit oracle rather than forcing an additional assertion.
+
+For test 7, calling `findNext` should leave the outer iterator's `hasNext()` true since the inner iterator has an element, so I'll assert that. Similarly for test 2, with a null transformer the outer iterator should end up with next=2928 and hasNext true, and for test 5, since the second iterator uses a constant transformer that always returns 419, the first iterator should also have hasNext true after findNextByIterator.
+
+Though these hasNext checks feel almost too obvious as oracles, so I'm second-guessing whether they were really removed assertions. Given the uncertainty, I'll commit to the clearer oracles—test 1 checking the list is empty and test 6 checking the result equals rootValue—and abstain on tests 2, 5, 7, and 8 where I'm less confident, though for test 8 there could be a trivial assertNotNull or assertFalse-style check on construction.
+
+For test 7 "recursesIntoIt", it might check that the iterator now has a next element after the recursion. Test 8 just verifies no exception is thrown. For test 5, I'm considering whether "does not mutate the original reference" means the root iterator's internal state shouldn't change when a nested iterator is pushed onto its stack, though I'm unsure exactly what's being asserted there.
+
+I'll finalize: test 1 gets an isEmpty assertion, test 2 and 5 I'll abstain on, tests 3 and 4 already have exception-based oracles, test 6 gets an equals check against the root value, and test 7 likely gets a hasNext assertion.
+
+Actually, reconsidering test 7 more carefully — I'm tracing through how findNext resolves when called with the inner iterator as its argument, following the chain of hasNext calls that would trigger the inner iterator to compute its first element from the root value and transformer.
+
+Following that through, since Boolean.TRUE isn't itself an Iterator, both the inner and outer iterators end up setting their next value directly to Boolean.TRUE with hasNext flagged true, which confirms `assertTrue(outerIterator.hasNext())` should hold after the call.
+
+Now I want to trace test 6 similarly: it builds an innerIterator with rootValue=419 using a constant transformer that always returns 419, wraps it in an outerIterator with no transformer, then manually primes the inner iterator by calling findNext(rootValue) before invoking outerIterator.next().
+
+Since 419 isn't itself an Iterator, this priming just sets the inner iterator's next value directly to 419 with hasNext true. Then I'm tracing through what next() does on the outer iterator -- it updates the current iterator state, checks hasNext, and returns the stored next value while resetting the internal flags.
+
+Since 419 isn't an Iterator, outerIterator ends up with next=419 and hasNext=true, so outerIterator.next() correctly returns rootValue, confirming that assertion. For test 1, I trace through that after next() and remove(), the single-element list backing graphIterator should end up empty, which confirms assertTrue(list.isEmpty()) — I'm confident in this. Now I'll write the edits.
+

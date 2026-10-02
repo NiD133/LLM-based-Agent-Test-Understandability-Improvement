@@ -1,0 +1,88 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Let me analyze each test case to determine what oracles (assertions) should be added:
+
+**test00** - Tests that `smooth(doubleArray1[3], doubleArray0[6])` throws a RuntimeException because the arrays have different lengths (3 != 6). This test already has `fail("Expecting exception: RuntimeException")` and catch block. No additional oracle needed.
+
+**test01** - Creates a LoessInterpolator with bandwidth=1.0, robustnessIters=2, accuracy=-1094.0. Calls `smooth(xval[4], yval[4], weights[4])`. 
+
+I need to trace through the bandwidth calculation with n=4 points: bandwidthInPoints = (int)(1.0 * 4) = 4, which satisfies the minimum of 2, so this should proceed without error and produce a result stored in `doubleArray2` that I need to verify.
+
+Here xval and yval both equal doubleArray0 (size 4), but weights is doubleArray1 with size 7 -- a mismatch between array lengths that should trigger a DimensionMismatchException in the smooth method.
+
+Since weights only needs to have at least n elements and 7 > 4, the call would actually succeed without throwing, so doubleArray2 should be non-null with length 4, making those assertions reasonable. Now I'm checking test03 where smooth is called on the same array twice with bandwidth close to 1 and robustnessIters=2, tracing through how bandwidthInPoints gets computed.
+
+For test04 with a 2-element array, the smooth method has a special case returning the original y-values unchanged, so I'd expect doubleArray1 to equal {0.0, 2.0} and assert accordingly.
+
+For tests 05 through 09, these already correctly cover exception scenarios with fail/catch blocks - interpolate with too few points, invalid bandwidth, no data, dimension mismatch, and negative robustness iterations. Now looking at test10.
+
+Tests 10 and 11 both cover bandwidth-out-of-range errors, already correctly using fail and catch. Test12 constructs a LoessInterpolator with valid parameters (bandwidth 0.69, robustnessIters 176) expecting success, so it just needs a not-null assertion.
+
+Since many of these tests are exception-only cases without obvious assertion points, I'm now shifting focus to tests 01-03 where doubleArray2 gets computed and needs actual value assertions added.
+
+For test04, I can work out the math directly: with xval=[0.0, 2.0] and yval=[0.0, 2.0], since n=2, the smooth operation just returns the same yval array unchanged, giving {0.0, 2.0}. Tests 01-03 are more complex computations that I'll need to work through analytically to determine expected values.
+
+For test02, I'm working out the bandwidth calculation and noting that since the weights array is all zeros, the effective robustness weights times weights end up zero everywhere too.
+
+With all weights at zero, sumWeights would come out to zero, causing a division that yields NaN, which would propagate into meanX and eventually the beta computation, likely producing NaN values in the output. So I'll just verify the array is non-null with the expected length of 4 rather than checking exact values, then move on to test03.
+
+For test03, the xval and yval arrays use unit weights with a bandwidth of 3, but the result is too complex to hand-calculate, so again I'll just check non-null and length 4. Similarly for test12, checking non-null on the interpolator object seems like the right oracle.
+
+I'm weighing whether specific-value assertions, length checks, or just non-null checks are the right call across these tests. Test04 is the exception since n=2 always deterministically returns {yval[0], yval[1]}, so I can assert exact values there. For the rest, I'll default to non-null and length assertions since computing exact expected values isn't tractable.
+
+Now I'm going through each test to decide exactly where to insert these oracle assertions: after the smooth() call in test01, test02, test03, and test04, adding assertNotNull and assertEquals(4, length) checks on the resulting arrays.
+
+For test12, I'm adding a not-null check after the LoessInterpolator constructor call with specific bandwidth and iteration parameters.
+
+Then I'm going back to reconsider tests 01 and 02 to verify whether the given inputs would actually complete successfully or trigger an exception, since that determines whether the oracle should assert a result or expect a thrown error.
+
+Tracing through test01: I'm checking each validation step in the interpolate method—finiteness checks on xval, yval, and weights, then the strictly-increasing order check on xval—and all of them pass since the input array is properly sorted with finite values, so the computation should proceed into the actual smoothing loop.
+
+Continuing the weight sum: k=2 gives weight ~2, k=3 drops to 0 since tricube(1)=0, so sumWeights lands around 2.3 and sumX comes out to roughly 4.09.
+
+For test02, I'm now tracing through with an all-zero weights array of length 7 and inputs [0.0, 0.3, 2.0, 3745.05], computing bandwidthInPoints=3 and checking the bandwidth interval {0,2} for i=0, where the zero weights should keep everything at zero for those k values.
+
+All weights being zero means sumWeights=0, so meanX and beta come out as NaN, propagating NaN through residuals -- but this still shouldn't throw an exception, so the assertNotNull and length-4 checks should hold regardless. I'm also revisiting test01's robustness iteration with a very negative accuracy of -1094.0, checking whether the medianResidual comparison would trigger continued robustness weight updates.
+
+Since the absolute value of medianResidual is always nonnegative, it can never be less than -1094.0, so the loop won't break early and will run its full 2 robustness iterations without throwing. My plan now is to add the appropriate assertNotNull and length assertions to test01 through test04, matching expected array lengths of 4, 4, 4, and 2 respectively.
+
+For the remaining tests, I'm noting that the exception tests (test00, test05-test11) already have proper oracles via the fail/catch pattern, which is standard EvoSuite style and doesn't need modification -- the fail() call inside the try block confirms an exception must be thrown, and the catch block verifies it.
+
+I need to figure out which exception class corresponds to each test case's comment. For the mismatched dimensions test (3 != 6), it's DimensionMismatchException; for the tests mentioning too few points or bandwidth, it looks like NumberIsTooSmallException should apply since those checks fail on minimum size requirements.
+
+All these exception types trace back to RuntimeException through MathRuntimeException, so I'm considering whether the catch block should include verifyException calls tied to the specific exception messages given in the comments.
+
+Adding more verifyException calls...
+
+Let me double-check test05 -- the exception message is "number of points (1)", and I'm tracing through how `interpolate` calls `smooth(xval, yval)` first, which for a single point returns a specific result.
+
+I want to be careful here since guessing the wrong exception class could break the test, but I'm fairly confident this maps to `NumberIsTooSmallException` given the message format matches insufficient observed points.
+
+Given the uncertainty, I'll be pragmatic: since the tests already use `fail()` inside a try block with the catch clause serving as the oracle, that's sufficient to validate the exception is thrown without needing to verify the exact class in ambiguous cases.
+
+I'm now going through each test case to identify which exception types I'm confident about: NotPositiveException and OutOfRangeException for the LoessInterpolator constructor checks on robustnessIters and bandwidth, NoDataException and DimensionMismatchException for the smooth method's input validation, and NumberIsTooSmallException for the bandwidthInPoints check.
+
+I'm weighing whether to add verifyException calls only where I'm confident about the exact exception class, since a wrong guess would break the test while omitting it just leaves it less specific — and I'm still working through the trickier cases like test05 and test06 involving bandwidthInPoints calculations.
+
+For test06, bandwidthInPoints computes to 1, which is below the minimum of 2, so it throws NumberIsTooSmallException with the BANDWIDTH format — matching the "bandwidth (1)" message I saw in the catch comment.
+
+For test05, I'm checking whether SplineInterpolator's minimum points requirement gets triggered when interpolate is called with just a single point after smoothing.
+
+I'm second-guessing exactly how verifyException matches class names, but rather than overanalyze it I'll just move forward with the oracles I'm confident about: DimensionMismatch and NoData for test00/07/08, NotPositive and OutOfRange for test09/10/11, NumberIsTooSmallException for test06, and a similar exception-based check for test05.
+
+For the remaining tests, I'll use assertNotNull plus length assertions for test01-03, specific value checks for test04, and a basic assertNotNull for test12 — prioritizing correctness over guessing the exact verifyException format.
+
+The removed oracle was likely the verifyException call in each catch block, so without it the tests only confirm that some exception fires, not the specific type. I'll add verifyException calls where I'm confident about the exception class, starting with test00 using DimensionMismatchException, and continue through the remaining exception tests similarly.
+
+Adding array assertions...
+
+For test05, I'm reasoning that SplineInterpolator requires at least 2 data points, so the "number of points (1)" message likely comes from a check inside it, confirming NumberIsTooSmallException is the right exception class.
+
+Now I want to double check test02 by tracing through the smooth call with an all-zero weights array to verify the expected behavior.
+
+Since all weights at nonzero-weight indices are zero, every weighted distance term collapses to zero, leaving sumWeights at zero and producing a division-by-zero case where meanX becomes NaN since sumX is also zero.
+
+This NaN propagates through every downstream calculation—slope, intercept, and residual—without triggering an exception, so the result array ends up populated entirely with NaN values rather than null.
+
+My assertions checking that the array is non-null and has length 4 still hold true. I'm satisfied with this plan and ready to implement the edits.
+

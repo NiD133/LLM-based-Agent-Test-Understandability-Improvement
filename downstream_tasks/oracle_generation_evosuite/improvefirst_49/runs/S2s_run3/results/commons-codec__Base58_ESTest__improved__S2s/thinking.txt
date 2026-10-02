@@ -1,0 +1,49 @@
+Let me start by reading both the test file and the class under test to understand what needs to be done.
+
+Now let me analyze the test file and understand what oracles need to be added. The test file has many test methods without assertions. Let me go through each one:
+
+1. **test00_encodeAsString_withNegativeFirstByte_returnsString**: The comment says `// Unstable assertion: assertEquals("(jM", encoded);` - This is marked as unstable, so no assertion needed here. The test is just verifying it doesn't throw.
+
+2. **test01_encode_withOffsetBeyondArrayBounds_throwsArrayIndexOutOfBoundsException**: This test already has `fail("Expecting exception: ArrayIndexOutOfBoundsException")` and `catch (ArrayIndexOutOfBoundsException e)` - no additional oracle needed.
+3. For **test02_encode_withNegativeLength_returnsEmptyByteArray**, I'm checking how `encode` behaves when called with a negative length on an all-zero input array, since negative length signals EOF and triggers conversion of accumulated data. I need to trace through the Base58 class to confirm what the return value should actually be in this case.
+
+With offset and length both negative, the encode call should immediately hit EOF and just flush whatever's in the context buffer, which starts empty. So tracing through the wrapper method `encode(byte[], int, int)` in BaseNCodec, it creates a fresh context, calls the internal encode with negative length to trigger EOF, then reads out whatever got accumulated.
+
+Since I don't have the exact BaseNCodec source to confirm every detail, I'm being cautious about which assertions to add - things like checking the result isn't null, or that it's an empty array, seem like safe bets given the negative length forces an immediate EOF with nothing processed.
+
+Tracing through what happens with an empty byte array — the second call would just return since EOF is already flagged, so the encoded output stays empty. I'm now checking whether constructing a BigInteger from an empty magnitude array actually evaluates to zero rather than throwing an exception.
+
+This confirms the empty result assumption for test02. Now I need to compute what "Dt2" decodes to for test05 — working out the Base58 digit values for D, t, and 2 to get the expected byte value.
+
+I need to map out the Base58 alphabet positions carefully to verify each character's decoded value: '1' through '9' give 0-8, then 'A' through 'H' continue the sequence, and I'm working through to find where 't' falls to confirm the decode of "Dt2".
+
+Working through the base58 decoding, I calculate D*58² + t*58 + 2 = 43327, which converts to hex 0xA93F, giving a 2-byte decoded array. Since the test doesn't specify exact expected values, I'll settle for asserting the decoded result is not null and has length 2.
+
+For "t2", the value comes to 51*58+1=2959 (0x0B8F), which similarly yields a 2-byte array when converted via BigInteger's toByteArray method.
+
+Now for "11" with two leading ones representing leading zero bytes: since there are no other characters, the value is zero, so decoded is empty, and the result becomes a 2-byte array of all zeros to represent the two leading '1's.
+
+For the builder tests, setEncodeTable should return the same builder instance for fluent chaining, so assertSame makes sense there. The get() call should return a non-null Base58 codec instance, though the test name's mention of a MIME chunk size constant doesn't seem to match anything in the actual test code.
+
+For isInAlphabet, the test string contains characters outside the Base58 alphabet like spaces and punctuation, so it should return false. For the all-zero-bytes encoding test, I'm working through how 18 leading zero bytes should each map to a '1' character, giving "111111111111111111" as the expected output, and I'm tracing through the BigInteger conversion logic to confirm this.
+
+For the builder factory test, `Base58.builder()` should simply return a non-null Builder instance, so `assertNotNull` is the appropriate oracle there.
+
+For test04, decode is called twice—first with a negative length signaling EOF, then again expecting a no-op. Since no return values are captured and the test only checks that no exception occurs, there's no clear oracle unless I check `context.eof`, but that's not accessible in the test as written.
+
+I'm starting to compile the full list of oracles across tests, beginning with test02's null or empty-length check.
+
+Now I'm sketching out the remaining oracles: test05 and test06 checking decoded is non-null with length 2, test08 verifying decoded values are zeroed, test09 checking the returned builder, test10 confirming the codec is non-null, test11 asserting a false result, test12 checking the encoded string equals a specific value, and test13 verifying the builder is non-null. I'm revisiting test02 to look more closely at its setup with a single-byte input array.
+
+For the 3-arg encode with negative length, I'm reasoning it likely signals EOF immediately since len is -20, meaning no data gets accumulated and the result should be empty -- so I'll assert either that the result length is zero or simply that it's non-null. For test05 and test06, I'm trying to work out what specific decoded byte values to expect based on the input pattern.
+
+Since I'm computing these expected byte values from the decode table without direct confirmation from the source, there's real risk of getting them wrong, so it's safer to fall back to just asserting non-null and correct length rather than exact byte matches.
+
+I'm confident about the simpler cases though: test08 decoding "11" should produce a two-byte zero array, and test12 encoding 18 zero bytes should produce 18 leading ones. I'll settle on adding conservative assertions like `assertNotNull` and length checks for the cases I'm sure about.
+
+I'm tracing through the fluent builder chain to confirm `setEncodeTable` calls the superclass method which returns `this`, so `assertSame` should hold. Setting a short 3-byte table likely just gets stored without validation, so it shouldn't throw.
+
+For the byte-return tests, without knowing exact expected values I'll fall back to checking non-null results and expected lengths rather than exact byte matches — computing hex values like "Dt2" → 43327 → [0xA9, 0x3F] to sanity-check my assumptions.
+
+Then checking test11's `isInAlphabet` on a string with clearly invalid characters (colons, spaces, "I", "l") — since Base58 excludes several of those, the check should return false, so I'll assert that. Now I'm ready to write out the actual edits.
+

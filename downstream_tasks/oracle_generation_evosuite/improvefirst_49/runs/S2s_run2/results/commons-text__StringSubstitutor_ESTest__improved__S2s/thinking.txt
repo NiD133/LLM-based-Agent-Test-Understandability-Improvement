@@ -1,0 +1,306 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles are needed.
+
+Now I need to analyze each test method and determine what oracle (assertions) should be added. Let me go through each test carefully:
+
+1. **replaceCharArraySubrange_defaultConstructor_returnsDefaultEscapeChar** - calls `substitutor.replace(chars, 1, 1)` but doesn't assign the result. The test name suggests it "returnsDefaultEscapeChar". Looking at the code, `replace(char[], int, int)` returns a String. But the result isn't captured. There's no obvious assertion needed here for the escape char. Actually... wait, the test just calls replace with no result capture. This test doesn't check anything currently. 
+
+Since the result isn't stored, perhaps the intended oracle is actually verifying `substitutor.getEscapeChar()` equals the default `'$'`, even though it's disconnected from the replace call itself.
+
+Looking at the other similar tests, the pattern holds: several calls to `replace` with null or null-and-range don't capture their result, but the test names suggest checking that the escape char stays at its default, so the oracle is likely asserting `substitutor.getEscapeChar()` equals `'$'`. One test with a single-element array does capture its result, so there the oracle should just be `assertNotNull(result)`.
+
+For the CharBuffer case with 36 null characters, since no variables are being substituted, `replace` should just echo back the original content unchanged, so I'm expecting a not-null result with a matching length assertion.
+
+That confirms it, so I'll add `assertNotNull(result)` and `assertEquals(36, result.length())`. For the tests where the replace result isn't captured, like "preservesEscapeChar" cases, I'll instead assert on the escape char staying at its default value since there's no return value to check.
+
+Going through more test cases: several others also call replace without capturing results, so the tests likely just verify no exception is thrown, though some already have proper try/catch/fail patterns for exception checks. The self-referential resolver and undefined variable exception tests already have the right structure in place, while others like replaceObject with null still need review.
+
+Continuing through the remaining cases: buffer with a closing brace expects a non-null result, null TextStringBuilder with a negative range expects null, a zero-length TextStringBuilder range expects an empty string, and I'm now checking the null TextStringBuilder case without a range.
+
+Moving on, an empty builder should return not-null, the null-suffix static replace throws an exception as expected, and I'm working through a custom prefix/suffix case with "${" as input and "}" as both prefix and suffix against an empty map, reasoning through whether the pattern actually matches given the empty variable map.
+
+Since "${" doesn't contain a closing "}variablename}" sequence, no substitution occurs and the result should stay "${". Next I'm checking that replacing with null Properties returns the source's toString, and then looking at how an empty Properties map with an interpolator source behaves.
+
+The toString() of a StringSubstitutor is just a descriptive dump of its configuration fields, not something containing actual ${...} placeholders, so replacing against it wouldn't substitute anything meaningful. Checking the static replace method with Properties, it seems that when valueProperties is null it just returns source.toString() directly, otherwise it converts the properties to a map and delegates to the map-based replace.
+
+Continuing through the remaining test cases: for the escape-char substitutor test I'd check `assertEquals('$', substitutor.getEscapeChar())`, and for the various `replaceIn` cases with null or empty StringBuilders, the oracle should assert the boolean return matches what the test name implies -- `assertFalse` for null inputs and `assertTrue` when a replacement actually occurs.
+
+Now I'm tracing through the character-by-character construction of the StringBuilder to determine whether the "${}" empty variable pattern actually gets resolved or left untouched, since the null variableResolver would cause `resolveVariable` to return null and skip replacement.
+
+So tracing through the string state step by step, the self-append effectively duplicates the current toString() value onto itself, doubling the accumulated string at that point.
+
+Tracing through the string concatenation, I see sb2 ends up appending itself, doubling the content to "}\0\0\0\0$${}" repeated. Now I'm analyzing how the `$` character before `${` creates an escape sequence, effectively neutralizing the empty variable reference that follows.
+
+Tracing through the exact byte offsets of the escaped `$${}` case to confirm the escape character gets stripped and the empty variable name resolves correctly.
+
+Since escPos is at least 0, I'm checking whether the escaped variable's start matches a nested prefix by looking right after the `${` opener—here that would be position 8, which is `}` not `${`, so that check fails. I'm now reasoning through whether there's an outer suffix following, tracing through the duplicated string structure to see how the second half repeats the same pattern.
+
+Working through the string trace, I find `hasOuterSuffix` evaluates true since there's a closing brace right after, so the condition for the nested-prefix escape check ends up false, meaning the position advances by one and the escape character gets deleted. I'm tracing through the exact character deletions to see if the resulting string matches what the "replacesAndReturnsTrue" test expects.
+
+Moving to the next test, "resolvesEscapedPrefixOnly" — this one builds a StringBuilder ending with an unclosed `${` (no closing brace), so there's no variable substitution possible, though escape character processing might still occur. I'm reconstructing the exact StringBuilder contents to figure out whether `wasAltered` should be true or false here.
+
+Still tracing the string concatenation...
+
+Tracing through the character positions, I find the full string ends with an unclosed `${`, so I locate the escape marker at position 5 and search forward for a closing brace, finding one at position 8 which yields an empty variable name — now I need to check whether that position also matches a nested prefix pattern.
+
+Still working through the string concatenation...
+
+Tracing through the escape and suffix positions, I find no closing brace after the nested prefix, so the outer suffix check fails, meaning the escaped variable doesn't start with a nested prefix and there's no outer suffix to match.
+
+So the code deletes the escape character, shifting the buffer left and marking it altered, leaving behind an actual `${}` with an empty variable name that resolves to null since no custom resolver is registered — meaning the substitution just removes the escape without inserting a value, matching what the "resolvesEscapedPrefixOnly" test expects.
+
+I'll settle on `altered` being set true by the escape removal, so `wasAltered` should be true, though I'm still uncertain about how the second unresolved `${` occurrence factors in. Checking the similarly-named test for nested variable refs might clarify the expected behavior here.
+
+Moving on to null StringBuffer cases, both expect `assertFalse(wasAltered)` since there's nothing to replace. Then I'm looking at a case with an unclosed variable prefix `${` in a StringBuffer, tracing through how the substitutor would scan for a closing brace that never comes.
+
+I'm noting test 39 as already disabled for instability, then moving to null and negative-length TextStringBuilder cases, both expecting false since there's no valid range to process.
+
+42. **replaceIn_nullTextStringBuilder_returnsFalse** - Straightforward null check returns false immediately. Oracle: `assertFalse(wasAltered)`.
+
+43. **replaceIn_stringBuilderWithNoVariables_returnsFalse** - The buffer `":-"` has no `${...}` patterns, so nothing gets altered. Oracle: `assertFalse(wasAltered)`.
+
+44. **replaceIn_stringBuilderWithPreserveEscapes_returnsFalseWhenNoClosingSuffix** - With `preserveEscapes=true`, I'm tracing through the string `"}\0\0\0\0$${"` where an escaped `${` appears near the end without a matching closing suffix, meaning the substitution can't complete.
+
+45. **constructor_withCustomEscapeChar_setsEscapeChar** and 46 similarly test that constructing with a custom escape character (like `'R'` or `'$'`) properly sets that value, verified via `getEscapeChar()`.
+
+47. **copyConstructor_fromInterpolator_copiesEscapeChar** - checking that constructing a substitutor from an interpolator preserves the escape character setting.
+
+48-51 continue this pattern: verifying default escape char behavior for custom prefix matchers, and confirming that null arguments to setVariableSuffixMatcher, setVariablePrefixMatcher, and setVariablePrefix all throw IllegalArgumentException via try/catch/fail blocks that already serve as the oracle.
+
+52-54: setValueDelimiter and setVariableSuffix both return `this`, so I'm asserting the returned object is the same instance via assertSame; setDisableSubstitutionInValues(true) sets a flag I need to verify with an assertTrue check.
+
+Tests 55-56 involve calling replace() without capturing a result, so there's no clear oracle for them. Now I'm going through the remaining tests systematically to figure out which ones have result variables needing assertNotNull or similar checks versus ones needing escape char or boolean assertions instead - starting with the char array and char sequence replace tests that both need assertNotNull on their string results.
+
+Continuing through more test cases, working out expected results for empty builders, custom prefix/suffix edge cases with no matches, and static replace calls with null properties objects.
+
+I'm checking whether the toString output actually contains a real `${...}` pattern that would get substituted—tracing through the matcher's printed representation to see if the `${` there is actually followed by a proper closing brace, or if it's just incidental text that wouldn't trigger substitution.
+
+Since `enableUndefinedVariableException` defaults to false, even if `${` is spotted, an undefined variable would just be left untouched rather than replaced (null value means no alteration), so `substitute` should return the string unchanged. That confirms `replace(String, ...)` returns the original toString value, so asserting equality against `substitutor.toString()` for that case should hold.
+
+Now I'm moving to test cases that need boolean-result oracles, starting with the null StringBuilder with mocked lookup case.
+
+Still mapping expected assertions...
+
+I'm continuing through the copy constructor and setter chain tests, matching each to its expected assertion, then noting a separate category of tests whose names imply a check but lack a captured result variable.
+
+For those "preserves default" style tests, I'll add an assertion confirming the escape char stays unchanged. I'm now going back through the full test list once more to confidently assign assertions—mostly assertNotNull, assertNull, or specific equality checks based on what each test name implies.
+
+Since `${` has no closing `}`, the substitution never completes, so `altered` stays false. I'm continuing through the rest of the `replaceIn` cases similarly—null builders, negative lengths, and no-variable inputs should all yield `assertFalse(wasAltered)`.
+
+Then I move into constructor and setter tests: verifying escape char defaults and custom values (`'$'` vs `'R'`), copy constructor preserving the escape char, and fluent setters like `setValueDelimiter` and `setVariableSuffix` returning `this` via `assertSame`. I'm also checking that `setDisableSubstitutionInValues(true)` correctly sets its flag.
+
+For a couple of trickier cases I'm reasoning through expected outcomes—assuming `replaceIn_stringBuilderWithEmptyVariable_replacesAndReturnsTrue` should assert true for alteration, while the unclosed variable escape test needs closer inspection since the input string mixes an actual variable `${}` with an escaped `$${`, making it unclear whether substitution truly occurred.
+
+I'm tracing through test 34, which skips the leading `}` before the self-append. Building the string step by step: after appending the char array and the "${" sequence, I need to carefully work out what appending the StringBuilder to itself produces, since self-referential appends double the content at that point in the sequence.
+
+Continuing the trace, I check for an outer suffix `}` after the nested prefix but find none, so the position advances by one and the escape character gets deleted, shortening the string and shifting the remaining `${` and `}` positions. Processing then resumes from the updated position.
+
+Now I'm tracing through the `replaceIn_stringBuilderWithNestedVariableRefs_resolvesEscapedPrefixes` test, building the StringBuilder step by step with nested `${` and `}` appends to see how the escaped prefixes resolve.
+
+I'm tracing through the exact character positions of the doubled string to find where the escape character and `${` pattern land, checking positions 8 and 9 for the boundary between the two concatenated copies.
+
+Continuing to trace through the shifted buffer after deletion, I'm re-checking each position for `${` prefixes and verifying my index arithmetic against the character array to make sure I haven't miscounted the offsets.
+
+Tracing through the index shifts after deleting the first `$`, I'm mapping out where each character lands in the resulting 17-character string.
+
+Now I'm digging into the actual deletion logic itself—specifically how `pos`, `startPos`, and `escPos` get recalculated once a character is removed from the builder, since the position bookkeeping after a decrement is what determines whether subsequent matches are found correctly.
+
+ixMatcher confirms a match length of 2, but checking position 13 reveals a `$` right before it, meaning this is actually an escaped `${`. With an empty variable name between the braces and no outer suffix found since we're at buffer end, I delete the escaping `$` character and mark the string as altered, shrinking it to 16 characters.
+
+With the `$` removed, what remains at position 13 is now an unescaped empty `${}`. Since the variable name is empty and there's no resolver, resolution returns null, so no substitution happens but the string is still marked as altered — meaning `wasAltered` should be true for this test case.
+
+For the next test involving a CharBuffer allocated with size 36 (from the char '$'), I'm reasoning that the result should be 36 null characters, and the test likely just checks the length equals 36.
+
+Then I look at a test with custom prefix and suffix both set to `}`, searching for pattern `}var}` in the string `"${"` — since it's not found, the input string is returned unchanged, so the expected result is `"${"`.
+
+For a test using an interpolator with empty properties, the expected behavior is that the substitutor's toString() is returned as-is, so I'll assert the result equals `substitutor.toString()`.
+
+Now looking at a test that doesn't capture the replace result but is named around default escape character behavior — I think I should add an assertion checking that `getEscapeChar()` returns `$`, the default value.
+
+Similarly, for tests involving null input with default or custom escape characters, I'll add assertions checking `getEscapeChar()` returns either `$` for the default case or `^` when a custom escape character was configured, matching what each test name implies about preserving that character.
+
+Continuing through the remaining tests, I'm noting several where the result isn't captured, making it hard to assert on substitution outcomes - for those like `replaceStringWithRange_mockedResolverReturningBrace_performsSubstitution`, `replaceObject_withSubstitutionInVariablesEnabled_returnsOriginalWhenNoMatch`, and `replaceStringBuffer_withNull_returnsNull`, I'm weighing whether to just add the default escape char assertion or abstain given the missing oracle. For `replaceStringWithRange_interpolator_usesDefaultEscapeChar`, I'll add the escape char assertion.
+
+For the two similar tests, I'll add the assertions on substitution flags. As for the two StringBuffer null tests, since the result isn't captured and asserting on it would require an extra call, I'm inclined to ABSTAIN on those rather than force an awkward assertion.
+
+I should add oracles where behavior isn't currently verified—capturing results into variables and asserting on them, rather than calling the method twice which would change semantics. For the null-input tests, I'll modify the existing call to capture its return value and assert against it directly instead of invoking the method again.
+
+For cases where the result isn't captured, I should add the assertion inline on the method call itself, checking for null return, or add a state check like verifying the escape char stayed the same. For the null-returns-null test specifically, I'll wrap the call to assert the result is null directly.
+
+I'll go with wrapping the existing call in an assertNull for the null-returning tests, and for tests where the result is already captured, I'll simply append the appropriate assertion afterward. Now I'm finalizing this plan across all the test cases before making the edits to the file.
+
+Adding more test oracles...
+
+Going with ABSTAIN for that one too, since the result isn't captured. For null-return cases I'm adding null assertions on the results, and for the StringBuffer null tests I'm changing the calls to cast null explicitly so the compiler resolves the right overload. Continuing through the empty buffer range test with a not-null assertion...
+
+For test 26, I want the result to equal the substitutor's toString value, and I'm tracing through the CUT logic to confirm that with an empty properties map, `replace(substitutor, emptyMap)` behaves as expected, wrapping the substitutor in a new instance before applying substitution.
+
+Following that, I notice the toString output itself contains a literal `${` pattern from the matcher's field description, so I need to check whether that triggers an actual variable substitution attempt during the process, since the empty map means any matched variable would resolve to null.
+
+I'm tracing through the actual toString format character by character, trying to pinpoint exactly where the `${` prefix marker starts and where the `}` suffix character would end the variable name in this constructed string.
+
+Since the extracted variable name ends up being an enormous chunk of internal toString text, looking it up in the empty map returns null, no substitution happens, and `altered` stays false—so `replace()` just returns the original source string unchanged, meaning the result equals `substitutor.toString()`.
+
+But actually `replace(Object)` doesn't check `altered` the way `replace(String)` does—it always returns `buf.toString()`, which still equals `substitutor.toString()` here since nothing changed. So the assertion holds.
+
+Next I'm checking that after calling `replaceSystemProperties` with a substitutor, the escape character remains the default `$`.
+
+Then I go through a series of `replaceIn` tests: null StringBuilder with a mocked lookup returns false, null StringBuilder with a range returns false, a StringBuilder with an empty variable gets replaced and returns true, one with an unclosed variable only resolves the escaped prefix and returns true, and one with nested variable references resolves the escaped prefixes.
+
+I continue with StringBuffer-based cases: null StringBuffer returns false, null StringBuffer with a range returns false, and a StringBuffer with the default variable start returns false, while the interpolator-to-string test already has its assertions commented out so I skip it. Then I move to a null TextStringBuilder with a range, which should also return false.
+
+Adding more test case assertions...
+
+For the null-returning tests on StringBuffer/StringBuilder, I'm adding assertions that wrap the existing null-input calls so each verifies the return value is null, even though it means invoking the method a second time — acceptable since these calls are idempotent for null input.
+
+Calling with null there works fine. Now I'm tracing through the escape and delimiter positions in the string builder test case with empty variables, trying to figure out exactly where the `$${` escape sequences and `${}` placeholders land in the character sequence to confirm the expected replacement behavior.
+
+That gives an 18-character string, and now I'm tracing through the positions character by character to find where the escape sequence, prefix, and suffix markers land, checking whether the escaped variable start overlaps with a nested prefix and whether an outer suffix exists at position 9.
+
+I need to recheck the position mapping after deletion — positions 14-15 should now hold `${`, which the prefix matcher would detect as a match of length 2, so I'm re-tracing the buffer indices carefully to confirm exactly where the shift landed.
+
+Checking position 13 gives `$$`, which doesn't match. But position 14 gives `$` followed by `{` at position 15 — that's a match for the `${` prefix, returning length 2. Continuing the outer loop scan through positions 7 through 14 until it lands on this match.
+
+At pos=14, the prefix matches with length 2. Looking one position back at pos=13, I find `$`, which signals an escaped prefix, so I mark escPos=13. Scanning forward for the closing suffix from pos=16, I find `}` right there, giving an empty variable name between the prefix and suffix, with zero nested prefixes and escPos still set — so this needs checking against nested prefix rules and the outer suffix scan starting from position 17.
+
+The condition evaluates to false since there are no characters left to scan (bufEnd=17), so I proceed to delete the escape character at position 13, shifting everything after it left by one and updating bufEnd to 16. Tracing through the resulting 16-character buffer, I continue the scan from pos=15, hit `}`, which isn't a prefix, then reach pos=16 where the buffer ends and the loop terminates.
+
+I'm noticing there's still an unprocessed `${` at positions 5-6 that got skipped because the continue statement jumped the outer loop straight to pos=7, meaning that escape sequence never actually gets evaluated in this pass. That seems like it could be a real gap in the logic worth tracing further.
+
+For the unclosed and nested variable ref tests, both should return `wasAltered = true` since the escape prefix gets resolved even without substitution. Now I'm considering the resolver-returning-brace test, where the mocked resolver returns `"}"` for any variable name against a template containing `${` patterns.
+
+I think substitution would actually occur here, but since the result isn't captured, I'll abstain on this one. Then for the substitution-in-variables test with a null resolver, since any variable lookup returns null, that supports the "returns original when no match" expectation.
+
+Since the resolver is null, everything resolves to null and `altered` stays false, so `replace(Object)` just returns the original string unchanged. Without capturing the result to verify that directly, I think it's safer to assert on the escape char default instead — I'll mark the mocked-resolver substitution test as ABSTAIN since I can't verify the expected output without deeper analysis, and for the char-array subrange test, since the name references the default escape char, I'll assert `getEscapeChar()` equals `$`.
+
+For the null-input tests on StringBuffer and TextStringBuilder, instead of calling replace and discarding the result, I want to wrap those calls directly in `assertNull(...)` so the null return is actually verified rather than just invoked.
+
+Working through the empty-buffer case, replacing at zero range on an empty StringBuffer should still yield an empty string result, so I need both `assertNotNull` and `assertEquals("", result)` there, since the test name implies checking non-null on an empty case. I should apply the same logic to the empty TextStringBuilder variant.
+
+For the CharBuffer allocation test using `'$'` as size (36), replacing with no patterns present just leaves the 36 null characters intact, so I'll assert both non-null and a length of 36.
+
+The interpolator-to-string test already has its assertions commented out as unstable, so it needs no additional oracle there.
+
+Now I'm going through the file methodically, editing each test one at a time since edits to the same file must be applied sequentially rather than in parallel.
+
+I need to make sure each old_string I search for is unique with enough surrounding context, so I'm planning out each test's exact replacement — for instance, adding an assertion checking the escape character defaults to '$' after certain replace calls.
+
+Adding more escape-char preservation assertions...
+
+Adding assertion for escape char value...
+
+Adding assertions to more tests... I need to check that two similarly-named tests calling `substitutor.replace(template, ...)` don't collide on the same old_string, since one involves a mocked resolver and the other an interpolator.
+
+For the test verifying that a mocked resolver returning a closing brace performs substitution correctly, I'm uncertain exactly how the result string would look since it depends on the precise variable resolution, so I'll abstain from asserting a specific value there.
+
+Moving to the escape char test, I'm adding an assertion after the replace call to confirm the substitutor's escape character remains the default `$`.
+
+For the object substitution test checking behavior when substitution in variables is enabled but nothing matches, I notice the test name implies checking for an unchanged result but the return value isn't captured, so I'll add the escape char assertion there too, based on the substitutor's toString output showing default settings.
+
+Adding more test cases for null handling with StringBuffer and range-based replace methods...
+
+I need to make sure the old_string for that test is unique since another test shares the same replace call, so I'll add more surrounding context to disambiguate. Continuing to add null/empty checks for the remaining TextStringBuilder replace tests...
+
+Good, buf and tsb use different variable names so they're distinguishable by context. Now I'm adding an assertion checking that the static replace with custom prefix/suffix and no matching vars returns the original input unchanged.
+
+Next I'm adding assertions for two more static replace cases: one confirming replace with null properties returns the object's toString, and another for replace with an interpolator and empty properties returning the substitutor's toString—though I'm second-guessing the timing of calling toString() after replace() runs.
+
+Actually I realize replace() converts the source via toString() internally, and since the substitutor's toString() contains its own default `${` prefix pattern, with an empty properties map the resolver returns null for any variable lookup, so I need to trace through whether substitution actually alters the string or leaves it unchanged.
+
+Actually I need to reconsider - the source being substituted is the interpolator's own toString, which likely contains literal "${" sequences from its internal matcher representations. If the new substitutor's empty map causes it to treat those as variable references and strip them out, the result wouldn't match the original toString, so the oracle might not hold as simply as I assumed.
+
+I realize I need to actually trace character by character from that `${` occurrence through the toString output to find where the matching `}` actually lands, since the closing brace could belong to unrelated text in the object's description rather than a real template delimiter.
+
+This is getting complicated—maybe I should just abstain on this test or add a simple assertNotNull check instead. Since the new substitutor has an empty map, any variable lookup returns null, but if a default value delimiter `:-` is present in the matched expression, the default value would be used literally as the replacement text rather than triggering a lookup failure.
+
+Given that uncertainty, I'll switch this test to `assertNotNull(result)` instead of trying to predict the exact substitution outcome.
+
+Now checking the case with prefix and suffix both set to `"}"` against input `"${"` — since that input contains no `}` character, there's no variable pattern to match, so `substitute` should return false and `replace(Object)` should return the original string unchanged, making `assertEquals("${", result)` the right assertion.
+
+For test 27, I need to add an assertion checking the escape character defaults to `$` after calling `replaceSystemProperties` with a substitutor. Then I'm mapping out the batch of `replaceIn` tests still to write, starting with cases that check null StringBuilder returns false and empty variable replacement returns true.
+
+Continuing through this list, I'm assigning `assertFalse(wasAltered)` or `assertTrue(wasAltered)` depending on whether each scenario expects a successful replacement or a no-op across StringBuilder, StringBuffer, and TextStringBuilder variants with null inputs, ranges, and default variable markers.
+
+For test 30, wasAltered comes out true, matching assertTrue. For test 31, I'm tracing through the unclosed variable case with escaped prefixes repeated twice, and wasAltered ends up true both times, so assertTrue applies there too. I want to double check the exact string construction for test 31 to be sure about the unclosed `$${` at the end.
+
+Tracing through the character indices, I map out where each escape sequence and closing brace lands, and find that the `${` at position 6-7 has its matching `}` right at position 8, giving a variable name that spans that gap.
+
+
+
+Now I have both files. Let me analyze each test method and add appropriate oracles. Let me go through them one by one:
+
+1. `replaceCharArraySubrange_defaultConstructor_returnsDefaultEscapeChar` - calls `replace(chars, 1, 1)` but doesn't store result. The test name says "returnsDefaultEscapeChar" - but that doesn't relate to the return value. The test just verifies it doesn't throw. No return value is captured, so no oracle needed? Actually, looking at the test - there's no variable to assert on. Maybe the oracle should be on `getEscapeChar()`.
+
+Wait, let me re-read the task. 
+
+Every oracle has been stripped out, so I need to figure out where assertions belong based on each test's name and behavior. For the default constructor and null-input tests where the result isn't captured, the naming pattern "preservesDefaultEscapeChar" suggests I should add an assertion checking that `substitutor.getEscapeChar()` equals the default '$' character after each call.
+
+Where results are stored, I'm adding assertNotNull checks, and for the custom escape char test I'm adding an assertion verifying the escape char stays '^' since that's what the substitutor was constructed with. For the CharBuffer test, I'm working out what the buffer allocation and null-char behavior should produce as the expected string.
+
+Continuing through the remaining tests, I'm adding assertEquals checks confirming the escape char stays as configured ('$' in most cases) across the null-value-delimiter and default-preservation scenarios.
+
+For the exception tests, the empty catch block itself serves as the oracle. For test 16, since the name emphasizes "returnsOriginalWhenNoMatch," I should add `assertTrue(substitutor.isEnableSubstitutionInVariables());`. For test 17, since a result is stored, I add `assertNull(result);`. For test 18, I'm second-guessing whether to check the escape char default or focus more directly on the null return the name implies.
+
+I'm reasoning that since the result isn't captured for the null-returning replace calls, the actual oracle must check the escape char instead, so I'll add `assertEquals('$', substitutor.getEscapeChar())` for those cases, and for the empty-buffer-with-zero-range case where the result is stored, I'll add an assertNotNull check.
+
+For the remaining test methods, I'm continuing to determine appropriate assertions based on whether result is captured — adding assertNotNull, assertNull, or assertEquals("", result) depending on each method's naming convention and captured variables.
+
+For case 29, since interpolator toString isn't predictable, I'll assert not null. For 30, checking the escape char defaults to '$'. Then for 31 and 32, both null StringBuilder cases should just assert the alteration flag is false.
+
+Now tracing through the empty variable substitution test, I need to work out how the StringBuilder gets built character by character with null bytes and the `${}` pattern, since with a null resolver no substitution actually occurs.
+
+Since all these variables reference the same StringBuilder, appending it to itself effectively duplicates its current content, so the string doubles into the pattern `}\0\0\0\0${}}\0\0\0\0${}`.
+
+I'm now tracing through the escape logic: `$${}` has `$` as the escape character preceding `${}`, so when the substitutor hits this, it strips the escape char but leaves the variable itself unresolved, turning `$${}` into `${}`.
+
+The test comment "replacesAndReturnsTrue" confirms that removing the escape char counts as altering the string, so `wasAltered` should be true. I'm now trying to reconstruct the exact test string being built, which involves appending null characters, dollar signs, and a self-reference via `sb.toString()`.
+
+Now considering the unclosed-variable test case: with `$${` lacking a closing brace, the escape prefix before the complete `${}` pair gets resolved and removed, but the trailing unclosed `${` is left untouched since no substitution can occur for it. That still means `wasAltered` ends up true since the escape character was stripped.
+
+This is getting too complex to fully trace through, so I'll trust the test names here—using `assertTrue(wasAltered)` for the first test given its name, and noting the second test's name implies `returnsFalse` when no closing suffix exists with preserve escapes enabled.
+
+Now I'm going through the remaining null/default buffer tests systematically, adding `assertFalse(wasAltered)` for the null buffer cases, and checking whether the default var start pattern without a closing brace actually resolves anything.
+
+For test 38, since the length assertion is flagged as unstable in the original comment, I'll skip adding an oracle there. Then I continue with tests 39 and 40, adding false assertions for the null and negative-length StringBuilder cases.
+
+Tests 41 through 43 follow the same pattern — checking that replaceIn returns false when there's no TextStringBuilder, no variable references, or a missing closing suffix with preserveEscapes, each getting an assertFalse(wasAltered) addition.
+
+44. **constructor_withCustomEscapeChar_setsEscapeChar** - checking the escape char is set to 'R' via assertEquals('R', substitutor.getEscapeChar());
+
+45-47. More constructor and copy-constructor tests confirming the default escape char remains '$' across various setups, each needing an assertEquals('$', ...) check.
+
+48. Exception tests rely on the catch blocks themselves as the verification.
+
+49. **setValueDelimiter_char_returnsThisWithDefaultEscapeChar** - confirming the setter returns `this` for chaining.
+
+50-53. Further setter tests for suffix, disable-substitution flag, and substitution-in-values/variables flags each need assertions confirming the returned instance or the flag/escape-char state actually reflects what was set.
+
+Now I'm tracing through the StringBuilder tests (33, 34, 36), working out how the buffer content `}\0\0\0\0${}}\0\0\0\0${}` gets constructed step by step from appended null and dollar characters plus a self-copy operation, to verify the empty-variable replacement logic returns true correctly.
+
+I need to recount the character positions carefully to see where the `$` and `${` prefix actually land in the string, since my earlier count seems off from what the comment expects.
+
+I realize the self-append is the key trick here—appending sb to itself captures its current state before the append completes, which explains the doubled pattern in the expected result with `${}` appearing mid-string.
+
+I'm probably overanalyzing this - the test name "resolvesEscapedPrefixOnly" suggests I should focus on where the `${` escape prefix falls within the built string rather than the full StringBuilder mechanics, so let me trace character positions in `}\0\0\0\0${}\0\0\0\0$${` to locate the actual variable boundaries.
+
+So actually the escape processing requires a closing suffix to be found, and since `$${` has no closing brace, the escape logic never triggers - meaning `wasAltered` stays false for both parts of the input.
+
+For test 36, I'm tracing through the nested variable case with the escape character before the opening brace, then a variable reference inside another variable's name, and since nested substitution is disabled by default, I need to work out how the parser handles the inner brace when scanning for the suffix.
+
+So this confirms `wasAltered = true` since the escape character gets removed, meaning the test likely asserts `assertTrue(wasAltered)`. Comparing with the related test cases, I'm noting the naming difference matters: one variant expects the alteration flag true while resolving an escaped prefix with an empty variable name that resolves to null.
+
+Given the naming uncertainty, I'll try to derive things test by test: `$${}` has its escape processed so `wasAltered=true`; the unclosed `$${` case seems to leave `wasAltered=false` despite the "resolvesEscapedPrefixOnly" name, so I'll set that one aside; and the nested case `$${${}}` also processes the escape, giving `wasAltered=true`.
+
+Now I'm working through the remaining test cases one by one, adding the appropriate assertions for each: checking the default escape character stays `$` after various constructor calls, verifying null-safety returns, and confirming non-null results for edge-case inputs.
+
+Continuing through the remaining tests, I'm noting the escape char checks for the mocked resolver and interpolator cases, skipping the exception tests since they already have their own try/catch validation, then covering the substitution-in-variables flag check and the null-return assertion for object replacement.
+
+Moving through the buffer and string builder replacement tests now, checking null returns, escape char defaults, non-null results for edge cases like empty buffers and zero-length ranges, and empty string results.
+
+Continuing through more assertion cases for stringBuilder and stringBuffer replacement scenarios, checking wasAltered flags and abstained cases.
+
+Continuing through more test cases checking false returns for builder variants, then moving into constructor tests verifying escape character defaults and customization across the substitutor and interpolator classes.
+
+Tracing through the middle `${}` segment, the character before it is `\0` so no escape applies, but the empty variable name resolves to null, meaning no substitution happens there either. For the trailing `$${`, the escape precedes an unclosed prefix with no matching suffix, so the loop exits without processing it, leaving that portion unaltered as well.
+
+So for test 34, I'll go with `assertFalse(wasAltered)`, even though the naming suggests some escape resolution occurred conceptually. Now I'll move on to editing the file to insert these assertions in their proper places.
+

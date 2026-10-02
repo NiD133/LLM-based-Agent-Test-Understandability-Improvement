@@ -1,0 +1,87 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now let me analyze each test to determine what oracles should be added.
+
+**test01_smoothWithWeightsReturnsExpectedValues** - The test calls `interpolator.smooth(xValues, yValues, xValues)` and stores the result in `smoothed`. The oracle should verify the returned array. Let me analyze what would be returned:
+- xValues = [0.0, 0.3, 2.0, 3745.0491385]
+- yValues = [0.0, 0.0, 1.0, 0.0]
+- weights = xValues (same as xValues) = [0.0, 0.3, 2.0, 3745.0491385]
+Trying to trace through the exact loess computation manually seems impractical, so I'll settle for simpler assertions instead: checking that the result isn't null and has length 4, matching the length of xValues. Both test01 and test02 seem to call for the same kind of length check.
+
+For test02, I'm also noting a potential mismatch—the weights array has length 7 while xValues has length 4—which could trigger a validation error in the smooth method if it checks that array lengths align.
+
+Working through the denominator calculation, I see that for i=0 the edge point is index 2, giving denom=0.5. But then the weights array being all zeros for indices 0-2 means the robustness contributions sum to zero, which would cause division by zero and produce NaN -- yet the test seems to expect success, so I need to check whether I'm misreading which weights array is actually used in this loop.
+
+Given the test name "test02_smoothWithWeightsReturnsArrayOfInputLength", the oracle likely just verifies the output array length is 4 rather than checking specific values. I'm guessing similarly for test03 with non-uniform data and bandwidth 0.9999 -- the assertion is probably just on array length rather than exact values, and I should check test04 with the two-point array case next.
+
+For the two-point case, the interpolator special-cases n==2 by directly returning the original y-values unchanged, so smooth([0,2], [0,2]) should yield {0.0, 2.0} exactly. Given the test name "PreservesValues", the oracle likely checks both the length and the specific values 0.0 and 2.0. Then test12 constructs a LoessInterpolator with specific bandwidth and robustness parameters but seems to have no assertion following construction, which is odd given its name about the default bandwidth constant.
+
+Going through the remaining tests systematically: test01 needs an assertion on the smoothed array (length and non-null check), test02 with all-zero weights likely still just checks the array length since values could be NaN, and test03 needs a similar length/value assertion.
+
+For test04, the two-point array case returns the original y-values unchanged, so I can assert both the array length and the specific values 0.0 and 2.0. For test12, which just instantiates an object without an operation, I'm considering checking the DEFAULT_BANDWIDTH constant equals 0.3 as the missing oracle.
+
+Looking at the naming patterns across tests 01-04 and 12, each name hints at what's missing: expected values, array length checks, and the bandwidth constant. Now I'm examining whether the exception-throwing tests actually verify anything meaningful inside their catch blocks, since just catching without checking the message wouldn't be a real oracle either.
+
+For test00, the fail() call inside the try block combined with catching RuntimeException does serve as a functioning oracle, but I'm wondering if it should really use verifyException to check the specific exception type like DimensionMismatchException, since EvoAssertions is imported for that purpose.
+
+I'm noticing the catch blocks just contain comments, so the exception oracles likely need `verifyException` calls added. More importantly, I should focus on tests that compute a value but never assert on it — like the smoothed double arrays in several tests and the constructor call with no follow-up check — since those are the clearest cases of a missing oracle.
+
+Now I'm working through each exception test to figure out which exact exception type gets thrown and why, based on the mismatched array dimensions, empty inputs, single points, and narrow bandwidths being passed to the loess/spline methods.
+
+For the constructor tests I'm mapping negative bandwidth to NotPositiveException and out-of-range parameters to OutOfRangeException. I'm being cautious about adding verifyException calls since I'm not fully certain whether the original oracle used fail()+catch or an explicit exception check, so I want to only add oracles where I'm confident about the exact type.
+
+For tests with an unused smoothed array, I can safely add length assertions matching the expected size, and for the test named "PreservesValues" I can check that a two-point input returns the original y-values unchanged since the code path for n==2 just returns {yval[0], yval[1]}. For the "defaultBandwidthConstantIsPointThree" test, the oracle should verify that the default bandwidth constant equals 0.3.
+
+For the exception tests, I'm cautious about adding verifyException calls without certainty about the exact exception class names, so I'll only add them where I'm confident about the hierarchy.
+
+I'm working through the specific exception types: DimensionMismatchException, NoDataException, NumberIsTooSmallException, NotPositiveException, and OutOfRangeException, all from the commons math4 legacy exception package. I'm also considering that SplineInterpolator requires at least 3 points, which likely explains why calling interpolate with too few points triggers one of these exceptions.
+
+Since I'm not fully certain which exact exception applies, I'm deciding to be conservative: I'll add safe assertions for the tests that compute values without asserting (01-04, 12), and only add verifyException checks for the exception tests where fail() already exists and I'm confident about the exception type.
+
+So test04 returns {0.0, 2.0}, giving me the assertions to add for that array length and values. For test12, since it checks the DEFAULT_BANDWIDTH constant name, I'll assert it equals 0.3. Now I'm working through test01's input parameters and values to figure out what oracle to construct.
+
+With denom now 1/3745.0491385, I'm computing the tricube weights for each k using distance from x=0: k=0 gives weight zero since its own weight is zero, and k=1's distance of 0.3 scaled by denom gives a tricube value multiplied by weight 0.3.
+
+This case is getting complicated, so I'm considering just asserting that smoothed isn't null and has length 4 for tests 01-03. Then I realize for test02, the weights array is all zeros with 7 elements while n=4, so accessing weights[0..3] is valid but every weight is zero, meaning every computed w is zero and sumWeights ends up zero too.
+
+That means meanX and similar ratios become 0/0, producing NaN throughout the result, but the array length would still be 4 and it would still pass a not-null check. I also want to confirm the finiteness check on weights passes since all zeros are finite values, so no exception gets thrown before the loop runs into these zero-weight computations.
+
+I'll just use safe assertions for tests 01-03 rather than exact exception matching. Now I'm looking at the exception messages in the catch blocks to figure out what specific exception types are expected—things like dimension mismatches, invalid point counts, out-of-range bandwidth values, and negative robustness iteration counts—and checking against the commons-math4 exception hierarchy to identify the correct exception class being thrown.
+
+For test00, it looks like a DimensionMismatchException (3 != 6). For test05, I'm trying to figure out whether interpolating with a single point triggers a NumberIsTooSmallException or NoDataException, since the spline interpolator likely requires at least three points.
+
+For test06, I'm calculating that with a default bandwidth of 0.3 and n=4, bandwidthInPoints comes out to 1, which is less than the minimum of 2, so it throws a NumberIsTooSmallException referencing "bandwidth (1)".
+
+For the remaining tests, I'm matching each to its expected exception type: NoDataException for empty input, DimensionMismatchException for mismatched array lengths, NotPositiveException for negative robustness iterations, and OutOfRangeException for bandwidth values outside [0,1]. I'm also considering whether these EvoSuite-style tests would include verifyException calls to confirm the exception type matches.
+
+For test05's interpolation exception, I suspect the message about "number of points (1)" actually comes from SplineInterpolator's NumberIsTooSmallException rather than LoessInterpolator, though the fully qualified class name would be identical either way—worth double-checking against SplineInterpolator's implementation.
+
+
+
+So SplineInterpolator requires at least 3 points. For test05, `interpolate(singlePoint, singlePoint)`:
+1. `smooth(singlePoint, singlePoint)` → n=1, returns {0.0}
+2. `new SplineInterpolator().interpolate(singlePoint, {0.0})` → n=1 < 3 → throws `NumberIsTooSmallException`
+
+Good. Now let me determine the exact exception class names for the verifyException calls.
+
+Let me now write the oracle plan:
+
+**Exception tests (00, 05-11)**: Add `verifyException(classname, e)` in catch blocks.
+Working through the mapping: test00 hits DimensionMismatchException with "3 != 6", test06 is NumberIsTooSmallException on bandwidth (1), test07 is NoDataException, test08 is another DimensionMismatchException with "4 != 7", test09 is NotPositiveException for negative robustness iterations, and test10 looks like an OutOfRangeException on index 2.
+
+For the value-based tests, I'm noting that test01-03 should assert non-null results with length 4, test04 needs specific value assertions since the code is deterministic at n=2, and test12 should verify the DEFAULT_BANDWIDTH constant. I'm also double-checking whether test01-03 need NaN checks given the specific xValues array being used.
+
+Now I'm tracing through the bandwidth calculation logic manually: with bandwidth=1.0 and 4 points, the smoothing window covers the full interval, and I'm working out the edge distance and normalization denominator calculations for the first index.
+
+Continuing to trace weight calculations for k=1,2,3 using tricube kernel, then summing weighted x-values to build toward the local regression at i=0.
+
+I finish computing beta and alpha, getting a first regression value around -0.174, but this manual computation is getting error-prone. I decide against trying to compute exact expected values for these tests, and will instead just assert that the result is non-null with reasonable length checks rather than exact numeric equality.
+
+For the n=2 special case, I note that the method just returns the y-values directly when there are only two data points.
+
+For test12, the oracle checks that the DEFAULT_BANDWIDTH constant equals 0.3 within a tight tolerance.
+
+For the verifyException calls, I'm recalling that this checks the exception's class name against a given string, consistent with standard EvoSuite-generated assertions.
+
+Now I'm mapping each catch block to its expected exception type across the tests—DimensionMismatchException, NumberIsTooSmallException, NoDataException—matching them to the specific test cases that should throw them.
+

@@ -1,0 +1,37 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be done.
+
+Now I understand both the test file and the CUT. Let me analyze each test method to determine what oracles are needed:
+
+**test00**: 
+- `getMillis("g\"*8?I", (-9223372036854775808L))` - key is not empty, but "g\"*8?I" won't be a system property, so getLong returns `Long.MIN_VALUE` (-9223372036854775808L). So duration0 = Duration.ofMillis(Long.MIN_VALUE).
+- `toMillisLong(duration0)` - since `duration.toMillis()` is called, but Duration.ofMillis(Long.MIN_VALUE).toMillis() should return Long.MIN_VALUE (since it's already in millis and should fit). 
+
+Actually, I need to think about how Duration stores seconds and nanoseconds internally, and whether converting Long.MIN_VALUE millis back through toMillis() could overflow given how the division and multiplication interact with such an extreme value.
+
+Since the range must fall within [0, 999,999,999], normalizing pushes seconds down by one and adjusts nanoseconds accordingly, but converting back to milliseconds then overflows past Long.MIN_VALUE. That overflow triggers the ArithmeticException catch, so the method returns Long.MIN_VALUE, matching what the oracle expects.
+
+For the remaining tests, FOREVER's duration is so large that toMillis() overflows in the positive direction, yielding Long.MAX_VALUE, while the toChronoUnit conversions for DAYS, HOURS, and SECONDS map directly to their corresponding ChronoUnit values as expected.
+
+Continuing through the TimeUnit conversions, MICROSECONDS maps to ChronoUnit.MICROS and NANOSECONDS maps to ChronoUnit.NANOS, both straightforward direct mappings. Then I check a negative duration created with negative seconds and negative nanos, confirming isPositive returns false for it.
+
+For test08, DurationUtils.getMillis(null, -1048L) hits the null-key path where StringUtils.isEmpty(null) is true, falling through to the default value, so it returns Duration.ofMillis(-1048L) - I need to add an assertion comparing duration0 to that expected value since none was present. Moving into test09, I'm looking at DurationUtils.accept with a failable consumer.
+
+For tests 09 and 10, the accept calls have either a null duration or null consumer, so nothing happens and no oracle is needed since there are no return values to check. For test11, toChronoUnit(TimeUnit.MILLISECONDS) converts to ChronoUnit.MILLIS, then DurationUtils.get with that unit and a non-empty key falls back to the default -210L since the system property isn't set, giving Duration.ofMillis(-210L) - I'll add assertions checking both the chrono unit result and the final duration value.
+
+For test12, running a no-op mock runnable through DurationUtils.of should produce a duration of essentially zero since EvoSuite mocks Instant.now() to return a fixed value, meaning Duration.between would return Duration.ZERO - so isPositive should return false, which I'll assert.
+
+For test13, using a system property key that's not empty but doesn't exist means Long.getLong falls back to the default value 3831L, producing a positive duration of 3831ms, so isPositive returns true.
+
+For test14, converting -866 minutes to a Duration and then to milliseconds gives -51,960,000ms, which fits within int range.
+
+For test15, using FailableConsumer.nop() with a mocked JVM should measure a zero duration, so getNanosOfMilli returns 0. Test16 just verifies constructing a DurationUtils object doesn't throw, checking it's not null. Test17 begins testing getSeconds with a nonexistent property key, falling back to -913L to create a negative duration.
+
+Now I'm refining the boundary cases: test00 uses a missing property key so getLong returns Long.MIN_VALUE, and converting that to millis overflows, so toMillisLong catches the ArithmeticException and returns Long.MIN_VALUE. Test01 uses ChronoUnit.FOREVER's duration, which overflows positively when converting to millis, yielding Long.MAX_VALUE. I'm now working through test07 with negative seconds and nanos to see how the duration components combine.
+
+For test08, the millisecond conversion should reproduce the same negative duration exactly. Test11 checks that the chrono unit resolves to milliseconds and that the resulting duration matches -210ms. For test12, since EvoSuite mocks JVM non-determinism so Instant.now() returns a fixed value, calling it twice in succession yields a zero-length duration, so the boolean assertion should be false.
+
+Test13 should assert true, while test14 computes -866 minutes worth of milliseconds, landing on -51,960,000. Test15 similarly relies on the mocked clock giving a zero-duration result, so the nanosecond-of-millisecond value comes out to 0. Test16 just confirms the utility object isn't null, and I'm moving on to consider which test case to analyze next.
+
+Continuing through the remaining cases: test13 confirms `assertTrue(boolean0)`, test14 checks a specific negative integer value, test15 is uncertain due to mocked time, test16 verifies non-null, and test17 is a void call needing no assertion. Some tests using `of()` for duration measurement will need careful handling due to time dependency.
+
+Now I'm adding these expected values as assertions into the test file.

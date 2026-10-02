@@ -1,0 +1,70 @@
+Let me start by reading both the masked test file and the class under test to understand what needs to be done.
+
+Now I understand the test file and the CUT. Let me analyze what oracles need to be added to each test method:
+
+1. `test_of_withNegativeDay_throwsDateTimeException` - Exception test, no oracle needed (already has try/catch/fail pattern)
+
+2. `test_from_withZoneOffset_throwsDateTimeException` - Exception test, no oracle needed
+
+3. `test_from_withMinguoDate_returnsCurrentDay` - `dayOfYear` is created from a MinguoDate. The mocked clock sets day=45. MinguoDate.now() would be based on the mocked clock which is day 45. 
+
+I need to check whether the mocked clock's day-45 value carries over consistently when MinguoDate wraps an ISO date, since both calendars should share the same day-of-year for the same underlying date, just offset by era.
+
+Since `MockMinguoDate.now()` uses the same mocked clock, it should also resolve to day 45, so I'll assert that equals `dayOfYear.getValue()`. For the "from with DayOfYear" test, since `DayOfYear.from()` on a DayOfYear returns the same instance, I should assert that `copy` is the same object as `original` rather than just checking equal values.
+
+For the zone offset test, since the comment implies the day values may or may not differ across zones, there isn't a strict equality to check—I'll settle for asserting the alternate-zone result is non-null rather than comparing values directly, since the test itself only guarantees no exception is thrown.
+
+For test 7, the test body only constructs a `DayOfYear` via `now()` without ever calling `getValue()` or asserting anything, so I need to add `assertEquals(MOCKED_CURRENT_DAY, dayOfYear.getValue())` as the missing oracle.
+
+For test 8, I'm working through whether year -488 qualifies as a leap year by checking divisibility by 4 and 100.
+
+For test 9, year 366 fails divisibility by 4, so it's not a leap year, meaning `assertFalse(valid)` is correct.
+
+For test 10, since the mocked day is 45 which is less than 366, `isValidYear` should return true regardless of the year passed in, so `assertTrue(valid)` applies here.
+
+Then I move through the isSupported tests: DAY_OF_YEAR field returns true, null field returns false. For getLong, I check that DAY_OF_YEAR returns the mocked value of 45, while unsupported fields and null fields should throw exceptions rather than needing an oracle value. I'm now moving into the adjustInto tests with ISO local dates.
+
+Adjusted temporal should carry day-of-year equal to the mocked value, verified by checking ChronoField.DAY_OF_YEAR on the result. Non-ISO Hijrah date adjustments should throw DateTimeException, no oracle needed there. Then for query with a mocked temporal query, the result should match the dayOfYear object directly, and I'm moving into checking atYear with an int year for correct LocalDate rounding behavior.
+
+For atYear with a Year object, the test doesn't capture the return value so nothing needs asserting. CompareTo against the same instance should give zero, equals against the same instance should be true, and equals against a non-DayOfYear object should be false.
+
+For hashCode, I'm considering whether to assert it equals the mocked day value since that's how hashCode is defined, even though the test name suggests no exception check is needed. The fromDayOfYear-into-YearMonth case is purely an exception test, so no oracle is required there.
+
+Now I'm going through the test file line by line, checking each test method to see where an assertion is missing versus where the structure is already complete, starting with the MinguoDate-based test that mocks a current day value.
+
+In the test verifying `from` with a MinguoDate, I need to add an assertion checking that the resulting DayOfYear's value matches the mocked current day. For the test converting a DayOfYear into another DayOfYear, I should add an assertion confirming the same instance is returned, since the source code returns the temporal directly when it's already a DayOfYear. For the `now()` test, I'm adding an assertion that the returned value matches the mocked current day. Then I move to the test checking that using a UTC+18 zone offset can yield a different day than the default zone, where I'm examining the zone-based DayOfYear.now() call setup.
+
+For the missing oracle here, since the test comment only claims the value "may differ" between zones, a specific value is hard to assert -- I'm considering just checking that the result isn't null, though that feels weak. I'm also weighing whether the EvoSuite mocked clock actually behaves differently for a UTC+18 offset versus the default, since the mock might return the same fixed time regardless.
+
+Moving to the next test, `test_getValue_returnsCorrectDayNumber`, I see it's also missing an oracle for the returned day value, so I need to add an assertion comparing it to the mocked current day.
+
+For `test_isValidYear_day366WithLeapYear_returnsTrue`, checking day 366 against year -488, I need to add `assertTrue(valid)` since that combination should be a leap year. For `test_isValidYear_day366WithNonLeapYear_returnsFalse`, checking day 366 against year 366 itself, I'm verifying whether 366 is a leap year by checking its divisibility by 4, and since it should not qualify, I'll add `assertFalse(valid)`.
+
+Continuing through the missing oracles, `test_isValidYear_dayLessThan366_alwaysReturnsTrue` compares a day-of-year value less than 366 against a negative year, which should always return true regardless of leap year status. Then `test_isSupported_withDayOfYearField_returnsTrue` checks that the DAY_OF_YEAR field is supported, needing `assertTrue(supported)`. Now I'm moving to `test_isSupported_withNullField_returnsFalse`, which tests behavior when passing a null TemporalField.
+
+The null field case is handled by a chain of checks: since null isn't an instance of ChronoField, it falls through to a check that combines a null check with `isSupportedBy`, so passing null short-circuits to false, meaning I need `assertFalse(supported)` there. Next, `test_getLong_withDayOfYearField_returnsDayValue` retrieves the long value for DAY_OF_YEAR and should equal the mocked current day, needing `assertEquals((long) MOCKED_CURRENT_DAY, value)`. Now I'm looking at `test_adjustInto_withIsoLocalDate_returnsAdjustedTemporal`, which sets up a mocked LocalDate to test the adjustInto behavior.
+
+Since the mocked clock fixes the current day as day 45, both the LocalDate and the DayOfYear reflect day 45, so after adjusting, the resulting temporal should still report DAY_OF_YEAR as 45 -- I need `assertEquals(MOCKED_CURRENT_DAY, adjusted.get(ChronoField.DAY_OF_YEAR))`. Moving to `test_query_withMockedTemporalQuery_returnsQueryResult`, which mocks a TemporalQuery to return the DayOfYear instance itself when queried, and I still need to figure out the missing assertion for that result.
+
+Then I look at `test_atYear_withIntYear_returnsCorrectLocalDate`, which converts a DayOfYear to a LocalDate for a given year and round-trips it back into a DayOfYear via `DayOfYear.from`, though the assertion checking the round trip is still missing.
+
+Next, `test_atYear_withYearObject_returnsLocalDate` calls `atYear` with a mocked Year but never captures or asserts on the result, so despite the test name promising to verify the returned LocalDate, there's nothing actually checking it.
+
+Calling the method a second time just to assert non-null feels redundant since it already executed once in the test. I realize I should instead capture the existing call's result into a variable and assert on that directly, avoiding a duplicate invocation.
+
+I'll capture the return value and add assertNotNull for that test. Then moving to the next few tests: compareTo with same instance needs assertEquals(0, result), equals with same instance needs assertTrue(equal), and I'm checking the equals test against a non-DayOfYear object next.
+
+For the hashCode test, since the name says "doesNotThrow," I'm weighing whether to add an assertion anyway since hashCode is deterministic (returns the day value, 45), so I'll add assertEquals with the mocked value to give it an oracle.
+
+For the zone offset test, I'll go with assertNotNull as a safe check since I can't be certain what zone EvoSuite mocks by default versus UTC+18. And for the from-with-DayOfYear test, since the code just returns the same instance when the input is already a DayOfYear, I can assert that the copy is the same reference as the original using assertSame.
+
+Now I'm laying out the specific edits to add for each test method: appending assertEquals checks against the mocked current day value after the from-Minguo-date and now tests, and assertSame for the identity test.
+
+For the remaining tests, I'm adding the appropriate assertion for each case—assertNotNull for the UTC+18 zone test, more assertEquals/assertTrue/assertFalse pairs for the isValidYear leap-year cases, and assertTrue/assertFalse for the isSupported field checks.
+
+Adding more assertions...
+
+Now I'm checking whether MockYear.now() could produce an invalid year for the atYear call—since day 45 exists in any year, this should be safe. I'm also confirming that get(ChronoField.DAY_OF_YEAR) on a LocalDate correctly returns the expected int value.
+
+With these checks confirmed, I'll proceed to apply each of the test edits individually.
+

@@ -1,0 +1,187 @@
+Let me start by reading both files to understand the test structure and the class under test.
+
+Now I understand the test file and the class under test. Let me analyze each test and determine what oracle to add:
+
+1. **test00_escapeEmptyStringReturnsEmpty**: `Entities.escape("")` should return `""`
+   - `escape(String)` calls `escapeString(data, base, DataUtil.UTF_8)`, and if data is null returns "", otherwise processes. For empty string, result would be empty.
+   - Oracle: `assertEquals("", result);`
+
+2. **test13_escapeNullStringReturnsEmpty**: `Entities.escape((String) null)` returns `""` (see line 184)
+   - Oracle: `assertEquals("", result);`
+
+Working through more escaping cases: default HTML mode converts quotes to `&quot;` and less-than signs to `&lt;`, apostrophes become `&apos;` and ampersands become `&amp;` given the ForText/ForAttribute option combination, and I'm now checking how a non-breaking space character gets escaped in HTML mode with the nbsp entity.
+
+Next, for xhtml mode with a non-breaking space, `appendNbsp` should output the numeric hex entity `&#xa0;` instead of `&nbsp;`, giving `"yen&#xa0;"` as the expected result. Then I'm moving to the test for escaping angle brackets as entities in XML mode.
+
+I'm tracing through how the escape function determines options and escape mode, checking whether `escape(String, OutputSettings)` uses `ForText|ForAttribute` with the default base escape mode rather than xhtml, which affects how the apostrophe gets encoded.
+
+I realize the escape logic doesn't reference the syntax setting at all, so the apostrophe encoding depends purely on escape mode—checking the appendApos helper, it only outputs `&#x27;` for xhtml mode and `&apos;` otherwise, meaning the test comment about XML syntax producing `&#x27;` may be mistaken or I'm missing something else in the flow.
+
+So the comment claiming XML syntax produces `&#x27;` seems inconsistent with actual code behavior, so I'll trust the implementation over the comment.
+
+Moving to the next test case, escaping a non-ASCII character with an ASCII charset: the section sign `§` maps to its named entity `&sect;` in base escape mode, so the string becomes `"kp1D(Cu%~vB8caHD&sect;"`.
+
+For the next case with U+227B (≻), since it has no named entity in the base set and can't be encoded in ASCII, it falls back to hex encoding as `&#x227b;`.
+
+For tests 05 through 12, these check that calling `Entities.escape` with an appendable and various options doesn't mutate the settings object—verifying the syntax and escape mode stay unchanged after the call, like confirming `settings.syntax()` still equals `Document.OutputSettings.Syntax.html`.
+
+For test26, checking the default indent amount stays unchanged, I need to verify what jsoup actually defaults to for indentAmount on a fresh `OutputSettings` instance before writing that assertion.
+
+I'm more confident on the other defaults: syntax defaults to html for tests 05, 06, and 12, escape mode defaults to base for test10, and outline defaults to false for test11.
+
+Moving to the charset test, calling `Entities.CoreCharset.byName("")` with an empty string doesn't match any known prefix so it falls through to the fallback case. The test doesn't capture the return value in a variable, so I'd need to wrap the call in an assertion checking it equals `Entities.CoreCharset.fallback`.
+
+I'm double-checking that `CoreCharset` is package-private, but since both it and the test live in `org.jsoup.nodes`, access should be fine. Now I'm looking at the entity prefix test, where `Entities.findPrefix("shy")` checks a known entity name against a list sorted by length.
+
+For the next few tests, I'm covering: `findPrefix` returning empty when no known entity prefixes the input, `codepointsForName` returning zero for an empty/unknown name, and checking that `getByName("QUOT")` handles case sensitivity correctly for the uppercase variant.
+
+I'm not confident whether jsoup's entity table includes "QUOT" as an alias alongside lowercase "quot" — without certainty about that specific case-sensitive entry, I'll abstain on this test rather than guess.
+
+That's not a valid entity name, so the result should be an empty string. Moving on, "LQ2" isn't a known entity name so isBaseNamedEntity should return false, while "sup2" is the recognized superscript-2 entity so isNamedEntity should return true. Now checking whether some malformed string is recognized as a named entity, which it shouldn't be.
+
+Then for escape mode lookups, I'm verifying that codepoint 38 (&) maps to "amp" and codepoint 62 (>) maps to "gt" in their respective escape modes. Finally I'm testing that unescaping "&lt;" correctly yields the less-than character.
+
+I'm also revisiting the appendable variant tests to double-check that output settings like syntax, escape mode, outline, and indent amount remain at their expected defaults after operations, and reconsidering the apostrophe-in-XML-syntax test case.
+
+Since syntax changes don't alter escape mode, the escape function still applies base escape mode, which means apostrophe becomes `&apos;` and ampersand becomes `&amp;` — so the expected result would be `K&apos;?wQt&amp;`. But I'm second-guessing this since the comment suggests XML syntax should encode apostrophe as `&#x27;` instead.
+
+I'm now checking whether test09, which uses the same input with default HTML settings, would produce an identical result to test04, since only the syntax setting differs and that setting isn't consulted by `escape(String, OutputSettings)`.
+
+For test02, I trace through the XML-syntax escape call on the string containing angle brackets — since syntax doesn't matter here either, `<` and `>` get entity-encoded while everything else stays the same, giving the expected oracle result.
+
+Then I move to test03, which escapes a string with a section sign against ASCII settings.
+
+Given the test name explicitly mentions "named entity," I'll go with `&sect;` as the expected output for that case, giving oracle `"kp1D(Cu%~vB8caHD&sect;"`.
+
+Now for test23 with `Entities.escape("ethiH_p3≻", settings)` where ≻ is U+227B: ASCII charset, base escape mode, and this character isn't encodable directly, so I need to check if `nameForCodepoint(0x227B)` returns a valid base entity name.
+
+Since U+227B isn't in the base set of 106 common entities, it falls back to numeric escaping, giving `"ethiH_p3&#x227b;"` as the oracle.
+
+I'm now looking at the appendable-based tests (test05, 06, 10, 11, 12, 26), which all call `Entities.escape` with an appendable, input, settings, and a negative option flag—these tests check that the settings object itself isn't mutated during escaping, verifying things like syntax and escape mode remain unchanged (html syntax, base escape mode) after the call.
+
+For test11, checking jsoup's default `outline` field—it's false by default, so `assertFalse(settings.outline())` should hold. For test26, the default indent amount in jsoup is 1, so I'll assert that. I'm now also considering what the negative options value actually represents when passed into the escape call.
+
+Since options are checked with bitwise AND against constants like Normalise, TrimLeading, and TrimTrailing, a negative number with many bits set would trigger several of these flags simultaneously but shouldn't cause a crash. The key point for these tests is confirming that `escape(QuietAppendable, String, OutputSettings, int)` only reads from settings—via `escapeMode()` and `charset()`—without mutating any state on the object.
+
+Now I'm working through the expected outputs for each test case, matching escaped strings against their entity-encoded forms across different character sets and modes, including xhtml-specific numeric encoding and named entities like sect and the right-facing angle bracket symbol.
+
+For the settings-related tests, I'm verifying default output syntax is html, escape mode is base, outline defaults to false, and indent amount defaults to 1. For test01, since the call to CoreCharset.byName with an empty string has no captured return value, I need to add an assertion checking it resolves to the fallback charset.
+
+CoreCharset is package-private but the test lives in the same package, so accessing it directly should work fine. Working through the remaining string-processing and boolean-check tests, I'm filling in expected values for each result variable, count, and named entity strings like "amp" and "gt". Now I need to pin down what "yen " actually represents in the source for test25 and test07 before finalizing those assertions.
+
+Comparing test25 and test07, they share the same input but differ in escape mode, and the xhtml comment about encoding non-breaking space as `&#xa0;` instead of `&nbsp;` confirms the trailing character is U+00A0. So the base HTML escape should render "yen&nbsp;" while xhtml mode should render "yen&#xa0;". For test17's QUOT question, I'm checking whether the uppercase-without-semicolon form is recognized among HTML5 named character references.
+
+The test name references "named entity" which points to `&sect;` rather than a numeric form, so I'll finalize that assertion accordingly. For test04, I should double check whether the XML syntax comment actually means the apostrophe should be encoded as `&#x27;` instead of `&apos;`, which would change my assertion.
+
+Let me trace through the escape logic more carefully — checking how the output settings' syntax and escape mode interact when handling the apostrophe in attribute versus text context under the base escape mode.
+
+So the expected result should encode the apostrophe as `&apos;` rather than `&#x27;`, meaning that test comment is misleading. I'll set the oracle to `"K&apos;?wQt&amp;"` and double check whether jsoup's default OutputSettings escape mode is actually `base`, since other test comments about xhtml mode encoding non-breaking space differently suggest similar quirks to verify.
+
+syntax with base escape mode confirms `&apos;` output, so my assertion checking for `K&apos;?wQt&amp;` holds up.
+
+Now I'm verifying test01: checking that `CoreCharset.byName("")` correctly falls back to `fallback` since empty string doesn't match "US-ASCII" or start with "UTF-". I need to make sure the test actually has an assertion capturing this, so I'm adding an explicit equality check against `Entities.CoreCharset.fallback`.
+
+Since `CoreCharset` is package-private but the test resides in the same `org.jsoup.nodes` package, accessing it via `Entities.CoreCharset.byName("")` should compile fine.
+
+Now I'm working out the expected default values for each remaining test: html syntax for tests 05/06/12, `base` escape mode for test10, `false` outline for test11, and the default indent amount for test26, which I recall jsoup sets to 1.
+
+For test25, I need to double-check the raw string "yen " in the source—there's a trailing character that looks like a plain space, but the test name explicitly calls it a non-breaking space entity, so I'll trust the test name over my reading of the raw text and treat it as U+00A0 for the HTML-mode escaping assertion.
+
+
+
+The string matching failed for test25. Let me re-read the relevant section of the file to see the exact characters.
+
+I see - there are non-breaking spaces in those string literals. The issue is the string "yen " has a non-breaking space (U+00A0) as the last character. The text rendering shows it as a space but it might be a different character.
+
+Let me use Bash to look at the hex content of the file around line 61.
+
+Bash is restricted to `bash build.sh` only. I can't run arbitrary shell commands.
+
+Since I can't inspect the hex, I need to approach this differently. The Edit tool failed because of non-ASCII characters in the string literal that I can't see. Let me try using a broader context to include surrounding text to ensure exact match.
+
+Actually, looking at the read output, line 61 shows `String result = Entities.escape("yen ", settings);` where "yen " has what appears to be a non-breaking space at the end, but since the Read tool rendered it visually it looks like a space.
+
+Let me try using a slightly different approach - I'll include more context in the old_string for unique identification.
+Actually, the real issue is that the file contains a non-breaking space (U+00A0) where I'm typing a regular space, so the exact string match keeps failing. I need to find a way to reference the unique method name and surrounding text while capturing that special character correctly.
+
+Checking test07 which also has "yen " - both lines 61 and 68 likely have the same trailing non-breaking space character, so I'm considering whether a different edit approach could handle both occurrences consistently.
+
+
+
+The issue is that even the snippet ending before "yen" has something non-matching. Let me try to match just the method signature and one unique line:
+
+Good, so the match for just `String result` before the non-breaking space worked. Now I need to undo this and do it properly. Let me first see what the current state looks like around that area.
+
+Actually wait - I accidentally replaced "String result" with "String result_PLACEHOLDER". That's not what I wanted. I need to fix this. Let me undo it by replacing the placeholder back.
+
+Actually, the problem is the non-breaking space. My partial match found "String result" (without the escape call line) and replaced it. Now I need to properly add the assertion.
+
+The current state after my replacement would be:
+```java
+Fixing the placeholder issue...
+
+
+
+Good, reverted. But wait, the `replace_all` was false, and if there's only one instance of "String result_PLACEHOLDER" (since I introduced it), it should be fine. But there are also "String result" in many other places... actually since I used `replace_all: false` and the string "String result_PLACEHOLDER" appears only once, only that one was replaced. Good.
+
+Actually hold on - now I need to add the assertion to test25. The problem is that I can't include the non-breaking space in my old_string. I need to find a way to match on the closing brace `}` right after the escape call.
+Looking at test25's structure, I can try matching the unique substring right before the non-breaking space character to anchor my edit there instead.
+
+Actually, matching the closing brace of test25 followed by the start of test07's declaration seems like a cleaner, unique anchor point since it avoids the tricky non-breaking space character entirely.
+
+I realize the mismatch was a regular space versus a non-breaking space character in the file, so I should truncate my old_string right at "yen" without including the trailing character, letting the match end exactly there.
+
+That match actually worked, but my replacement only covered the variable declaration, reverting the file back to its original state with the escape call intact. Now I need to insert an assertEquals check right after that escape call, targeting the closing brace to append the new line.
+
+I found a unique anchor spanning the closing brace of test25 into the start of test07's annotation and method signature, avoiding the problematic non-breaking space character entirely, so I can insert the assertion there instead.
+
+This should be unique since the next test method name anchors it specifically. Let me try this approach.
+
+
+
+The issue continues. Even within the test07 content, the "yen " with the non-breaking space is causing issues. Let me try to match just on a portion that definitely doesn't contain the non-breaking space.
+
+Let me try:
+- old_string = just the `}` of test25 through the first part of test07 that doesn't include the "yen\u00A0" call
+
+```java
+    }
+
+    @Test(timeout = 4000)
+    public void test07_escapeNonBreakingSpaceAsNumericHexEntityInXhtmlMode() throws Throwable {
+```
+
+Setting up XHTML escape mode and testing on the string ending right before the non-breaking space character, since I need my match to stop before that special character to avoid encoding issues.
+
+Actually the real error is "String to replace not found in file" — meaning the whole match failed, not just an encoding edge case. I should try matching a narrower chunk that avoids the "yen " strings entirely, starting right from the test07 annotation and method signature instead.
+
+I need to find a unique anchor that avoids the non-breaking space string, so I'm considering matching on the boundary between test25's closing brace and test07's method declaration instead.
+
+
+
+Good. Now test25 has `assertEquals("yen&nbsp;", result);` added, and test07 still needs its assertion for xhtml mode.
+
+Now I need to add the assertion for test07. The test07 body ends with:
+```java
+        String result = Entities.escape("yen\u00A0", settings);
+        // xhtml mode encodes non-breaking space as &#xa0; rather than &nbsp;
+    }
+```
+
+I need to add `assertEquals("yen&#xa0;", result);` there. The comment line is unique so I can use it.
+
+Wait, I said the test comment says "XML syntax encodes apostrophe as &#x27; rather than &apos;". But based on my analysis, the actual result should be `K&apos;?wQt&amp;` because `escape(String, OutputSettings)` only uses `out.escapeMode()` (which is base, not xhtml) and `out.charset()`. The XML syntax setting doesn't change the apostrophe encoding.
+
+However... actually I need to double-check this. The `appendApos` function:
+```java
+private static void appendApos(QuietAppendable accum, int options, EscapeMode escapeMode) {
+```
+
+Confirming: the apostrophe encoding decision only checks whether escapeMode equals xhtml -- it has nothing to do with whether XML syntax is enabled. Since default settings use base escape mode, not xhtml, the apostrophe should just render as a literal quote character, not either entity form.
+
+So the test's expected output of `&apos;` seems mismatched with the code's actual logic, meaning either the comment or the oracle itself is wrong about which escape path produces that result.
+
+I keep confirming that the escape method only consults the escape mode, never the syntax setting, so switching to XML syntax shouldn't change anything about how apostrophes get escaped.
+
+The test's own comment seems misleading — it claims XML syntax uses `&#x27;`, but that contradicts my reading of the code. I'll trust my analysis and stick with `&apos;` in the assertion, then move on to the rest of the test.
+

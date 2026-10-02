@@ -1,0 +1,35 @@
+Let me start by reading both the test file and the class under test to understand what needs to be done.
+
+Now let me analyze each test to determine what oracles should be added:
+
+**test0:**
+```java
+char[] charArray0 = new char[14];
+StringReader stringReader0 = new StringReader("KnLjCdWGnB@(}p3qC");
+BoundedReader boundedReader0 = new BoundedReader(stringReader0, 1);
+int int0 = boundedReader0.read(charArray0, 1, 1);
+```
+- BoundedReader with max=1, reading 1 char from offset 1
+- charsRead starts at 0, maxCharsFromTargetReader = 1
+- Since charsRead is below the max, it reads the first character 'K' and increments charsRead, placing it into cbuf[1]. The return value is 1, so int0 should equal 1.
+
+Moving to test1, this starts a new StringReader with an empty string wrapped in a BoundedReader.
+
+I'm tracing through reset(), skip(), and mark() calls on an empty StringReader wrapped in a BoundedReader with max=511 -- reset sets charsRead to -1 since markedAt is invalid, then skip adds 511 but the underlying empty StringReader can't actually skip any characters since there's nothing there.
+
+Since 0 < readAheadLimit of 1, it proceeds to read: charsRead increments to 511, and calling read() on the empty StringReader returns -1 for EOF, so the result is -1, matching the expected oracle assertion. Now I'm setting up a second test case with a PipedReader wrapped in a BoundedReader with max=-1, then reading into a 14-char array at offset 1.
+
+With max=-1, the check charsRead(0) >= maxCharsFromTargetReader(-1) evaluates true immediately, so it returns EOF right away, giving int0 = -1 which matches the assertion. Now I'm outlining a third test using a StringReader with "@</'" wrapped in a BoundedReader with max=481, followed by reset, skip, mark, and a read call.
+
+I'm trying to work out what reset() does here—since no mark was ever set on the BoundedReader, I need to check whether StringReader.reset() without a prior mark() throws an IOException or defaults to resetting to position 0, since that affects whether this test expects an exception or a normal return value.
+
+If reset() is called without an initial mark, it would seemingly throw IOException—but the test continues afterward with skip, mark, and read calls, so it must not actually throw. I'm checking whether StringReader's internal mark field defaults to 0 rather than being unset, which would explain why reset() succeeds without an explicit mark() call first.
+
+So calling reset() on boundedReader0 sets charsRead to -1 and resets the underlying StringReader back to position 0 without error. Then skip(481) adds 481 to charsRead (making it 480), but the actual underlying StringReader only has 4 characters available after reset, so it can only skip 4 chars and returns 4 as the result.
+
+Next, calling mark(1) computes an internal read-ahead limit of -479 and records the marked position as 480, then delegates to the underlying reader's mark. When read() is called afterward, since charsRead (480) hasn't reached maxCharsFromTargetReader (481) yet, but the marked position check (charsRead - markedAt = 0) satisfies the read-ahead limit condition, it returns EOF (-1) instead of actually reading a character.
+
+So the oracles across the tests come out to: test0 expects 1, test1 and test2 expect -1, and test3 expects both 4L for the skip result and -1 for the subsequent read. I want to double-check test3's skip behavior though -- the skip method adds n to charsRead and delegates to the underlying StringReader's skip, which for a 4-character string starting at position 0 after reset would only be able to skip up to the string's remaining length regardless of the requested amount.
+
+Tracing test1 more carefully: with an empty StringReader after reset, skip returns 0 while charsRead still accumulates the full requested skip amount, then mark sets a read-ahead limit based on the difference, and when read() is called the underlying empty reader returns -1 for EOF, giving int0 = -1.
+

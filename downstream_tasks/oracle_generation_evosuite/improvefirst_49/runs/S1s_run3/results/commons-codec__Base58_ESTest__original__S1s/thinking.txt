@@ -1,0 +1,124 @@
+Let me start by reading the masked test file and the class under test to understand what needs to be filled in.
+
+Now let me analyze each test to determine what oracles should be added:
+
+**test00**: Encodes a 2-byte array where byte[0] = -115 (0x8D), byte[1] = 0. The comment says it's unstable, so no oracle needed here. The test is already marked as unstable with a comment.
+
+**test01**: Tests that encoding with out-of-bounds parameters throws ArrayIndexOutOfBoundsException. The test already has `fail("Expecting exception: ...")` and a catch block. No oracle needed.
+
+**test02**: `base58_0.encode(byteArray0, (int) (byte) (-20), (int) (byte) (-20))` - Encodes with offset=-20, length=-20 (negative length signals EOF). 
+
+Since the length is negative, it marks EOF and converts the buffer to base58. With an empty buffer, the BigInteger construction from an empty byte array should yield zero, so I'm tracing through how the leading zero count and signum behave in that edge case.
+
+With leadingZeros at 0 and an empty StringBuilder, the encoded result stays empty after reversal and conversion to bytes. I'm now tracing into the encode(byte[], int, int) call with a negative length argument, which delegates to an internal encode method with a context object—I need to figure out how it handles that negative length.
+
+With length -20 and a null buffer, the accumulated bytes end up empty, so converting that to Base58 yields a BigInteger of zero, no leading zeros, and ultimately an empty encoded string with nothing copied into the buffer. I need to check what the base class's encode method actually returns from context in that case.
+
+Test03 checks for an ArrayIndexOutOfBoundsException, so no additional oracle is needed there either. For test04, decoding with a negative length sets context.eof to true, so a subsequent decode call with eof already true would just return immediately without crashing, though I'm not sure what result that produces or whether an assertion was expected.
+
+For test05, decoding "Dt2" requires mapping each character to its Base58 alphabet position: D maps to 12, t maps to 51, and 2 maps to 1, then computing the value as 12 times 58 squared plus 51 times 58 plus 1.
+
+This gives 43327, or 0xA93F in hex, with no leading '1' characters to account for. Converting to a byte array yields two bytes, 0xA9 and 0x3F, which as signed bytes are -87 and 63 -- so the expected result should be the byte array {-87, 63}.
+
+Now let me double check this against the actual decode table values for the character 'D', tracing through the ASCII ranges to confirm the mapping is correct.
+
+With D=12, t=51, and 2=1 as the decoded digits, I compute the value as 12*58² + 51*58 + 1, which works out to 43327, or 0xA93F in hex. I need to verify how toByteArray() handles this since it uses two's complement representation.
+
+Right, since bit 15 of the two-byte value is set, toByteArray() would actually prepend a 0x00 byte to keep the number positive, giving [0x00, 0xA9, 0x3F] rather than just two bytes.
+
+Since there's a leading zero byte, the decode logic strips it off, leaving [0xA9, 0x3F], and with no leading '1' characters in the encoded string to account for, the result array is just these two bytes.
+
+So I'm expecting the byte array [-87, 63] as signed values, which I should double-check by re-tracing the digit decoding for each character of "Dt2" to make sure the arithmetic actually produces 0xA93F.
+
+Still mapping decode table values...
+
+Continuing the offset mapping...
+
+So D=12, and t=51 confirmed by walking the same row pattern. Now I'm tracing through decoding "Dt2": checking the leading-ones prefix (none since '1' doesn't match 'D'), then processing digits right to left to compute the value with positional powers.
+
+Working through it: i=2 contributes 1*1=1, i=1 adds 51*58=2958 for a running total of 2959 with power growing to 3364, and i=0 adds 12*3364=40368, landing on a final value of 43327.
+
+Now converting 43327 to hex: dividing by 256 gives 169 remainder 63, so the high byte is 0xA9.
+
+This gives 0x3F for the low byte, so 43327 in hex is 0xA93F. Since 0xA9's high bit is set, BigInteger's toByteArray() will prepend a zero byte, producing [0x00, 0xA9, 0x3F]. Then in the base58 decoding logic, the leading zero gets stripped off to leave [0xA9, 0x3F], which gets copied into a two-byte result array.
+
+I'm confident the expected output for decoding "Dt2" is the signed byte array [-87, 63]. Now I'm working through test06, decoding "t2": with 't' = 51 and '2' = 1, there are no leading '1' characters, and I'm computing the base58 value by processing the digits right to left, accumulating powers of 58.
+
+The resulting value 2959 converts to hex 0x0B8F, and since the leading byte 0x0B has no high bit set, no extra zero byte is needed, giving toByteArray() = [0x0B, 0x8F]. Since the first byte isn't zero, there's no stripping in convertFromBase58, so the final result is [11, -113] as signed bytes.
+
+Now for the "11" case (test08), with two leading '1' characters setting leadingOnes = 2, the processing loop that builds the BigInteger value has no iterations to run since it starts right where leadingOnes ends, leaving value as BigInteger.ZERO, which means decoded should end up empty.
+
+So result becomes a byte array of size 2 filled with zeros, giving byteArray0 = [0, 0], which I could assert directly.
+
+For test09, I'm checking what setEncodeTable returns on the Builder - whether it returns the same instance (making assertSame appropriate) or just a non-null Builder object, so I'm looking at the method implementation to determine which assertion fits.
+
+For test10, calling get() on the builder should produce a new Base58 instance that I can assert is not null, and test11 involves checking a boolean result from calling an "is..." method on that Base58 object.
+
+Encoding an all-zero 18-byte array produces 18 leading '1' characters since the value is zero, so the result should be "111111111111111111". For test13, Base58.builder() just returns a new non-null Builder instance, so I could assert it's not null.
+
+Going through the remaining tests: test02 and test04 likely need no assertion, while test05, test06, and test08 have predictable byte array outputs I can assert with reasonable to high confidence. Tests 09 through 11 look straightforward too—checking that builders and instances are non-null, and that a boolean result is false.
+
+For test12, I'm working out that encoding an 18-byte all-zero array produces a BigInteger with signum 0, meaning the main encoding loop never executes, and all 18 leading zero bytes get mapped to the '1' character in Base58, giving me `"111111111111111111"` as the expected string. Test13 just checks that a builder instance is non-null.
+
+So test12 confirms 18 ones as the result. Checking test08 next: with "11" as input, both characters count as leading ones, so the conversion loop never runs and the value stays zero, producing a two-byte array of zeros as expected.
+
+Now I'm going through the whole test file to see which tests are missing assertions entirely. Several tests like test01, test03, and test07 already have proper fail()+catch blocks and are complete, but test02, test04, test05, test06, test08, test09, test10, test11, test12, and test13 all lack assertions after their respective operations and need them added. Starting with test02, which encodes with a negative length of -20, I'm figuring out what the expected empty result should look like.
+
+For test09, I'm reasoning through whether `setEncodeTable` returns the same builder instance for chaining, which would make `assertSame(base58_Builder0, base58_Builder1)` the right assertion rather than just checking non-null.
+
+Since I'm not certain the parent class actually implements that chaining behavior, I'll play it safe and use `assertNotNull` instead. Now I'm going through each test method and adding the appropriate assertions -- array comparisons for the decoded byte arrays, boolean checks, non-null checks, and expected string outputs for the encoding tests.
+
+For tests 02 and 04, I want to hold off adding assertions until I understand what the actual oracle should be. Looking at test02, there's an unused `byteArray1` from calling `encode` with negative offset and length values, so I need to trace through what BaseNCodec's encode logic would actually produce with those negative parameters before deciding on an assertion.
+
+Tracing through the encode method's logic: when length is negative, it sets eof true and converts whatever buffer exists (or empty) to Base58, so a negative length input effectively yields an empty encoded result. I still need to verify what the actual return value looks like without seeing the full BaseNCodec.encode(byte[], int, int) wrapper method.
+
+For test02, without more certainty about the exact return type, I'll abstain from asserting a specific value. For test04, since the decode calls don't capture a return value, there's no variable to assert against, so I'll leave that test untouched.
+
+Tracing through the negative-length case for encode, I suspect it signals EOF and produces an empty buffer, but without seeing the parent BaseNCodec implementation I can't be certain of the exact byte output, so I'll abstain from asserting on test02's result too.
+
+
+
+Now I understand how `encode(byte[], int, int)` works:
+
+1. Check if array is empty → return array
+2. Create context
+3. Call `encode(array, offset, length, context)` 
+4. Call `encode(array, offset, EOF, context)` (EOF = -1) to signal EOF
+5. Return `buf` of size `context.pos - context.readPos`
+
+For test02:
+- `base58_0.encode(byteArray0, (int) (byte) (-20), (int) (byte) (-20))`
+- byteArray0 = new byte[1] (one byte, value 0)
+- since byteArray0 has one element, isEmpty returns false, so it's not empty. With length=-20 being negative, that triggers the EOF branch, setting context.eof to true and the buffer to empty before converting.
+
+The base58 encoding of an empty buffer just resets position to 0, and since context.eof is already true, the second encode call returns immediately without doing anything more. This means the resulting buf is `new byte[0]`, so byteArray1 ends up being an empty array.
+
+I could assert on the length or use assertArrayEquals with an empty array. But first I should check what BinaryCodec.isEmpty actually does, since that might be relevant here.
+
+
+
+Good. `BinaryCodec.isEmpty(array)` returns `array == null || array.length == 0`.
+
+For test02:
+- `byteArray0 = new byte[1]` (length 1, not empty)
+- So `encode(byteArray0, -20, -20)` proceeds with the full flow.
+- As I analyzed: `byteArray1 = new byte[0]` (empty array after encoding empty accumulated buffer).
+
+Now I'm confident:
+- test02: `assertArrayEquals(new byte[0], byteArray1)` or `assertEquals(0, byteArray1.length)`
+Now I'm writing out all the remaining oracles: test02 checks the array length is zero, test04 needs no assertion since it only involves void methods and context state, and test05, test06, test08, and test09 each verify specific expected byte array contents against the encoded output.
+
+Continuing with the rest: test10 through test13 check for non-null return values, a false boolean result, and the expected string "111111111111111111" for an edge case input.
+
+For test04 I'm confirming there's truly no return value to assert on, so I'll leave that test without an oracle. Then I'm re-examining test02's exact parameters -- it calls encode with a single-byte zero array and offset/length both set to -20, and I'm tracing through how the encode method's internal logic would handle those negative values.
+
+I'm tracing the encode logic: since length is negative, it signals EOF and treats the buffer as empty, then in converting to Base58 it constructs a BigInteger from an empty byte array, which should resolve to zero regardless of the positive signum flag.
+
+Tracing through the rest of the encode logic: with a zero-value BigInteger, the leading zeros loop and the base58 while loop both skip, so the encoded string ends up empty, and the buffer gets allocated but nothing is copied since length is 0. The next encode call immediately returns due to EOF being set, and the final buffer size comes out to zero as well.
+
+So byteArray1 should be an empty byte array — I'll assert that with something like assertArrayEquals(new byte[0], byteArray1).
+
+Now shifting to test12 with 18 zero bytes: since all bytes are zero, the BigInteger value is 0 with signum 0, so leadingZeros counts up to 18, and the base58 while loop won't execute since signum isn't greater than 0.
+
+So the encoder appends 18 leading '1' characters, producing "111111111111111111" (18 ones), which becomes the final encoded string. Now I'm ready to make all the edits.
+

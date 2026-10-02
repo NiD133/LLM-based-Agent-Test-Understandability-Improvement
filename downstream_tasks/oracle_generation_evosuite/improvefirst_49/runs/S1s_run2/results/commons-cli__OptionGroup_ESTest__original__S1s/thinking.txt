@@ -1,0 +1,99 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now I need to understand what oracles are needed for each test. Let me analyze each test:
+
+**test00**: Creates two options, adds them to group, calls toString(). 
+- option0: opt=null, longOpt=null → uses `--null` (DEFAULT_LONG_OPT_PREFIX + null)? Wait, let me look at the toString logic again.
+  - if option.getOpt() != null → use DEFAULT_OPT_PREFIX + opt
+  - else → use DEFAULT_LONG_OPT_PREFIX + longOpt
+  - For option0 (null, null): opt=null, longOpt=null → `--null`
+  - For option1 (null, "[]", true, null): opt=null, longOpt="[]" → `--[]`, giving toString() as "[--null, --[]]" with both descriptions null.
+
+Now I'm double-checking the actual Option constructors being used in the test to confirm which overload applies and whether my assumption about arguments holds.
+
+For option1 with opt=null and longOpt="[]", the prefix logic would produce "--[]" as the display string. Without knowing the exact getKey() behavior and prefix constants, I'm uncertain what toString() will output for these edge cases with null opts, so the test oracle is likely just checking the result isn't null or has basic bracket formatting rather than an exact string match.
+
+Let me check the OptionFormatter class to see how DEFAULT_OPT_PREFIX and DEFAULT_LONG_OPT_PREFIX are actually defined.
+
+
+
+Let me look at the DEFAULT_OPT_PREFIX and DEFAULT_LONG_OPT_PREFIX in OptionFormatter, and look at the Option constructors.
+
+Now I understand:
+- `Option(String option, String description)` calls `this(option, null, false, description)` - so opt=option, longOption=null
+- `Option(String option, String longOption, boolean hasArg, String description)` - sets opt=option (after validation), longOption=longOption
+
+For `OptionValidator.validate(option)` - let me check what it does with null.
+
+Let me look at the getKey() method too.
+
+Now I have a clear picture. Let me analyze each test:
+
+**test00**: 
+- option0 = new Option(null, null) → opt=null, longOpt=null, description=null
+- option1 = new Option(null, "[]", true, null) → opt=null, longOpt="[]", description=null
+- optionGroup0.addOption(option0): key = null (opt=null, longOpt=null → getKey()=null)
+- optionGroup0.addOption(option1): key = "[]" (opt=null, longOpt="[]" → getKey()="[]")
+- For toString(), since getOpt() is null for both, it falls back to "--" + getLongOpt(), and since StringBuilder.append(null) prints the literal string "null", option0 becomes "--null" and option1 becomes "--[]" — so the expected result is "[--null, --[]]".
+
+- For test01, option0 has null opt/longOpt but an empty description, so toString() appends "--null" then a space followed by the empty description, giving "[--null ]". I need to check what Char.SP represents.
+
+- For test02, option0 has opt="tkgJ" with null longOpt and null description, so toString() just produces "-tkgJ" with no trailing description.
+
+I'm checking Char.java to confirm the value of Char.SP.
+
+
+
+Now I have all the information I need. Let me analyze each test:
+
+**test00**:
+- option0 = new Option(null, null) → opt=null, longOpt=null, description=null
+- option1 = new Option(null, "[]", true, null) → opt=null, longOpt="[]", description=null
+- addOption(option0): key=null (getKey()=null since opt=null and longOpt=null)
+- addOption(option1): key="[]" (getKey()="[]")
+- toString():
+  - For option0: getOpt()=null → "--null", description=null → no space
+  - For option1: getOpt()=null → "--[]", description=null → no space, with a comma separating the two entries since there's more than one option
+
+**test01**:
+- option0 = new Option(null, null) with description set to "" afterward
+- toString(): getOpt()=null → "--null", and since description is "" (not null), a space gets appended after it
+
+Only one option, so no comma: "[--null ]"
+
+**test02**:
+- option0 = new Option("tkgJ", null), description=null
+- toString(): getOpt()="tkgJ" → "-tkgJ", no description means no trailing space → "[-tkgJ]"
+
+**test06**: option0 is selected, so optionGroup0.isSelected() returns true, and the test asserts true.
+
+**test07**: no option selected (selected is null), so isSelected() returns false, and the test asserts false.
+
+Now I'm looking at test08, checking what's being retrieved next.
+
+getNames() on an empty OptionGroup returns an empty collection — the test should assert it's not null and empty.
+
+For test09, setRequired(false) has no return value, so I'm unsure what oracle applies. The test doesn't call isRequired() afterward, so there's nothing concrete to assert unless the original oracle checked isRequired() returns false following the call — I'll consider that possibility since there's no other assertion target.
+
+Rereading the task, every oracle was stripped and I need to add one that checks the class's behavior. So for test09, I should add assertFalse(optionGroup0.isRequired()) after setRequired(false), and for test10, since isRequired() is called on a fresh OptionGroup, the default should be false, so assertFalse(boolean0) fits.
+
+Now I'm tracing test00's toString() output carefully: with an Option constructed as opt=null, longOpt="[]", the string builder appends "--" plus null for the opt and "--" plus "[]" for longOpt, giving something like "[--null, --[]]" as the expected oracle value.
+
+For test01, the description is an empty string rather than null, so the code still appends a space plus the empty description, yielding "[--null ]".
+
+For test02, opt="tkgJ" with longOpt=null and description=null produces just "[-tkgJ]" since only the short option gets appended and nothing else triggers.
+
+For test03, the structure is just a fail() call followed by a catch block whose comment documents the expected exception message — no explicit oracle is needed since the fail() itself asserts that an exception is thrown.
+
+For test04, setSelected is called twice with no exception expected, so the implicit oracle is simply that no exception occurs. Test05 works similarly, calling setSelected(null) to reset the selection and confirming no exception is thrown.
+
+For test06, I'm tracing through how isSelected() behaves after setting an option — I need to work out what getKey() returns when the option's opt is null but longOpt is an empty string, since that determines what "selected" gets set to.
+
+With selected ending up as an empty string, isSelected() checks selected != null, so that returns true — I'll assert true there. For test07, no option is selected so selected stays null and isSelected() returns false. Test08 checks that an empty group's getNames() returns an empty collection, so I'll assert isEmpty() is true. Test09 and test10 both confirm that isRequired() defaults to false on a new group. Now I'm working through the expected toString() output for test00, tracing what the formatted string should look like given the options in the group.
+
+That confirms the expected result "[-tkgJ]" for test02, giving me confidence in the exact toString outputs for tests 00-02. Now I'm ready to write the assertion oracles for these three toString tests, with test03 likely checking something else.
+
+Tests 04-05 just need to verify no exception occurs, tests 06-08 and 10 have clear boolean/collection assertions, and for test09 I should add an assertFalse check on optionGroup0.isRequired() after the setRequired(false) call since it doesn't return anything directly.
+
+Now I'll write out the actual test edits.
+

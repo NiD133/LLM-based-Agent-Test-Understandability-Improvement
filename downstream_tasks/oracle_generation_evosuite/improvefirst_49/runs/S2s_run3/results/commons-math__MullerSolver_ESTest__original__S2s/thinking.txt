@@ -1,0 +1,35 @@
+Let me start by reading both the masked test file and the class under test to understand what oracles need to be added.
+
+Let me analyze each test and determine what oracles need to be added:
+
+**test0**: Calls `mullerSolver0.solve(1392203, cbrt0, -2825.0795928397, 2.7950664235456177E85)`. The result is stored in `double0`. Since `Cbrt` is the cube root function, the root should be at x=0. Given the interval includes 0 (from -2825 to a large positive number), the solver should find 0. So the oracle would be `assertEquals(0.0, double0, 1.0E-6)` or similar.
+I need to check how this two-argument version of solve handles the start value - since MullerSolver extends AbstractUnivariateSolver, and this overload only takes min/max without an explicit startValue, it likely defaults to the midpoint of the interval when doSolve() calls getStartValue().
+
+For test0, the cube root function has its root at x=0, and since the interval [-2825, large positive] contains 0, I expect the solver to converge there, giving an oracle of assertEquals(0.0, double0, 1.0E-6). Test1 is already complete since it verifies a RuntimeException about exceeding maximal evaluation count. Test2 similarly calls solve with cbrt0 on an interval containing 0, so I expect the same near-zero oracle.
+
+Now test3 uses a PolynomialFunction with all-zero coefficients, meaning f(x)=0 everywhere, and calls the single-argument solve variant with just a start value rather than min/max bounds. I'm trying to work out how doSolve handles getMin/getMax when only a start value was provided in this overload.
+
+That value would then be less than functionValueAccuracy, returning immediately as the root. I'm trying to pin down whether that argument is being treated as startValue or min in the three-argument solve overload, since the two interpretations lead to different solver behavior.
+
+I need to trace through the order of operations in doSolve() more carefully - verifySequence happens before fMin gets computed, so if min is NaN, the sequence check might actually throw first rather than the zero-function short-circuit saving it.
+
+But since the test expects a successful result stored in double0 without an exception, I'm reconsidering whether solve() here is actually the four-argument variant with separate min and max, rather than the startValue overload I was assuming.
+
+Without the exact solver source, I can't be fully certain how NaN propagates through verifySequence here, so for tests like test3 and test5 I may need to abstain on the oracle rather than guess the converged value. Let me go through the other tests one at a time, starting with test0's cube root function over its given interval.
+
+For test0, the root should be at 0, so the oracle checks assertEquals(0.0, double0, 1.0E-6). Test2 uses another cube root interval [-1321.9, 2331.0], again rooted at 0 with the same tolerance check. Test4's interval runs from a negative number to a tiny positive value near zero, so the root at 0 still falls within bounds, and I expect the same assertEquals(0.0, ...) pattern to apply.
+
+For test5 though, I'm less certain—it uses the Ulp function, which always returns positive values, so there's no actual root for the solver to find. This means the solver's behavior is unpredictable; it might hit maxEval and throw, or converge to some unexpected value, so I'm inclined to abstain on this one rather than guess at a specific assertion.
+
+For tests 0, 2, 4 with the Cbrt function, the intervals clearly bracket zero, so the solver should converge to 0.0 within the default tolerance. Test 0 uses a min/max pair without an explicit start value, so the solver likely defaults to using the midpoint as its initial guess—though given the huge magnitude of max here, I want to double check how that midpoint gets computed before committing to an assertion.
+
+For test2, min=-1321.9, max=2331, and the midpoint gives cbrt values with opposite signs so they bracket zero, matching the expected oracle of 0.0. For test4, min=-1476.25 and max is an extremely tiny positive number near 4.8e-220, still opposite signs so they bracket zero as well, again matching an oracle of 0.0.
+
+When only startValue is passed, min and max default to NaN, and I'm unsure how the solver handles that edge case. If min/max are NaN, the bounds check would fail comparisons, but if the function is a zero-polynomial, evaluating at NaN might still return 0.0 depending on how polynomial evaluation handles NaN coefficients times NaN input.
+
+So f(NaN) actually evaluates to 0 since all coefficients are zero, meaning the polynomial evaluation never touches NaN despite the input. That means abs(0.0) < functionValueAccuracy would hold true, so the solver would treat this as a root -- but then how does the test end up storing NaN in double0 without an assertion catching it? Maybe the actual solve path with min=NaN triggers a different branch through doSolve() that produces NaN directly.
+
+I don't have enough confidence in the internal state handling here, so I'll abstain on this test. Similarly, for the Ulp function test, since Math.ulp(x) is always positive there's no actual root, and I'm unsure whether the solver exhausts its evaluation budget and throws an exception or does something else entirely given only a start value -- so I'll abstain on that one too.
+
+Now I need to finalize the oracles for each test: tests 1, 2, and 4 assert double0 equals 0.0 within a small tolerance, while tests 3 and 5 are left abstained. I'll insert these assertions after the double0 computation lines in the test file, since currently they lack any assertions.
+

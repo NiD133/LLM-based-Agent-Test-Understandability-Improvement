@@ -1,0 +1,73 @@
+Let me start by reading the masked test file and the class under test to understand what oracles need to be added.
+
+Now let me analyze each test and determine what oracle(s) should be added:
+
+**test00**: Creates an OptionGroup, adds two options, calls `toString()`. The toString() would produce something like `[--[], --[]]`. With options:
+- option0: `new Option((String) null, (String) null)` - key is null (opt is null), longOpt is null. In toString, if `getOpt() != null` append prefix+opt, else append long prefix+longOpt. Since opt is null, it will append `--` + null (longOpt is also null).
+- option1 has opt null and longOpt "[]", so it appends `--[]`. Neither option has a description, so nothing more gets appended, giving a result like `[--null, --[]]` -- though I should verify the exact prefix constants used by OptionFormatter before committing to that string.
+
+Since the test just calls toString() and stores the result without visible assertions, I'm realizing these EvoSuite tests had their oracles stripped out entirely, so I need to reconstruct what assertion should exist for each test based on the option group's contents -- starting with test00 where both opt and longOpt are null.
+
+Going through the remaining tests, test03 already has a try/catch with fail() acting as its own oracle so it needs nothing added, while test04 with its double setSelected() call might just need an assertion on isSelected() or getSelected() rather than an exception check.
+
+For the rest: test06's isSelected() should assert true after setting, test07 asserts false on an empty group, test08 asserts an empty collection from getNames(), test09 has no assertion needed, and test10 asserts isRequired() defaults to false. For test00-test02, I still need to pin down the values of OptionFormatter.DEFAULT_LONG_OPT_PREFIX and DEFAULT_OPT_PREFIX before writing their assertions.
+
+Let me read that class.
+
+
+
+Now I know:
+- DEFAULT_OPT_PREFIX = "-"
+- DEFAULT_LONG_OPT_PREFIX = "--"
+
+Let me look at Option.getKey() to understand what key is used for options with null opt.
+
+Now let me figure out what each test's toString() would produce:
+
+**test00**:
+- option0: `new Option((String) null, (String) null)` - opt=null, longOpt=null. In toString: opt is null, so append `--` + null = `--null`
+- option1: `new Option((String) null, "[]", true, (String) null)` - opt=null, longOpt="[]". In toString: opt is null, so append `--[]`. No description (null).
+
+Result: `[--null, --[]]`
+
+**test01**:
+- option0: `new Option((String) null, (String) null)` - opt=null, longOpt=null. In toString: append `--null`. Description is set to "" (empty string). Since `""` is not null, it appends `" "` + `""` = `" "`.
+
+
+Now I understand the constructors:
+- `new Option(option, description)` = (opt, description)
+- `new Option(option, longOption, hasArg, description)` = (opt, longOpt, hasArg, description)
+
+So:
+**test00**:
+- option0: `new Option(null, null)` → opt=null, desc=null. In toString: opt is null, so append `--` + getLongOpt() = `--` + null = `--null`
+- option1: `new Option(null, "[]", true, null)` → opt=null, longOpt="[]", desc=null. 
+
+Tracing through: option1 gives `--[]` with no description, so test00 results in `[--null, --[]]`.
+
+For test01: option0 is `new Option(null, null)` with description reset to "", giving `--null` plus a trailing space for the empty description, so the result is `[--null ]`.
+
+For test02: option0 is `new Option("tkgJ", null)`, and since opt is "tkgJ" this time, I'm tracing through the non-null branch of toString.
+
+Now I'm going through each test and filling in the appropriate assertion — checking equality against the expected string output for test00-test02, verifying the caught exception message for test03, confirming no extra assertion needed for test04, asserting a null selection for test05, and checking the boolean results for test06 and test07 before moving to test08.
+
+I want to double-check the null handling: in Java, appending null to a StringBuilder produces the literal string "null", so my expected outputs `[--null, --[]]` for test00 and `[--null ]` for test01 are correct. For test08 I'm asserting the collection is empty, test09 checks that the option group isn't required, and test10 asserts a false boolean result.
+
+For test03, the catch block doesn't need an extra assertion since the oracle is already established by the `fail()` call before it paired with the catch clause itself - that combination confirms the exception was thrown as expected, so this test is complete without further checks on the exception message.
+
+For test04, calling `setSelected` twice with the same option should complete without throwing, and I'm weighing whether there's also a follow-up check on `getSelected()` returning "[]" given that option0's longOpt is "[]" - though I can't be fully certain without seeing the original.
+
+For test05, after passing null to `setSelected`, I'd expect `getSelected()` to return null as well.
+
+I'll settle on the assertions I'm confident about: test06 and similar boolean checks using assertTrue/assertFalse based on the expected true/false values, and I'm fairly solid on the toString tests (test00-02) matching their expected string values.
+
+For the void-returning setters like test04, test05, and test09, I'll hold back unless I can pin down a meaningful state check, since EvoSuite often skips assertions when there's nothing conclusive to verify. Test08 likely checks an empty collection with assertTrue(collection0.isEmpty()), which I feel good about including.
+
+I'm now piecing together the assertions I'm confident in: string equality checks for test00-02, boolean assertions for test06/07/10, and the empty-collection check for test08. For test04 specifically, I'm considering whether setting a selected option would trigger a state assertion afterward, but I'm not confident enough to commit to a specific value.
+
+A better strategy is to scan the test file for local variables that get assigned but never referenced afterward — those are the clearest signals of where assertions were stripped out. I'm going through test00 through test05 checking each one against this pattern.
+
+Continuing through the remaining tests (06-10), I find boolean0 and collection0 variables assigned without assertions in several cases, confirming those are the spots needing oracles — specifically tests 00, 01, 02, 06, 07, 08, and 10. Tests 03, 04, 05, and 09 likely only verify exception behavior or lack thereof, since they have no dangling unused variables. Now I'm ready to work out the specific oracle values for each flagged test, starting with test00.
+
+test08 checks an empty group's `getNames()` returns an empty collection, confirmed with `assertTrue(collection0.isEmpty())`. test10 verifies a new group's `isRequired()` defaults to false. Tests 03, 04, 05, and 09 don't need additional oracle assertions, so I'll now add all these to the test file.
+

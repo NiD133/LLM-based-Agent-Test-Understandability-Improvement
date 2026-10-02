@@ -1,0 +1,110 @@
+Let me start by reading the masked test file to understand what tests are there and where oracles need to be added.
+
+Now I need to analyze each test method and determine what oracles (assertions) should be added. Let me analyze them one by one:
+
+1. **test00_toStringBeforeTokenizationReturnsNotTokenizedYet**: Calls `tokenizer.toString()` before tokenization. The result should be something indicating "not tokenized yet". Looking at Apache Commons Text `StringTokenizer.toString()`, before tokenization it returns "StringTokenizer[not tokenized yet]".
+   - Oracle: `assertEquals("StringTokenizer[not tokenized yet]", result);`
+
+2. **test01_toStringAfterTokenizationShowsContent**: After calling `previousToken()`, then `toString()`. The char array has 1 element (null char '\0'). 
+
+I'm trying to work out what the tokenized output would look like given a single-character null array and a mock matcher returning zero matches -- it's tricky to pin down the exact string without actually running the tokenizer, so I need to reason through the expected format more carefully.
+
+Same expectation for the char-array delim case at start.
+
+For test09, calling nextToken() then previousToken() on "%*dR|" with CSV comma delimiter yields the whole string as one token both times, so I expect assertEquals("%*dR|", token).
+
+test11 with a null quote char at start should also return null for previousToken().
+
+test12 through test35 follow the same pattern -- previousToken() called at start of the stream (after various setup like configuration changes, using a TSV instance, whitespace-only input, or setting an ignored char) should uniformly return null, so each of these expects assertNull(token).
+
+For test17, since there are no tabs in the TSV input string, the whole string counts as a single token, so calling next() and then previous() should both yield that same full string as the token.
+
+For test10, I notice nextToken() is called without capturing its return value into a variable, so I need to handle the oracle differently since there's no token variable to assert against directly.
+
+Since the return value from nextToken() isn't captured in a variable, I can't add an assertNull without refactoring the test to store the result first. I'll consider abstaining here, since adding a meaningful oracle would require modifying the method call itself rather than just appending an assertion.
+
+Moving on, several tests just check that a setter returns the same tokenizer instance, so those get `assertSame(tokenizer, result);`. For the empty-token default test, I can verify the default flag is false with a simple assertFalse check.
+
+For the persistence test, after setting the flag to true, I should assert `assertTrue(result.isEmptyTokenAsNull())` since that value carries through. The content-related tests need `assertNull` when no content is given and `assertEquals` with the original string when one is provided, and the clone test should confirm the cloned object is a distinct reference from the original.
+
+For the delimiter test where it matches the whole input string, I'm reasoning that since the whole input becomes a single delimiter, both sides produce empty tokens which get filtered out due to the default `ignoreEmptyTokens` setting, so the expected size is 0.
+
+Then I'm going through several tests that just verify `isIgnoreEmptyTokens()` defaults to true across different constructor scenarios—null string input, null matchers with char arrays, null matchers for strings, null char arrays with delimiter strings, and shared delimiter/quote characters.
+
+Next I cover index-related checks: `previousIndex()` on a null char array TSV instance should return -1, and at the start of iteration it should also be -1, while `nextIndex()` at start should be 0. I also verify that `setIgnoreEmptyTokens(false)` returns the same tokenizer instance, and that getting the token array on an empty-content tokenizer doesn't throw an exception.
+
+Now I'm reconsidering the more complex toString() tests: before tokenization it should return a fixed "not tokenized yet" message per the Javadoc, and after triggering tokenization via previousToken() on a null-char array with default settings, I need to work out whether the resulting token list includes the null character or gets trimmed away.
+
+For the CSV and TSV tests, I'm checking that when there's no delimiter present in the string, nextToken() and previousToken() should both simply return the entire input string unchanged.
+
+Now I'm moving to the tests that only verify the tokenizer's initial state properties without capturing token values: checking that isEmptyTokenAsNull defaults to false, isIgnoreEmptyTokens defaults to true when given null string input, and previousIndex is -1 for a null char array TSV instance.
+
+For the trickier case where a test calls nextToken() without capturing its return value but the name implies it shouldn't throw, I'm weighing whether to add an explicit assertion on the result or just leave the implicit "no exception" as the oracle, since re-invoking nextToken() could change state unexpectedly.
+
+Looking more carefully, test20 and test24 actually test `isIgnoreEmptyTokens()` per their names but don't assert it - they need `assertTrue(tokenizer.isIgnoreEmptyTokens())`. And test21 checks previousIndex() on a null char array TSV instance without asserting the expected `-1` result, so that needs an assertion too.
+
+Similarly, tests 31, 32, and 34 all need `assertTrue(tokenizer.isIgnoreEmptyTokens())` added. For test29, after setting empty-token-as-null to true and calling previousToken(), the real oracle should check the state directly with `assertTrue(result.isEmptyTokenAsNull())`.
+
+Now I'm going through systematically to write out oracles for each test case, starting with the string representation check for test00, abstaining on test01 since I can't pin the exact format, and null-checking for test02.
+
+Continuing through the remaining test cases—several return null tokens (07, 11, 12, 19, 33, 35), a couple check specific token strings (09, 17), some verify tokenizer identity is preserved after operations (03, 04, 05), one checks the ignore-empty-tokens flag directly (06), and one abstains since it only checks the absence of an exception (10). I'm also handling a null content check for test14 and starting to work out the expected token string for test15.
+
+Now I'm going through several boolean flag assertions confirming isIgnoreEmptyTokens returns true across multiple tests (20, 24, 31, 32, 34), plus checking previousIndex and index return values, and noticing I need to double back on test29 to verify what previousToken() actually returns at the end.
+
+For test29, I'm reconsidering the oracle: since setEmptyTokenAsNull(true) returns a result and previousToken() is called on it, the assertion should confirm result.isEmptyTokenAsNull() returns true.
+
+For test00, I'm trying to recall the exact toString() output for an untokenized StringTokenizer, which I believe is "StringTokenizer[not tokenized yet]" based on the Apache Commons Text source.
+
+For test01, with tokenization applied to a single null character and a mock that never matches, I'm working through what the resulting token and toString format would look like, but I'm not confident enough in the exact output to commit to an answer.
+
+I recall the toString implementation might build the token list, but I'm not confident enough about the exact format, so I'll abstain on test01.
+
+Moving to test17: for `getTSVInstance(",OF0)2fR[p0$")`, since there are no tabs to split on, the whole string is a single token returned by both `next()` and `previous()`.
+
+For test09 with `getCSVInstance("%*dR|")`, there are no commas either, so I expect both `nextToken()` and `previousToken()` to return "%*dR|" unchanged, though I want to double-check whether the CSV instance's quote handling affects this input at all -- but since there's no special characters, it should just be a single plain token.
+
+Now looking at test18: a StringTokenizer is created on "z!S]_Cf!Rm6c" with delimiter 'x', then the delimiter string is reset to match the entire input string exactly. Since the whole input equals the delimiter, I'm thinking through how the match detection would behave at position 0, where it would find a full match spanning the entire input length of 12 characters.
+
+Since the delimiter consumes the whole string, both the text before and after it would be empty strings, which get filtered out by the default empty-token-ignoring behavior, leaving a token count of zero -- confirming the oracle `assertEquals(0, size)`.
+
+I want to revisit test05 too, which creates a TSV tokenizer instance and calls setIgnoredMatcher with a null matcher, expecting the returned object to be the same instance as the original tokenizer via assertSame.
+
+Now I'm considering the setEmptyTokenAsNull scenario: since setter methods typically return the same instance for chaining, the result should equal the original tokenizer, and after calling previousToken() on it, the oracle likely checks that isEmptyTokenAsNull() returns true, confirming the setting persisted through tokenization.
+
+Let me finalize my list of oracles across all the test cases - checking toString output before tokenization, verifying previousToken() returns null in several scenarios, and confirming a specific token value in one case where tokenization has actually occurred.
+
+For test10, I'll settle on a size check assertion instead, since it's meaningful without double-calling nextToken.
+
+Continuing through the setTrimmerMatcher and setIgnoredMatcher tests, I'm adding assertSame(tokenizer, result) checks to verify these builder-style methods return the tokenizer itself for chaining.
+
+For getTSVInstance with a null string, I'll check that isEmptyTokenAsNull returns false, and for the previousToken test I'll assert isEmptyTokenAsNull is true. For forEachRemaining, since it consumes all remaining elements, I'll verify hasNext() is false afterward as the meaningful oracle.
+
+Continuing through more tests: getContent should return null in one case and a specific string in another; cloning should produce a distinct object via assertNotSame; size() on an empty tokenizer should equal zero; and a tokenizer built from a null string should default to ignoreEmptyTokens being true. I'm now working through the constructor variant with a single character and null matchers, checking that isIgnoreEmptyTokens holds true there as well.
+
+Continuing through more cases: checking previousIndex returns -1, nextIndex returns 0, setIgnoreEmptyTokens returns the same tokenizer instance, and verifying an empty tokenizer's size is 0 after calling getTokenArray().
+
+I'm going through which tests genuinely lack a meaningful oracle beyond not throwing—the ones already checking exceptions with fail() don't need more, but test13's forEachRemainingAdvancesIteratorPosition really should verify position changes, and test30's no-content tokenizer case is still being weighed.
+
+For test13, checking hasNext() returns false after forEachRemaining seems like a solid addition, and for test10 and test30 I'm leaning toward adding a simple size() or array-length assertion as the state check, while trying to stay conservative about which claims I'm actually confident in.
+
+Now I need to locate the exact spots in the file where each of these oracle assertions should be inserted.
+
+
+
+Let me re-read the file to see what's there now.
+
+I see the file has the edits from before but the single tests are distinct. Let me edit them one by one carefully.
+
+Let me try to read the raw bytes to understand the issue. Maybe it's a different character at `'(', ' '` - maybe it's not `' '` (space) but something else.
+
+The file reads fine. Let me try a different approach - maybe there's a special unicode space character or the `'(', ' '` actually uses a different character. Let me try to edit with the full method:
+
+This is very strange. The file read shows those exact characters but the edit tool can't find them. Maybe there are different whitespace/encoding issues. Let me try just matching a unique part:
+
+So the method name can be matched. There must be encoding issues with some characters in the body. Let me try matching just the local variables to see what happens with chars and tokenizer. Let me try with just a small part after the method name.
+
+Let me try to write the entire file. Actually, wait - I can't use Write unless this is a complete rewrite, and I need to read the file first. Let me read the current state of the full file first and then write it.
+
+Now I can see the full file. The Edit tool is having trouble finding strings - likely because the file has some invisible characters or different whitespace. Let me try writing the whole file completely with all the oracles.
+
+Let me compose the complete file with all the oracles added:
