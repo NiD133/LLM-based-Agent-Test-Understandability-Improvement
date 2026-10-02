@@ -1,0 +1,24 @@
+package org.threeten.extra.chrono;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import java.time.temporal.ChronoField;
+import java.time.temporal.ValueRange;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class BritishCutoverChronology_ESTest_test02 extends BritishCutoverChronology_ESTest_scaffolding {
+
+    // Verifies that range() returns a non-null ValueRange for the YEAR_OF_ERA field
+    @Test(timeout = 4000)
+    public void test02() throws Throwable {
+        BritishCutoverChronology britishCutoverChronology0 = new BritishCutoverChronology();
+        ChronoField chronoField0 = ChronoField.YEAR_OF_ERA;
+        ValueRange valueRange0 = britishCutoverChronology0.range(chronoField0);
+        assertNotNull(valueRange0);
+    }
+}

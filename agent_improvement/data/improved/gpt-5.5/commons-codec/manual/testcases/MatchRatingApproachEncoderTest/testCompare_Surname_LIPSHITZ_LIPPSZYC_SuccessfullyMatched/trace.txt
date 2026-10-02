@@ -1,0 +1,611 @@
+[3] AGENT
+I’ll use the required compile-check workflow, and if javac reports errors I’ll switch to the repair-loop instructions. First I’m reading only the test inputs and the relevant skill instructions so the generated test preserves behavior exactly.
+
+[4] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[5] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[6] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[7] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[8] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/data/original/commons-codec/manual/testcases/MatchRatingApproachEncoderTest/MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched.java"
+
+[9] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/data/original/commons-codec/manual/testcases/MatchRatingApproachEncoderTest/MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched.java"
+--- output ---
+package org.apache.commons.codec.language;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.apache.commons.codec.AbstractStringEncoderTest;
+import org.junit.jupiter.api.Test;
+
+public class MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched extends AbstractStringEncoderTest<MatchRatingApproachEncoder> {
+
+    @Override
+    protected MatchRatingApproachEncoder createStringEncoder() {
+        return new MatchRatingApproachEncoder();
+    }
+
+    @Test
+    final void testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched() {
+        assertTrue(getStringEncoder().isEncodeEquals("LIPSHITZ", "LIPPSZYC"));
+    }
+}
+
+
+[10] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,320p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/commons-codec/src/main/java/org/apache/commons/codec/language/MatchRatingApproachEncoder.java"
+
+[11] COMMAND completed
+/bin/zsh -lc "sed -n '1,320p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/commons-codec/src/main/java/org/apache/commons/codec/language/MatchRatingApproachEncoder.java"
+--- output ---
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.commons.codec.language;
+
+import java.util.Locale;
+
+import org.apache.commons.codec.EncoderException;
+import org.apache.commons.codec.StringEncoder;
+
+/**
+ * Match Rating Approach Phonetic Algorithm Developed by <CITE>Western Airlines</CITE> in 1977.
+ * <p>
+ * This class is immutable and thread-safe.
+ * </p>
+ *
+ * @see <a href="https://en.wikipedia.org/wiki/Match_rating_approach">Wikipedia - Match Rating Approach</a>
+ * @since 1.8
+ */
+public class MatchRatingApproachEncoder implements StringEncoder {
+
+    private static final String SPACE = " ";
+
+    private static final String EMPTY = "";
+
+    /**
+     * The plain letter equivalent of the accented letters.
+     */
+    private static final String PLAIN_ASCII = "AaEeIiOoUu" + // grave
+            "AaEeIiOoUuYy" + // acute
+            "AaEeIiOoUuYy" + // circumflex
+            "AaOoNn" + // tilde
+            "AaEeIiOoUuYy" + // umlaut
+            "Aa" + // ring
+            "Cc" + // cedilla
+            "OoUu"; // double acute
+
+    /**
+     * Unicode characters corresponding to various accented letters. For example: \u00DA is U acute etc...
+     */
+    private static final String UNICODE = "\u00C0\u00E0\u00C8\u00E8\u00CC\u00EC\u00D2\u00F2\u00D9\u00F9" +
+            "\u00C1\u00E1\u00C9\u00E9\u00CD\u00ED\u00D3\u00F3\u00DA\u00FA\u00DD\u00FD" +
+            "\u00C2\u00E2\u00CA\u00EA\u00CE\u00EE\u00D4\u00F4\u00DB\u00FB\u0176\u0177\u00C3\u00E3\u00D5\u00F5\u00D1\u00F1" +
+            "\u00C4\u00E4\u00CB\u00EB\u00CF\u00EF\u00D6\u00F6\u00DC\u00FC\u0178\u00FF\u00C5\u00E5\u00C7\u00E7\u0150\u0151\u0170\u0171";
+
+    /**
+     * Double consonants.
+     */
+    private static final String[] DOUBLE_CONSONANT =
+            { "BB", "CC", "DD", "FF", "GG", "HH", "JJ", "KK", "LL", "MM", "NN", "PP", "QQ", "RR", "SS",
+                   "TT", "VV", "WW", "XX", "YY", "ZZ" };
+
+    /**
+     * Constructs a new instance.
+     */
+    public MatchRatingApproachEncoder() {
+        // empty
+    }
+
+    /**
+     * Cleans up a name: 1. Upper-cases everything 2. Removes some common punctuation 3. Removes accents 4. Removes any
+     * spaces.
+     *
+     * <h2>API Usage</h2>
+     * <p>
+     * Consider this method private, it is package protected for unit testing only.
+     * </p>
+     *
+     * @param name
+     *            The name to be cleaned.
+     * @return The cleaned name.
+     */
+    String cleanName(final String name) {
+        String upperName = name.toUpperCase(Locale.ENGLISH);
+
+        final String[] charsToTrim = { "\\-", "[&]", "\\'", "\\.", "[\\,]" };
+        for (final String str : charsToTrim) {
+            upperName = upperName.replaceAll(str, EMPTY);
+        }
+
+        upperName = removeAccents(upperName);
+        return upperName.replaceAll("\\s+", EMPTY);
+    }
+
+    /**
+     * Encodes an Object using the Match Rating Approach algorithm. Method is here to satisfy the requirements of the
+     * Encoder interface Throws an EncoderException if input object is not of type {@link String}.
+     *
+     * @param object
+     *            Object to encode.
+     * @return An object (or type {@link String}) containing the Match Rating Approach code which corresponds to the
+     *         String supplied.
+     * @throws EncoderException
+     *             if the parameter supplied is not of type {@link String}.
+     */
+    @Override
+    public final Object encode(final Object object) throws EncoderException {
+        if (!(object instanceof String)) {
+            throw new EncoderException("Parameter supplied to Match Rating Approach encoder is not of type java.lang.String");
+        }
+        return encode((String) object);
+    }
+
+    /**
+     * Encodes a String using the Match Rating Approach (MRA) algorithm.
+     *
+     * @param name
+     *            String object to encode.
+     * @return The MRA code corresponding to the String supplied.
+     */
+    @Override
+    public final String encode(String name) {
+        // Bulletproof for trivial input - NINO
+        if (name == null || EMPTY.equalsIgnoreCase(name) || SPACE.equalsIgnoreCase(name) || name.length() == 1) {
+            return EMPTY;
+        }
+
+        // Preprocessing
+        name = cleanName(name);
+
+        // Bulletproof if name becomes empty after cleanName(name)
+        if (SPACE.equals(name) || name.isEmpty()) {
+            return EMPTY;
+        }
+
+        // BEGIN: Actual encoding part of the algorithm...
+        // 1. Delete all vowels unless the vowel begins the word
+        name = removeVowels(name);
+
+        // Bulletproof if name becomes empty after removeVowels(name)
+        if (SPACE.equals(name) || name.isEmpty()) {
+            return EMPTY;
+        }
+
+        // 2. Remove second consonant from any double consonant
+        name = removeDoubleConsonants(name);
+
+        return getFirst3Last3(name);
+    }
+
+    /**
+     * Gets the first and last 3 letters of a name (if &gt; 6 characters) Else just returns the name.
+     *
+     * <h2>API Usage</h2>
+     * <p>
+     * Consider this method private, it is package protected for unit testing only.
+     * </p>
+     *
+     * @param name
+     *            The string to get the substrings from.
+     * @return Annexed first and last 3 letters of input word.
+     */
+    String getFirst3Last3(final String name) {
+        final int nameLength = name.length();
+
+        if (nameLength > 6) {
+            final String firstThree = name.substring(0, 3);
+            final String lastThree = name.substring(nameLength - 3, nameLength);
+            return firstThree + lastThree;
+        }
+        return name;
+    }
+
+    /**
+     * Obtains the min rating of the length sum of the 2 names. In essence the larger the sum length the smaller the
+     * min rating. Values strictly from documentation.
+     *
+     * <h2>API Usage</h2>
+     * <p>
+     * Consider this method private, it is package protected for unit testing only.
+     * </p>
+     *
+     * @param sumLength
+     *            The length of 2 strings sent down.
+     * @return The min rating value.
+     */
+    int getMinRating(final int sumLength) {
+        int minRating = 0;
+
+        if (sumLength <= 4) {
+            minRating = 5;
+        } else if (sumLength <= 7) { // already know it is at least 5
+            minRating = 4;
+        } else if (sumLength <= 11) { // already know it is at least 8
+            minRating = 3;
+        } else if (sumLength == 12) {
+            minRating = 2;
+        } else {
+            minRating = 1; // docs said little here.
+        }
+
+        return minRating;
+    }
+
+    /**
+     * Determines if two names are homophonous via Match Rating Approach (MRA) algorithm. It should be noted that the
+     * strings are cleaned in the same way as {@link #encode(String)}.
+     *
+     * @param name1
+     *            First of the 2 strings (names) to compare.
+     * @param name2
+     *            Second of the 2 names to compare.
+     * @return {@code true} if the encodings are identical {@code false} otherwise.
+     */
+    public boolean isEncodeEquals(String name1, String name2) {
+        // Bulletproof for trivial input - NINO
+        if (name1 == null || EMPTY.equalsIgnoreCase(name1) || SPACE.equalsIgnoreCase(name1)) {
+            return false;
+        }
+        if (name2 == null || EMPTY.equalsIgnoreCase(name2) || SPACE.equalsIgnoreCase(name2)) {
+            return false;
+        }
+        if (name1.length() == 1 || name2.length() == 1) {
+            return false;
+        }
+        if (name1.equalsIgnoreCase(name2)) {
+            return true;
+        }
+
+        // Preprocessing
+        name1 = cleanName(name1);
+        name2 = cleanName(name2);
+
+        // Actual MRA Algorithm
+
+        // 1. Remove vowels
+        name1 = removeVowels(name1);
+        name2 = removeVowels(name2);
+
+        // 2. Remove double consonants
+        name1 = removeDoubleConsonants(name1);
+        name2 = removeDoubleConsonants(name2);
+
+        // 3. Reduce down to 3 letters
+        name1 = getFirst3Last3(name1);
+        name2 = getFirst3Last3(name2);
+
+        // 4. Check for length difference - if 3 or greater, then no similarity
+        // comparison is done
+        if (Math.abs(name1.length() - name2.length()) >= 3) {
+            return false;
+        }
+
+        // 5. Obtain the minimum rating value by calculating the length sum of the
+        // encoded Strings and sending it down.
+        final int sumLength = Math.abs(name1.length() + name2.length());
+        final int minRating = getMinRating(sumLength);
+
+        // 6. Process the encoded Strings from left to right and remove any
+        // identical characters found from both Strings respectively.
+        final int count = leftToRightThenRightToLeftProcessing(name1, name2);
+
+        // 7. Each PNI item that has a similarity rating equal to or greater than
+        // the min is considered to be a good candidate match
+        return count >= minRating;
+
+    }
+
+    /**
+     * Determines if a letter is a vowel.
+     *
+     * <h2>API Usage</h2>
+     * <p>
+     * Consider this method private, it is package protected for unit testing only.
+     * </p>
+     *
+     * @param letter
+     *            The letter under investigation.
+     * @return True if a vowel, else false.
+     */
+    boolean isVowel(final String letter) {
+        return letter.equalsIgnoreCase("E") || letter.equalsIgnoreCase("A") || letter.equalsIgnoreCase("O") ||
+               letter.equalsIgnoreCase("I") || letter.equalsIgnoreCase("U");
+    }
+
+    /**
+     * Processes the names from left to right (first) then right to left removing identical letters in same positions.
+     * Then subtracts the longer string that remains from 6 and returns this.
+     *
+     * <h2>API Usage</h2>
+     * <p>
+     * Consider this method private, it is package protected for unit testing only.
+     * </p>
+     *
+     * @param name1 first name.
+     * @param name1 second name.
+     * @return the length as above.
+     */
+    int leftToRightThenRightToLeftProcessing(final String name1, final String name2) {
+        final char[] name1Char = name1.toCharArray();
+        final char[] name2Char = name2.toCharArray();
+
+        final int name1Size = name1.length() - 1;
+        final int name2Size = name2.length() - 1;
+
+        String name1LtRStart = EMPTY;
+        String name1LtREnd = EMPTY;
+
+        String name2RtLStart = EMPTY;
+        String name2RtLEnd = EMPTY;
+
+        for (int i = 0; i < name1Char.length; i++) {
+            if (i > name2Size) {
+                break;
+            }
+
+            name1LtRStart = name1.substring(i, i + 1);
+
+
+[12] AGENT
+The original test is a single assertion through `getStringEncoder().isEncodeEquals("LIPSHITZ", "LIPPSZYC")`. I’m keeping that exact call and expected `true` result, but removing unused imports and naming the two surnames so the intent is easier to scan.
+
+[15] AGENT
+I’m creating the refactored test file in the working directory now. The edit is deliberately small: same package, same base class, same encoder construction, same assertion result, and no extra test dependencies.
+
+[16] FILE_CHANGE in_progress
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-codec/manual/testcases/MatchRatingApproachEncoderTest/testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched/MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched.java
+
+[17] FILE_CHANGE completed
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-codec/manual/testcases/MatchRatingApproachEncoderTest/testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched/MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched.java
+
+[18] AGENT
+The test file is written. I’m running the required compile check exactly as specified: `bash compile.sh` from the working directory.
+
+[19] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[20] COMMAND failed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched.java:5: error: cannot find symbol
+import org.apache.commons.codec.AbstractStringEncoderTest;
+                               ^
+  symbol:   class AbstractStringEncoderTest
+  location: package org.apache.commons.codec
+MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched.java:9: error: cannot find symbol
+        extends AbstractStringEncoderTest<MatchRatingApproachEncoder> {
+                ^
+  symbol: class AbstractStringEncoderTest
+MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched.java:14: error: method does not override or implement a method from a supertype
+    @Override
+    ^
+MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched.java:21: error: cannot find symbol
+        assertTrue(getStringEncoder().isEncodeEquals(ORIGINAL_SURNAME, COMPARISON_SURNAME));
+                   ^
+  symbol:   method getStringEncoder()
+  location: class MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched
+4 errors
+COMPILE_FAIL (exit=1)
+
+
+[21] AGENT
+The compile check failed because `AbstractStringEncoderTest` is not available on this compile classpath. I’m applying the repair-loop guidance with a focused fix: remove that dependency and provide the tiny local helper needed to keep the test’s assertion call readable and behavior-equivalent.
+
+[22] FILE_CHANGE in_progress
+update: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-codec/manual/testcases/MatchRatingApproachEncoderTest/testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched/MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched.java
+
+[23] FILE_CHANGE completed
+update: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-codec/manual/testcases/MatchRatingApproachEncoderTest/testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched/MatchRatingApproachEncoderTest_testCompare_Surname_LIPSHITZ_LIPPSZYC_SuccessfullyMatched.java
+
+[24] AGENT
+The dependency-related compile error has been repaired locally in the generated test. I’m rerunning the required compile check once.
+
+[25] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[26] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[27] AGENT
+COMPILE_OK — generated and compile-checked the improved test successfully.

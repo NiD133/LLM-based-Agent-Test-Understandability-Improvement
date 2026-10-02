@@ -1,0 +1,20 @@
+package org.apache.commons.lang3.text;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class StrMatcher_ESTest_test02 extends StrMatcher_ESTest_scaffolding {
+
+    // charSetMatcher(String) with an empty string should still return a valid (non-null) matcher
+    // (the CUT returns its internal NONE_MATCHER singleton rather than null or throwing)
+    @Test(timeout = 4000)
+    public void test_charSetMatcher_emptyString_returnsNonNullMatcher() throws Throwable {
+        StrMatcher matcherForEmptyCharSet = StrMatcher.charSetMatcher("");
+        assertNotNull(matcherForEmptyCharSet);
+    }
+}

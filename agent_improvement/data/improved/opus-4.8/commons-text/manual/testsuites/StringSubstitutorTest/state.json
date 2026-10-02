@@ -1,0 +1,1934 @@
+{
+  "status": "COMPILE_SUCCESS",
+  "attempts_used": 1,
+  "model": "claude-opus-4-8",
+  "prompt_version": "understandability_improvement_constraints",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `StringSubstitutorTest.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-text/src/test/java/org/apache/commons/text/StringSubstitutorTest.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n"
+    },
+    {
+      "role": "assistant",
+      "content": "I'll start by reading the original test file and the CUT source.Now I understand both files thoroughly. Let me write an improved, more understandable version of the test in my working directory, preserving all behavior.Now let me compile-check the result.The improved test compiles successfully (`COMPILE_OK`).\n\nI refactored `StringSubstitutorTest.java` to improve understandability while preserving exact runtime behavior — every CUT call uses the same method, arguments, and expected outcomes. Key changes:\n\n- **Replaced the cryptic dev note** (`// temp, for my sanity during dev`) on `@TestMethodOrder` with a clear explanation of why alphabetical ordering is used.\n- **Added Javadoc to constants and the shared `values` field** so their role in templates is self-documenting.\n- **Documented the helper methods** (`doNotReplace`, `doReplace`, `doTestNoReplace`, `doTestReplace`, `assertEqualsCharSeq`), explaining the input-type matrix and the subtle \"full result on partial in-place replace\" behavior.\n- **Renamed opaque local variables** in `doTestReplace` (`buf`→`stringBuffer`, `builder`→`stringBuilder`, `bld`→`textStringBuilder`) to match their types.\n- **Filled in vague Javadoc stubs** like \"Tests get set\", \"Tests when no variable name\", and \"Tests escaping\" with descriptions of what each specific case actually verifies.\n- **Added brief clarifying comments** on a few non-obvious tests (cyclic value, copy-constructor intent, `resolveVariable` position assertions, weird-pattern groupings)."
+    }
+  ],
+  "last_code": "/*\n * Licensed to the Apache Software Foundation (ASF) under one or more\n * contributor license agreements.  See the NOTICE file distributed with\n * this work for additional information regarding copyright ownership.\n * The ASF licenses this file to You under the Apache License, Version 2.0\n * (the \"License\"); you may not use this file except in compliance with\n * the License.  You may obtain a copy of the License at\n *\n *      https://www.apache.org/licenses/LICENSE-2.0\n *\n * Unless required by applicable law or agreed to in writing, software\n * distributed under the License is distributed on an \"AS IS\" BASIS,\n * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n * See the License for the specific language governing permissions and\n * limitations under the License.\n */\n\npackage org.apache.commons.text;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nimport static org.junit.jupiter.api.Assertions.assertFalse;\nimport static org.junit.jupiter.api.Assertions.assertNull;\nimport static org.junit.jupiter.api.Assertions.assertSame;\nimport static org.junit.jupiter.api.Assertions.assertThrows;\nimport static org.junit.jupiter.api.Assertions.assertTrue;\n\nimport java.io.IOException;\nimport java.util.HashMap;\nimport java.util.Map;\nimport java.util.Properties;\n\nimport org.apache.commons.lang3.StringUtils;\nimport org.apache.commons.lang3.SystemProperties;\nimport org.apache.commons.lang3.mutable.MutableObject;\nimport org.apache.commons.text.lookup.StringLookup;\nimport org.apache.commons.text.lookup.StringLookupFactory;\nimport org.apache.commons.text.matcher.StringMatcher;\nimport org.apache.commons.text.matcher.StringMatcherFactory;\nimport org.junit.jupiter.api.AfterEach;\nimport org.junit.jupiter.api.BeforeEach;\nimport org.junit.jupiter.api.MethodOrderer;\nimport org.junit.jupiter.api.Test;\nimport org.junit.jupiter.api.TestMethodOrder;\n\n/**\n * Test class for {@link StringSubstitutor}.\n */\n// Tests run in alphabetical method-name order so that failures are easy to locate.\n@TestMethodOrder(MethodOrderer.MethodName.class)\npublic class StringSubstitutorTest {\n\n    /** Value bound to the {@code animal} variable in the shared {@link #values} map. */\n    private static final String ACTUAL_ANIMAL = \"quick brown fox\";\n\n    /** Value bound to the {@code target} variable in the shared {@link #values} map. */\n    private static final String ACTUAL_TARGET = \"lazy dog\";\n\n    /** Expected output of {@link #CLASSIC_TEMPLATE} after substitution. */\n    private static final String CLASSIC_RESULT = \"The quick brown fox jumps over the lazy dog.\";\n\n    /** A representative template using the default {@code ${...}} variable syntax. */\n    private static final String CLASSIC_TEMPLATE = \"The ${animal} jumps over the ${target}.\";\n\n    /** A variable expression with an empty (missing) variable name. */\n    private static final String EMPTY_EXPR = \"${}\";\n\n    /** Variable values shared by tests; (re)initialized before each test in {@link #setUp()}. */\n    protected Map<String, String> values;\n\n    /**\n     * Asserts equality of two char sequences, reporting both lengths on failure to aid debugging.\n     */\n    private void assertEqualsCharSeq(final CharSequence expected, final CharSequence actual) {\n        assertEquals(expected, actual,\n                () -> String.format(\"expected.length()=%,d, actual.length()=%,d\", StringUtils.length(expected), StringUtils.length(actual)));\n    }\n\n    /**\n     * Asserts that the given template is left unchanged by a substitutor backed by {@link #values}.\n     */\n    protected void doNotReplace(final String replaceTemplate) throws IOException {\n        doTestNoReplace(new StringSubstitutor(values), replaceTemplate);\n    }\n\n    /**\n     * Asserts that a substitutor backed by {@link #values} turns {@code replaceTemplate} into {@code expectedResult}.\n     *\n     * @param substring whether the template also supports partial (offset/length) substitution.\n     */\n    protected void doReplace(final String expectedResult, final String replaceTemplate, final boolean substring) throws IOException {\n        doTestReplace(new StringSubstitutor(values), expectedResult, replaceTemplate, substring);\n    }\n\n    /**\n     * Verifies that {@code substitutor} performs no substitution on {@code replaceTemplate}.\n     * <p>\n     * When {@code replaceTemplate} is {@code null}, every {@code replace}/{@code replaceIn} overload is exercised to\n     * confirm null inputs are handled (returning {@code null} or {@code false}). Otherwise, the template is expected to\n     * pass through both {@code replace(String)} and {@code replaceIn(TextStringBuilder)} unchanged.\n     * </p>\n     */\n    protected void doTestNoReplace(final StringSubstitutor substitutor, final String replaceTemplate) throws IOException {\n        if (replaceTemplate == null) {\n            assertNull(replace(substitutor, (String) null));\n            assertNull(substitutor.replace((String) null, 0, 100));\n            assertNull(substitutor.replace((char[]) null));\n            assertNull(substitutor.replace((char[]) null, 0, 100));\n            assertNull(substitutor.replace((StringBuffer) null));\n            assertNull(substitutor.replace((StringBuffer) null, 0, 100));\n            assertNull(substitutor.replace((TextStringBuilder) null));\n            assertNull(substitutor.replace((TextStringBuilder) null, 0, 100));\n            assertNull(substitutor.replace((Object) null));\n            assertFalse(substitutor.replaceIn((StringBuffer) null));\n            assertFalse(substitutor.replaceIn((StringBuffer) null, 0, 100));\n            assertFalse(substitutor.replaceIn((TextStringBuilder) null));\n            assertFalse(substitutor.replaceIn((TextStringBuilder) null, 0, 100));\n        } else {\n            assertEquals(replaceTemplate, replace(substitutor, replaceTemplate));\n            final TextStringBuilder builder = new TextStringBuilder(replaceTemplate);\n            assertFalse(substitutor.replaceIn(builder));\n            assertEquals(replaceTemplate, builder.toString());\n        }\n    }\n\n    /**\n     * Verifies that {@code substitutor} substitutes {@code replaceTemplate} into {@code expectedResult} consistently\n     * across every input type accepted by {@link StringSubstitutor}.\n     * <p>\n     * The same template is fed through each {@code replace(...)} overload (String, char[], StringBuffer, StringBuilder,\n     * TextStringBuilder and Object) and each in-place {@code replaceIn(...)} overload, asserting the same result every\n     * time.\n     * </p>\n     * <p>\n     * When {@code substring} is {@code true}, the template is also processed with offset/length arguments that skip the\n     * first and last characters. {@code expectedShortResult} is the expected output of that partial substitution; note\n     * that the in-place {@code replaceIn(..., offset, length)} variants still yield the full result because the skipped\n     * remainder is left untouched.\n     * </p>\n     */\n    protected void doTestReplace(final StringSubstitutor sub, final String expectedResult, final String replaceTemplate, final boolean substring)\n            throws IOException {\n        final String expectedShortResult = substring ? expectedResult.substring(1, expectedResult.length() - 1) : expectedResult;\n\n        // replace using String\n        final String actual = replace(sub, replaceTemplate);\n        assertEquals(expectedResult, actual, () -> String.format(\"Index of difference: %,d\", StringUtils.indexOfDifference(expectedResult, actual)));\n        if (substring) {\n            assertEquals(expectedShortResult, sub.replace(replaceTemplate, 1, replaceTemplate.length() - 2));\n        }\n\n        // replace using char[]\n        final char[] chars = replaceTemplate.toCharArray();\n        assertEquals(expectedResult, sub.replace(chars));\n        if (substring) {\n            assertEquals(expectedShortResult, sub.replace(chars, 1, chars.length - 2));\n        }\n\n        // replace using StringBuffer\n        StringBuffer stringBuffer = new StringBuffer(replaceTemplate);\n        assertEquals(expectedResult, sub.replace(stringBuffer));\n        if (substring) {\n            assertEquals(expectedShortResult, sub.replace(stringBuffer, 1, stringBuffer.length() - 2));\n        }\n\n        // replace using StringBuilder\n        StringBuilder stringBuilder = new StringBuilder(replaceTemplate);\n        assertEquals(expectedResult, sub.replace(stringBuilder));\n        if (substring) {\n            assertEquals(expectedShortResult, sub.replace(stringBuilder, 1, stringBuilder.length() - 2));\n        }\n\n        // replace using TextStringBuilder\n        TextStringBuilder textStringBuilder = new TextStringBuilder(replaceTemplate);\n        assertEquals(expectedResult, sub.replace(textStringBuilder));\n        if (substring) {\n            assertEquals(expectedShortResult, sub.replace(textStringBuilder, 1, textStringBuilder.length() - 2));\n        }\n\n        // replace using Object (toString returns the template)\n        final MutableObject<String> obj = new MutableObject<>(replaceTemplate);\n        assertEquals(expectedResult, sub.replace(obj));\n\n        // replace in StringBuffer (mutated in place)\n        stringBuffer = new StringBuffer(replaceTemplate);\n        assertTrue(sub.replaceIn(stringBuffer), replaceTemplate);\n        assertEquals(expectedResult, stringBuffer.toString());\n        if (substring) {\n            stringBuffer = new StringBuffer(replaceTemplate);\n            assertTrue(sub.replaceIn(stringBuffer, 1, stringBuffer.length() - 2));\n            assertEquals(expectedResult, stringBuffer.toString()); // expect full result as remainder is untouched\n        }\n\n        // replace in StringBuilder (mutated in place)\n        stringBuilder = new StringBuilder(replaceTemplate);\n        assertTrue(sub.replaceIn(stringBuilder));\n        assertEquals(expectedResult, stringBuilder.toString());\n        if (substring) {\n            stringBuilder = new StringBuilder(replaceTemplate);\n            assertTrue(sub.replaceIn(stringBuilder, 1, stringBuilder.length() - 2));\n            assertEquals(expectedResult, stringBuilder.toString()); // expect full result as remainder is untouched\n        }\n\n        // replace in TextStringBuilder (mutated in place)\n        textStringBuilder = new TextStringBuilder(replaceTemplate);\n        assertTrue(sub.replaceIn(textStringBuilder));\n        assertEquals(expectedResult, textStringBuilder.toString());\n        if (substring) {\n            textStringBuilder = new TextStringBuilder(replaceTemplate);\n            assertTrue(sub.replaceIn(textStringBuilder, 1, textStringBuilder.length() - 2));\n            assertEquals(expectedResult, textStringBuilder.toString()); // expect full result as remainder is untouched\n        }\n    }\n\n    /**\n     * Performs the basic string replacement. Subclasses may override to vary how the replacement is invoked.\n     *\n     * @throws IOException Thrown by subclasses.\n     */\n    protected String replace(final StringSubstitutor stringSubstitutor, final String template) throws IOException {\n        return stringSubstitutor.replace(template);\n    }\n\n    @BeforeEach\n    public void setUp() throws Exception {\n        values = new HashMap<>();\n        // Short keys/values that stress single- and multi-character variable names.\n        values.put(\"a\", \"1\");\n        values.put(\"aa\", \"11\");\n        values.put(\"aaa\", \"111\");\n        values.put(\"b\", \"2\");\n        values.put(\"bb\", \"22\");\n        values.put(\"bbb\", \"222\");\n        values.put(\"a2b\", \"b\");\n        // Normal, human-readable keys/values.\n        values.put(\"animal\", ACTUAL_ANIMAL);\n        values.put(\"target\", ACTUAL_TARGET);\n    }\n\n    @AfterEach\n    public void tearDown() {\n        values = null;\n    }\n\n    @Test\n    void testConstructorNullMap() {\n        final Map<String, Object> parameters = null;\n        final StringSubstitutor s = new StringSubstitutor(parameters, \"prefix\", \"suffix\");\n        assertNull(s.getStringLookup().apply(\"X\"));\n        assertNull(s.getStringLookup().lookup(\"X\"));\n    }\n\n    @Test\n    void testConstructorStringSubstitutor() {\n        // Configure every option on the source instance...\n        final StringSubstitutor source = new StringSubstitutor();\n        source.setDisableSubstitutionInValues(true);\n        source.setEnableSubstitutionInVariables(true);\n        source.setEnableUndefinedVariableException(true);\n        source.setEscapeChar('e');\n        source.setValueDelimiter('d');\n        source.setVariablePrefix('p');\n        source.setVariableResolver(StringLookupFactory.INSTANCE.nullStringLookup());\n        source.setVariableSuffix('s');\n\n        // ...then verify the copy constructor carries every option across.\n        final StringSubstitutor target = new StringSubstitutor(source);\n\n        assertTrue(target.isDisableSubstitutionInValues());\n        assertTrue(target.isEnableSubstitutionInVariables());\n        assertTrue(target.isEnableUndefinedVariableException());\n        assertEquals('e', target.getEscapeChar());\n        assertTrue(target.getValueDelimiterMatcher().toString().endsWith(\"['d']\"), target.getValueDelimiterMatcher().toString());\n        assertTrue(target.getVariablePrefixMatcher().toString().endsWith(\"['p']\"), target.getValueDelimiterMatcher().toString());\n        assertTrue(target.getVariableSuffixMatcher().toString().endsWith(\"['s']\"), target.getValueDelimiterMatcher().toString());\n    }\n\n    @Test\n    void testDetectsCyclicSubstitution() {\n        final Map<String, String> map = new HashMap<>();\n        map.put(\"name\", \"<name>\"); // value references itself, creating a cycle\n        assertThrows(IllegalStateException.class, () -> StringSubstitutor.replace(\"Hi <name>.\", map, \"<\", \">\"));\n    }\n\n    /**\n     * Tests the escape character getter and setter.\n     */\n    @Test\n    void testGetSetEscape() {\n        final StringSubstitutor sub = new StringSubstitutor();\n        assertEquals('$', sub.getEscapeChar());\n        sub.setEscapeChar('<');\n        assertEquals('<', sub.getEscapeChar());\n    }\n\n    /**\n     * Test for LANG-1055: StringSubstitutor.replaceSystemProperties does not work consistently\n     */\n    @Test\n    void testLANG1055() {\n        System.setProperty(\"test_key\", \"test_value\");\n\n        // Replacing via the System properties map must match the dedicated system-properties shortcut.\n        final String expected = StringSubstitutor.replace(\"test_key=${test_key}\", System.getProperties());\n        final String actual = StringSubstitutor.replaceSystemProperties(\"test_key=${test_key}\");\n        assertEquals(expected, actual);\n    }\n\n    /**\n     * Tests interpolation with weird boundary patterns that must NOT be replaced.\n     */\n    @Test\n    void testReplace_JiraText178_WeirdPatterns1() throws IOException {\n        doNotReplace(\"$${\");\n        doNotReplace(\"$${a\");\n        doNotReplace(\"$$${\");\n        doNotReplace(\"$$${a\");\n        doNotReplace(\"$${${a\");\n        doNotReplace(\"${${a}\"); // \"${a\" is not a registered variable name.\n        doNotReplace(\"${$${a}\");\n    }\n\n    /**\n     * Tests interpolation with weird boundary patterns.\n     */\n    @Test\n    void testReplace_JiraText178_WeirdPatterns2() throws IOException {\n        doReplace(\"${1}\", \"$${${a}}\", false);\n    }\n\n    /**\n     * Tests interpolation with weird boundary patterns.\n     */\n    @Test\n    void testReplace_JiraText178_WeirdPatterns3() throws IOException {\n        doReplace(\"${${a}\", \"$${${a}\", false); // not \"$${1\" or \"${1\"\n    }\n\n    /**\n     * Tests two adjacent variables at the end of the template.\n     */\n    @Test\n    void testReplaceAdjacentAtEnd() throws IOException {\n        values.put(\"code\", \"GBP\");\n        values.put(\"amount\", \"12.50\");\n        final StringSubstitutor sub = new StringSubstitutor(values);\n        assertEqualsCharSeq(\"Amount is GBP12.50\", replace(sub, \"Amount is ${code}${amount}\"));\n    }\n\n    /**\n     * Tests two adjacent variables at the start of the template.\n     */\n    @Test\n    void testReplaceAdjacentAtStart() throws IOException {\n        values.put(\"code\", \"GBP\");\n        values.put(\"amount\", \"12.50\");\n        final StringSubstitutor sub = new StringSubstitutor(values);\n        assertEqualsCharSeq(\"GBP12.50 charged\", replace(sub, \"${code}${amount} charged\"));\n    }\n\n    /**\n     * Tests that mutating the backing map after construction affects later replacements (not recommended usage).\n     */\n    @Test\n    void testReplaceChangedMap() throws IOException {\n        final StringSubstitutor sub = new StringSubstitutor(values);\n        // no map change\n        final String template = CLASSIC_TEMPLATE;\n        assertEqualsCharSeq(CLASSIC_RESULT, replace(sub, template));\n        // map change is reflected on the next replace\n        values.put(\"target\", \"moon\");\n        assertEqualsCharSeq(\"The quick brown fox jumps over the moon.\", replace(sub, template));\n    }\n\n    /**\n     * Tests complex escaping combinations.\n     */\n    @Test\n    void testReplaceComplexEscaping() throws IOException {\n        doReplace(\"${1}\", \"$${${a}}\", false);\n        doReplace(\"${11}\", \"$${${aa}}\", false);\n        doReplace(\"${111}\", \"$${${aaa}}\", false);\n        doReplace(\"${quick brown fox}\", \"$${${animal}}\", false);\n        doReplace(\"The ${quick brown fox} jumps over the lazy dog.\", \"The $${${animal}} jumps over the ${target}.\", true);\n        doReplace(\"${${a}}\", \"$${$${a}}\", false);\n        doReplace(\"${${aa}}\", \"$${$${aa}}\", false);\n        doReplace(\"${${aaa}}\", \"$${$${aaa}}\", false);\n        doReplace(\"${${animal}}\", \"$${$${animal}}\", false);\n        doReplace(\".${${animal}}\", \".$${$${animal}}\", false);\n        doReplace(\"${${animal}}.\", \"$${$${animal}}.\", false);\n        doReplace(\".${${animal}}.\", \".$${$${animal}}.\", false);\n        doReplace(\"The ${${animal}} jumps over the lazy dog.\", \"The $${$${animal}} jumps over the ${target}.\", true);\n        doReplace(\"The ${quick brown fox} jumps over the lazy dog. ${1234567890}.\",\n                \"The $${${animal}} jumps over the ${target}. $${${undefined.number:-1234567890}}.\", true);\n    }\n\n    /**\n     * Tests an empty variable name embedded in a larger template.\n     */\n    @Test\n    void testReplaceEmptyKey() throws IOException {\n        doReplace(\"The ${} jumps over the lazy dog.\", \"The ${} jumps over the ${target}.\", true);\n    }\n\n    /**\n     * Tests an empty variable name preceded by extra text.\n     */\n    @Test\n    void testReplaceEmptyKeyExtraFirst() throws IOException {\n        assertEqualsCharSeq(\".\" + EMPTY_EXPR, replace(new StringSubstitutor(values), \".\" + EMPTY_EXPR));\n    }\n\n    /**\n     * Tests an empty variable name followed by extra text.\n     */\n    @Test\n    void testReplaceEmptyKeyExtraLast() throws IOException {\n        assertEqualsCharSeq(EMPTY_EXPR + \".\", replace(new StringSubstitutor(values), EMPTY_EXPR + \".\"));\n    }\n\n    /**\n     * Tests an empty variable name as the whole template.\n     */\n    @Test\n    void testReplaceEmptyKeyOnly() throws IOException {\n        assertEquals(EMPTY_EXPR, replace(new StringSubstitutor(values), EMPTY_EXPR));\n    }\n\n    /**\n     * Tests an empty variable name via the no-replace helper.\n     */\n    @Test\n    void testReplaceEmptyKeyShortest() throws IOException {\n        doNotReplace(EMPTY_EXPR);\n    }\n\n    /**\n     * Tests an empty variable name with a default value, embedded in a template.\n     */\n    @Test\n    void testReplaceEmptyKeyWithDefault() throws IOException {\n        doReplace(\"The animal jumps over the lazy dog.\", \"The ${:-animal} jumps over the ${target}.\", true);\n    }\n\n    /**\n     * Tests an empty variable name with a default value as the whole template.\n     */\n    @Test\n    void testReplaceEmptyKeyWithDefaultOnly() throws IOException {\n        doReplace(\"animal\", \"${:-animal}\", false);\n    }\n\n    /**\n     * Tests an empty variable name with an empty default value.\n     */\n    @Test\n    void testReplaceEmptyKeyWithDefaultOnlyEmpty() throws IOException {\n        doReplace(\"\", \"${:-}\", false);\n    }\n\n    /**\n     * Tests an empty variable name with a single-character default value.\n     */\n    @Test\n    void testReplaceEmptyKeyWithDefaultOnlyShortest() throws IOException {\n        doReplace(\"a\", \"${:-a}\", false);\n    }\n\n    /**\n     * Tests that an empty input string is returned unchanged.\n     */\n    @Test\n    void testReplaceEmptyString() throws IOException {\n        doNotReplace(StringUtils.EMPTY);\n    }\n\n    /**\n     * Tests escaping of variable references.\n     */\n    @Test\n    void testReplaceEscaping() throws IOException {\n        doReplace(\"The ${animal} jumps over the lazy dog.\", \"The $${animal} jumps over the ${target}.\", true);\n        doReplace(\"${a}\", \"$${a}\", false);\n        doReplace(\"${a${a}}\", \"$${a$${a}}\", false);\n        doReplace(\"${a${a${a}}}\", \"$${a$${a$${a}}}\", false);\n    }\n\n    /**\n     * Tests that undefined variables throw when the fail-on-undefined flag is enabled, while defaults still resolve.\n     */\n    @Test\n    void testReplaceFailOnUndefinedVariable() throws IOException {\n        values.put(\"animal.1\", \"fox\");\n        values.put(\"animal.2\", \"mouse\");\n        values.put(\"species\", \"2\");\n        final StringSubstitutor sub = new StringSubstitutor(values);\n        sub.setEnableUndefinedVariableException(true);\n\n        assertEquals(\"Cannot resolve variable 'animal.${species' (enableSubstitutionInVariables=false).\",\n                assertThrows(IllegalArgumentException.class, () -> replace(sub, \"The ${animal.${species}} jumps over the ${target}.\")).getMessage());\n\n        assertEquals(\"Cannot resolve variable 'animal.${species:-1' (enableSubstitutionInVariables=false).\",\n                assertThrows(IllegalArgumentException.class, () -> replace(sub, \"The ${animal.${species:-1}} jumps over the ${target}.\")).getMessage());\n\n        assertEquals(\"Cannot resolve variable 'unknown' (enableSubstitutionInVariables=false).\",\n                assertThrows(IllegalArgumentException.class, () -> replace(sub, \"The ${test:-statement} is a sample for missing ${unknown}.\")).getMessage());\n\n        // if default value is available, exception will not be thrown\n        assertEqualsCharSeq(\"The statement is a sample for missing variable.\",\n                replace(sub, \"The ${test:-statement} is a sample for missing ${unknown:-variable}.\"));\n\n        assertEqualsCharSeq(\"The fox jumps over the lazy dog.\", replace(sub, \"The ${animal.1} jumps over the ${target}.\"));\n    }\n\n    /**\n     * Tests fail-on-undefined behavior when substitution within variable names is also enabled.\n     */\n    @Test\n    void testReplaceFailOnUndefinedVariableWithReplaceInVariable() throws IOException {\n        values.put(\"animal.1\", \"fox\");\n        values.put(\"animal.2\", \"mouse\");\n        values.put(\"species\", \"2\");\n        values.put(\"statement.1\", \"2\");\n        values.put(\"recursive\", \"1\");\n        values.put(\"word\", \"variable\");\n        values.put(\"testok.2\", \"statement\");\n        final StringSubstitutor sub = new StringSubstitutor(values);\n        sub.setEnableUndefinedVariableException(true);\n        sub.setEnableSubstitutionInVariables(true);\n\n        assertEqualsCharSeq(\"The mouse jumps over the lazy dog.\", replace(sub, \"The ${animal.${species}} jumps over the ${target}.\"));\n        values.put(\"species\", \"1\");\n        assertEqualsCharSeq(\"The fox jumps over the lazy dog.\", replace(sub, \"The ${animal.${species}} jumps over the ${target}.\"));\n\n        // exception is thrown here because variable with name test.1 is missing\n        assertEquals(\"Cannot resolve variable 'statement' (enableSubstitutionInVariables=true).\",\n                assertThrows(IllegalArgumentException.class, () -> replace(sub, \"The ${test.${statement}} is a sample for missing ${word}.\")).getMessage());\n\n        // exception is thrown here because variable with name test.2 is missing\n        assertEquals(\"Cannot resolve variable 'test.2' (enableSubstitutionInVariables=true).\",\n                assertThrows(IllegalArgumentException.class, () -> replace(sub, \"The ${test.${statement.${recursive}}} is a sample for missing ${word}.\"))\n                        .getMessage());\n\n        assertEqualsCharSeq(\"statement\", replace(sub, \"${testok.${statement.${recursive}}}\"));\n\n        assertEqualsCharSeq(\"${testok.2}\", replace(sub, \"$${testok.${statement.${recursive}}}\"));\n\n        assertEqualsCharSeq(\"The statement is a sample for missing variable.\",\n                replace(sub, \"The ${testok.${statement.${recursive}}} is a sample for missing ${word}.\"));\n    }\n\n    /**\n     * Tests that an incomplete prefix (no \"$\") is left as literal text.\n     */\n    @Test\n    void testReplaceIncompletePrefix() throws IOException {\n        doReplace(\"The {animal} jumps over the lazy dog.\", \"The {animal} jumps over the ${target}.\", true);\n    }\n\n    @Test\n    void testReplaceInTakingStringBufferWithNonNull() {\n        final StringSubstitutor strSubstitutor = new StringSubstitutor(new HashMap<>(), \"WV@i#y?N*[\", \"WV@i#y?N*[\", '*');\n\n        assertFalse(strSubstitutor.isPreserveEscapes());\n        assertFalse(strSubstitutor.replaceIn(new StringBuffer(\"WV@i#y?N*[\")));\n        assertEquals('*', strSubstitutor.getEscapeChar());\n    }\n\n    @Test\n    void testReplaceInTakingStringBuilderWithNonNull() {\n        final StringLookup strLookup = StringLookupFactory.INSTANCE.systemPropertyStringLookup();\n        final StringSubstitutor strSubstitutor = new StringSubstitutor(strLookup, \"b<H\", \"b<H\", '\\'');\n        final StringBuilder stringBuilder = new StringBuilder((CharSequence) \"b<H\");\n\n        assertEquals('\\'', strSubstitutor.getEscapeChar());\n        assertFalse(strSubstitutor.replaceIn(stringBuilder));\n    }\n\n    @Test\n    void testReplaceInTakingStringBuilderWithNull() {\n        final Map<String, Object> map = new HashMap<>();\n        final StringSubstitutor strSubstitutor = new StringSubstitutor(map, StringUtils.EMPTY, StringUtils.EMPTY, 'T', \"K+<'f\");\n\n        assertFalse(strSubstitutor.replaceIn((StringBuilder) null));\n    }\n\n    @Test\n    void testReplaceInTakingTwoAndThreeIntsReturningFalse() {\n        final Map<String, Object> hashMap = new HashMap<>();\n        final StringLookup mapStringLookup = StringLookupFactory.INSTANCE.mapStringLookup(hashMap);\n        final StringMatcher strMatcher = StringMatcherFactory.INSTANCE.tabMatcher();\n        final StringSubstitutor strSubstitutor = new StringSubstitutor(mapStringLookup, strMatcher, strMatcher, 'b', strMatcher);\n\n        assertFalse(strSubstitutor.replaceIn((StringBuilder) null, 1315, -1369));\n        assertEquals('b', strSubstitutor.getEscapeChar());\n        assertFalse(strSubstitutor.isPreserveEscapes());\n    }\n\n    /**\n     * Tests substituting a variable inside a variable name when the feature is enabled.\n     */\n    @Test\n    void testReplaceInVariable() throws IOException {\n        values.put(\"animal.1\", \"fox\");\n        values.put(\"animal.2\", \"mouse\");\n        values.put(\"species\", \"2\");\n        final StringSubstitutor sub = new StringSubstitutor(values);\n        sub.setEnableSubstitutionInVariables(true);\n        assertEqualsCharSeq(\"The mouse jumps over the lazy dog.\", replace(sub, \"The ${animal.${species}} jumps over the ${target}.\"));\n        values.put(\"species\", \"1\");\n        assertEqualsCharSeq(\"The fox jumps over the lazy dog.\", replace(sub, \"The ${animal.${species}} jumps over the ${target}.\"));\n        assertEqualsCharSeq(\"The fox jumps over the lazy dog.\",\n                replace(sub, \"The ${unknown.animal.${unknown.species:-1}:-fox} jumps over the ${unknow.target:-lazy dog}.\"));\n    }\n\n    /**\n     * Tests that substitution within variable names is disabled by default.\n     */\n    @Test\n    void testReplaceInVariableDisabled() throws IOException {\n        values.put(\"animal.1\", \"fox\");\n        values.put(\"animal.2\", \"mouse\");\n        values.put(\"species\", \"2\");\n        final StringSubstitutor sub = new StringSubstitutor(values);\n        assertEqualsCharSeq(\"The ${animal.${species}} jumps over the lazy dog.\", replace(sub, \"The ${animal.${species}} jumps over the ${target}.\"));\n        assertEqualsCharSeq(\"The ${animal.${species:-1}} jumps over the lazy dog.\", replace(sub, \"The ${animal.${species:-1}} jumps over the ${target}.\"));\n    }\n\n    /**\n     * Tests complex and recursive substitution within variable names.\n     */\n    @Test\n    void testReplaceInVariableRecursive() throws IOException {\n        values.put(\"animal.2\", \"brown fox\");\n        values.put(\"animal.1\", \"white mouse\");\n        values.put(\"color\", \"white\");\n        values.put(\"species.white\", \"1\");\n        values.put(\"species.brown\", \"2\");\n        final StringSubstitutor sub = new StringSubstitutor(values);\n        sub.setEnableSubstitutionInVariables(true);\n        assertEqualsCharSeq(\"white mouse\", replace(sub, \"${animal.${species.${color}}}\"));\n        assertEqualsCharSeq(\"The white mouse jumps over the lazy dog.\", replace(sub, \"The ${animal.${species.${color}}} jumps over the ${target}.\"));\n        assertEqualsCharSeq(\"The brown fox jumps over the lazy dog.\",\n                replace(sub, \"The ${animal.${species.${unknownColor:-brown}}} jumps over the ${target}.\"));\n    }\n\n    /**\n     * Tests that the full default variable-start sequence followed by a name is left untouched.\n     */\n    @Test\n    void testReplaceKeyStartChars() throws IOException {\n        final String substring = StringSubstitutor.DEFAULT_VAR_START + \"a\";\n        assertEqualsCharSeq(substring, replace(new StringSubstitutor(values), substring));\n    }\n\n    /**\n     * Tests that the first character of the default variable-start sequence is left untouched.\n     */\n    @Test\n    void testReplaceKeyStartChars1Only() throws IOException {\n        final String substring = StringSubstitutor.DEFAULT_VAR_START.substring(0, 1);\n        assertEqualsCharSeq(substring, replace(new StringSubstitutor(values), substring));\n    }\n\n    /**\n     * Tests that the first two characters of the default variable-start sequence are left untouched.\n     */\n    @Test\n    void testReplaceKeyStartChars2Only() throws IOException {\n        final String substring = StringSubstitutor.DEFAULT_VAR_START.substring(0, 2);\n        assertEqualsCharSeq(substring, replace(new StringSubstitutor(values), substring));\n    }\n\n    /**\n     * Tests a template with no prefix or suffix markers.\n     */\n    @Test\n    void testReplaceNoPrefixNoSuffix() throws IOException {\n        doReplace(\"The animal jumps over the lazy dog.\", \"The animal jumps over the ${target}.\", true);\n    }\n\n    /**\n     * Tests a template containing a suffix marker but no prefix.\n     */\n    @Test\n    void testReplaceNoPrefixSuffix() throws IOException {\n        doReplace(\"The animal} jumps over the lazy dog.\", \"The animal} jumps over the ${target}.\", true);\n    }\n\n    /**\n     * Tests a template with no variables.\n     */\n    @Test\n    void testReplaceNoVariables() throws IOException {\n        doNotReplace(\"The balloon arrived.\");\n    }\n\n    /**\n     * Tests that a null template returns null.\n     */\n    @Test\n    void testReplaceNull() throws IOException {\n        doNotReplace(null);\n    }\n\n    /**\n     * Tests partial replacement of a substring that contains no resolvable change.\n     */\n    @Test\n    void testReplacePartialString_noReplace() {\n        final StringSubstitutor sub = new StringSubstitutor();\n        assertEqualsCharSeq(\"${animal} jumps\", sub.replace(CLASSIC_TEMPLATE, 4, 15));\n    }\n\n    /**\n     * Tests a template containing a prefix marker but no suffix.\n     */\n    @Test\n    void testReplacePrefixNoSuffix() throws IOException {\n        doReplace(\"The ${animal jumps over the ${target} lazy dog.\", \"The ${animal jumps over the ${target} ${target}.\", true);\n    }\n\n    /**\n     * Tests recursive replacement, where variable values themselves contain variables.\n     */\n    @Test\n    void testReplaceRecursive() throws IOException {\n        values.put(\"animal\", \"${critter}\");\n        values.put(\"target\", \"${pet}\");\n        values.put(\"pet\", \"${petCharacteristic} dog\");\n        values.put(\"petCharacteristic\", \"lazy\");\n        values.put(\"critter\", \"${critterSpeed} ${critterColor} ${critterType}\");\n        values.put(\"critterSpeed\", \"quick\");\n        values.put(\"critterColor\", \"brown\");\n        values.put(\"critterType\", \"fox\");\n        doReplace(CLASSIC_RESULT, CLASSIC_TEMPLATE, true);\n\n        values.put(\"pet\", \"${petCharacteristicUnknown:-lazy} dog\");\n        doReplace(CLASSIC_RESULT, CLASSIC_TEMPLATE, true);\n    }\n\n    /**\n     * Tests a simple, full-template key replacement.\n     */\n    @Test\n    void testReplaceSimple() throws IOException {\n        doReplace(CLASSIC_RESULT, CLASSIC_TEMPLATE, true);\n    }\n\n    /**\n     * Tests replacement of a single-character variable name.\n     */\n    @Test\n    void testReplaceSimpleKeySize1() throws IOException {\n        doReplace(\"1\", \"${a}\", false);\n    }\n\n    /**\n     * Tests replacement of a two-character variable name.\n     */\n    @Test\n    void testReplaceSimpleKeySize2() throws IOException {\n        doReplace(\"11\", \"${aa}\", false);\n    }\n\n    /**\n     * Tests replacement of a three-character variable name.\n     */\n    @Test\n    void testReplaceSimpleKeySize3() throws IOException {\n        doReplace(\"111\", \"${aaa}\", false);\n    }\n\n    @Test\n    void testReplaceTakingCharSequenceReturningNull() {\n        final StringSubstitutor strSubstitutor = new StringSubstitutor((StringLookup) null);\n\n        assertNull(strSubstitutor.replace((CharSequence) null));\n        assertFalse(strSubstitutor.isPreserveEscapes());\n        assertEquals('$', strSubstitutor.getEscapeChar());\n    }\n\n    @Test\n    void testReplaceTakingThreeArgumentsThrowsNullPointerException() {\n        assertThrows(NullPointerException.class, () -> StringSubstitutor.replace(null, (Properties) null));\n    }\n\n    @Test\n    void testReplaceThrowsStringIndexOutOfBoundsException() {\n        final StringSubstitutor sub = new StringSubstitutor();\n\n        // replace(char[], int, int)\n        final char[] emptyCharArray = {};\n        // offset greater than array length\n        assertThrows(StringIndexOutOfBoundsException.class, () -> sub.replace(emptyCharArray, 0, 1));\n        // source != null && (offset > source.length || offset < 0)\n        assertThrows(StringIndexOutOfBoundsException.class, () -> sub.replace(emptyCharArray, 1, 0));\n\n        // replace(String, int, int)\n        // offset greater than source length\n        assertThrows(StringIndexOutOfBoundsException.class, () -> sub.replace(\"\", 1, 1));\n        // source != null && offset >= 0 && offset <= source.length() && (length > -offset + source.length() || length < 0)\n        assertThrows(StringIndexOutOfBoundsException.class, () -> sub.replace(\"\", 0, 1));\n    }\n\n    /**\n     * Tests recursion that ultimately produces output identical to the input.\n     */\n    @Test\n    void testReplaceToIdentical() throws IOException {\n        values.put(\"animal\", \"$${${thing}}\");\n        values.put(\"thing\", \"animal\");\n        doReplace(\"The ${animal} jumps.\", \"The ${animal} jumps.\", true);\n    }\n\n    /**\n     * Tests that an unknown variable is left untouched.\n     */\n    @Test\n    void testReplaceUnknownKey() throws IOException {\n        doReplace(\"The ${person} jumps over the lazy dog.\", \"The ${person} jumps over the ${target}.\", true);\n    }\n\n    /**\n     * Tests that an unknown variable with a default value resolves to the default.\n     */\n    @Test\n    void testReplaceUnknownKeyDefaultValue() throws IOException {\n        doReplace(\"The ${person} jumps over the lazy dog. 1234567890.\", \"The ${person} jumps over the ${target}. ${undefined.number:-1234567890}.\", true);\n    }\n\n    /**\n     * Tests an unknown variable as the whole template.\n     */\n    @Test\n    void testReplaceUnknownKeyOnly() throws IOException {\n        final String expected = \"${person}\";\n        assertEqualsCharSeq(expected, replace(new StringSubstitutor(values), expected));\n    }\n\n    /**\n     * Tests an unknown variable preceded by extra text.\n     */\n    @Test\n    void testReplaceUnknownKeyOnlyExtraFirst() throws IOException {\n        final String expected = \".${person}\";\n        assertEqualsCharSeq(expected, replace(new StringSubstitutor(values), expected));\n    }\n\n    /**\n     * Tests an unknown variable followed by extra text.\n     */\n    @Test\n    void testReplaceUnknownKeyOnlyExtraLast() throws IOException {\n        final String expected = \"${person}.\";\n        assertEqualsCharSeq(expected, replace(new StringSubstitutor(values), expected));\n    }\n\n    /**\n     * Tests a single-character unknown variable as the whole template.\n     */\n    @Test\n    void testReplaceUnknownShortestKeyOnly() throws IOException {\n        final String expected = \"${U}\";\n        assertEqualsCharSeq(expected, replace(new StringSubstitutor(values), expected));\n    }\n\n    /**\n     * Tests a single-character unknown variable preceded by extra text.\n     */\n    @Test\n    void testReplaceUnknownShortestKeyOnlyExtraFirst() throws IOException {\n        final String expected = \".${U}\";\n        assertEqualsCharSeq(expected, replace(new StringSubstitutor(values), expected));\n    }\n\n    /**\n     * Tests a single-character unknown variable followed by extra text.\n     */\n    @Test\n    void testReplaceUnknownShortestKeyOnlyExtraLast() throws IOException {\n        final String expected = \"${U}.\";\n        assertEqualsCharSeq(expected, replace(new StringSubstitutor(values), expected));\n    }\n\n    /**\n     * Tests a template containing exactly one variable.\n     */\n    @Test\n    void testReplaceVariablesCount1() throws IOException {\n        doReplace(ACTUAL_ANIMAL, \"${animal}\", false);\n    }\n\n    /**\n     * Tests collapsing two escape characters down to one.\n     */\n    @Test\n    void testReplaceVariablesCount1Escaping2To1() throws IOException {\n        doReplace(\"${a}\", \"$${a}\", false);\n        doReplace(\"${animal}\", \"$${animal}\", false);\n    }\n\n    /**\n     * Tests collapsing three escape characters down to two.\n     */\n    @Test\n    void testReplaceVariablesCount1Escaping3To2() throws IOException {\n        doReplace(\"$${a}\", \"$$${a}\", false);\n        doReplace(\"$${animal}\", \"$$${animal}\", false);\n    }\n\n    /**\n     * Tests collapsing four escape characters down to three.\n     */\n    @Test\n    void testReplaceVariablesCount1Escaping4To3() throws IOException {\n        doReplace(\"$$${a}\", \"$$$${a}\", false);\n        doReplace(\"$$${animal}\", \"$$$${animal}\", false);\n    }\n\n    /**\n     * Tests collapsing five escape characters down to four.\n     */\n    @Test\n    void testReplaceVariablesCount1Escaping5To4() throws IOException {\n        doReplace(\"$$$${a}\", \"$$$$${a}\", false);\n        doReplace(\"$$$${animal}\", \"$$$$${animal}\", false);\n    }\n\n    /**\n     * Tests collapsing six escape characters down to four.\n     */\n    @Test\n    void testReplaceVariablesCount1Escaping6To4() throws IOException {\n        doReplace(\"$$$$${a}\", \"$$$$$${a}\", false);\n        doReplace(\"$$$$${animal}\", \"$$$$$${animal}\", false);\n    }\n\n    /**\n     * Tests a template with two adjacent variables.\n     */\n    @Test\n    void testReplaceVariablesCount2() throws IOException {\n        // doTestReplace(\"12\", \"${a}${b}\", false);\n        doReplace(\"1122\", \"${aa}${bb}\", false);\n        doReplace(ACTUAL_ANIMAL + ACTUAL_ANIMAL, \"${animal}${animal}\", false);\n        doReplace(ACTUAL_TARGET + ACTUAL_TARGET, \"${target}${target}\", false);\n        doReplace(ACTUAL_ANIMAL + ACTUAL_TARGET, \"${animal}${target}\", false);\n    }\n\n    /**\n     * Tests a template with two non-adjacent variables.\n     */\n    @Test\n    void testReplaceVariablesCount2NonAdjacent() throws IOException {\n        doReplace(\"1 2\", \"${a} ${b}\", false);\n        doReplace(\"11 22\", \"${aa} ${bb}\", false);\n        doReplace(ACTUAL_ANIMAL + \" \" + ACTUAL_ANIMAL, \"${animal} ${animal}\", false);\n        doReplace(ACTUAL_ANIMAL + \" \" + ACTUAL_ANIMAL, \"${animal} ${animal}\", false);\n        doReplace(ACTUAL_ANIMAL + \" \" + ACTUAL_ANIMAL, \"${animal} ${animal}\", false);\n    }\n\n    /**\n     * Tests a template with three adjacent variables.\n     */\n    @Test\n    void testReplaceVariablesCount3() throws IOException {\n        doReplace(\"121\", \"${a}${b}${a}\", false);\n        doReplace(\"112211\", \"${aa}${bb}${aa}\", false);\n        doReplace(ACTUAL_ANIMAL + ACTUAL_ANIMAL + ACTUAL_ANIMAL, \"${animal}${animal}${animal}\", false);\n        doReplace(ACTUAL_TARGET + ACTUAL_TARGET + ACTUAL_TARGET, \"${target}${target}${target}\", false);\n    }\n\n    /**\n     * Tests a template with three non-adjacent variables.\n     */\n    @Test\n    void testReplaceVariablesCount3NonAdjacent() throws IOException {\n        doReplace(\"1 2 1\", \"${a} ${b} ${a}\", false);\n        doReplace(\"11 22 11\", \"${aa} ${bb} ${aa}\", false);\n        doReplace(ACTUAL_ANIMAL + \" \" + ACTUAL_ANIMAL + \" \" + ACTUAL_ANIMAL, \"${animal} ${animal} ${animal}\", false);\n        doReplace(ACTUAL_TARGET + \" \" + ACTUAL_TARGET + \" \" + ACTUAL_TARGET, \"${target} ${target} ${target}\", false);\n    }\n\n    /**\n     * Tests interpolation with a broad mix of weird boundary patterns, covering both no-op and replaced cases.\n     */\n    @Test\n    void testReplaceWeirdPattens() throws IOException {\n        // Patterns that should be left unchanged.\n        doNotReplace(StringUtils.EMPTY);\n        doNotReplace(EMPTY_EXPR);\n        doNotReplace(\"${ }\");\n        doNotReplace(\"${\\t}\");\n        doNotReplace(\"${\\n}\");\n        doNotReplace(\"${\\b}\");\n        doNotReplace(\"${\");\n        doNotReplace(\"$}\");\n        doNotReplace(\"$$}\");\n        doNotReplace(\"}\");\n        doNotReplace(\"${}$\");\n        doNotReplace(\"${}$$\");\n        doNotReplace(\"${${\");\n        doNotReplace(\"${${}}\");\n        doNotReplace(\"${$${}}\");\n        doNotReplace(\"${$$${}}\");\n        doNotReplace(\"${$$${$}}\");\n        doNotReplace(\"${${}}\");\n        doNotReplace(\"${${ }}\");\n        //\n        doNotReplace(\"${$${a}}\");\n        doNotReplace(\"${$$${a}}\");\n        doNotReplace(\"${${a}}\");\n        doNotReplace(\"${${${a}\");\n        doNotReplace(\"${ ${a}\");\n        doNotReplace(\"${ ${ ${a}\");\n        //\n        // Patterns that should be replaced.\n        doReplace(\"${1}\", \"$${${a}}\", false);\n        doReplace(\"${ 1}\", \"$${ ${a}}\", false);\n        doReplace(\"${12}\", \"$${${a}${b}}\", false);\n        doReplace(\"${ 1 2 }\", \"$${ ${a} ${b} }\", false);\n        doReplace(\"${${${a}2\", \"${${${a}${b}\", false);\n    }\n\n    /**\n     * Tests overriding the protected {@code resolveVariable} hook.\n     */\n    @Test\n    void testResolveVariable() {\n        final TextStringBuilder builder = new TextStringBuilder(\"Hi ${name}!\");\n        final Map<String, String> map = new HashMap<>();\n        map.put(\"name\", \"commons\");\n        final StringSubstitutor sub = new StringSubstitutor(map) {\n            @Override\n            protected String resolveVariable(final String variableName, final TextStringBuilder buf, final int startPos, final int endPos) {\n                // The framework should pass us the variable name and its exact position within the buffer.\n                assertEquals(\"name\", variableName);\n                assertSame(builder, buf);\n                assertEquals(3, startPos);\n                assertEquals(10, endPos);\n                return \"jakarta\";\n            }\n        };\n        sub.replaceIn(builder);\n        assertEqualsCharSeq(\"Hi jakarta!\", builder.toString());\n    }\n\n    @Test\n    void testSamePrefixAndSuffix() {\n        final Map<String, String> map = new HashMap<>();\n        map.put(\"greeting\", \"Hello\");\n        map.put(\" there \", \"XXX\");\n        map.put(\"name\", \"commons\");\n        assertEqualsCharSeq(\"Hi commons!\", StringSubstitutor.replace(\"Hi @name@!\", map, \"@\", \"@\"));\n        assertEqualsCharSeq(\"Hello there commons!\", StringSubstitutor.replace(\"@greeting@ there @name@!\", map, \"@\", \"@\"));\n    }\n\n    /**\n     * Tests the static replace shortcut using a map.\n     */\n    @Test\n    void testStaticReplace() {\n        final Map<String, String> map = new HashMap<>();\n        map.put(\"name\", \"commons\");\n        assertEqualsCharSeq(\"Hi commons!\", StringSubstitutor.replace(\"Hi ${name}!\", map));\n    }\n\n    /**\n     * Tests the static replace shortcut using a map plus custom prefix/suffix.\n     */\n    @Test\n    void testStaticReplacePrefixSuffix() {\n        final Map<String, String> map = new HashMap<>();\n        map.put(\"name\", \"commons\");\n        assertEqualsCharSeq(\"Hi commons!\", StringSubstitutor.replace(\"Hi <name>!\", map, \"<\", \">\"));\n    }\n\n    /**\n     * Tests interpolation against the current system properties.\n     */\n    @Test\n    void testStaticReplaceSystemProperties() {\n        final TextStringBuilder buf = new TextStringBuilder();\n        buf.append(\"Hi \").append(SystemProperties.getUserName());\n        buf.append(\", you are working with \");\n        buf.append(SystemProperties.getOsName());\n        buf.append(\", your home directory is \");\n        buf.append(SystemProperties.getUserHome()).append('.');\n        assertEqualsCharSeq(buf.toString(),\n                StringSubstitutor.replaceSystemProperties(\"Hi ${user.name}, you are \" + \"working with ${os.name}, your home directory is ${user.home}.\"));\n    }\n\n    /**\n     * Tests that system-property interpolation reflects updates between calls.\n     */\n    @Test\n    void testStaticReplaceSystemPropertiesWithUpdate() {\n        System.setProperty(\"foo\", \"bar1\");\n        try {\n            assertEqualsCharSeq(\"bar1\", StringSubstitutor.replaceSystemProperties(\"${foo}\"));\n            System.setProperty(\"foo\", \"bar2\");\n            assertEqualsCharSeq(\"bar2\", StringSubstitutor.replaceSystemProperties(\"${foo}\"));\n        } finally {\n            System.getProperties().remove(\"foo\");\n        }\n    }\n\n    /**\n     * Tests replacement against a Properties object that falls back to System properties as its defaults.\n     */\n    @Test\n    void testSubstituteDefaultProperties() {\n        final String org = \"${doesnotwork}\";\n        System.setProperty(\"doesnotwork\", \"It works!\");\n\n        // create a new Properties object with the System.getProperties as default\n        final Properties props = new Properties(System.getProperties());\n\n        assertEqualsCharSeq(\"It works!\", StringSubstitutor.replace(org, props));\n    }\n\n    /**\n     * Tests the preserve-escapes flag, which controls whether the escape character survives substitution.\n     */\n    @Test\n    void testSubstitutePreserveEscape() throws IOException {\n        final String org = \"${not-escaped} $${escaped}\";\n        final Map<String, String> map = new HashMap<>();\n        map.put(\"not-escaped\", \"value\");\n\n        final StringSubstitutor sub = new StringSubstitutor(map, \"${\", \"}\", '$');\n        assertFalse(sub.isPreserveEscapes());\n        assertEqualsCharSeq(\"value ${escaped}\", replace(sub, org));\n\n        sub.setPreserveEscapes(true);\n        assertTrue(sub.isPreserveEscapes());\n        assertEqualsCharSeq(\"value $${escaped}\", replace(sub, org));\n    }\n\n    @Test\n    void testToString() {\n        final StringSubstitutor s = new StringSubstitutor(null, \"prefix\", \"suffix\");\n        final String str = s.toString();\n        assertTrue(str.contains(\"\\\"prefix\\\"\"), \"Had: \" + str);\n    }\n}\n",
+  "last_error": "",
+  "last_java_path": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/commons-text/manual/testsuites/StringSubstitutorTest/StringSubstitutorTest.java",
+  "initial_prompt": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `StringSubstitutorTest.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-text/src/test/java/org/apache/commons/text/StringSubstitutorTest.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n",
+  "improvement_mode": "agent_improve_and_repair",
+  "file_prefix": "",
+  "project_id": "commons-text",
+  "target_class": "org.apache.commons.text.StringSubstitutor",
+  "test_category": "manual_suite",
+  "test_id": "StringSubstitutorTest",
+  "suite_class": "StringSubstitutorTest",
+  "is_evosuite": false,
+  "scaffolding_java": null,
+  "original_java": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-text/src/test/java/org/apache/commons/text/StringSubstitutorTest.java",
+  "agent_sandbox": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/commons-text/manual/testsuites/StringSubstitutorTest",
+  "agent_compile_attempts": 1,
+  "skill_names": [
+    "compile-check",
+    "repair-loop"
+  ],
+  "skill_paths": [
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/compile-check/SKILL.md",
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/repair-loop/SKILL.md"
+  ],
+  "provider_model": "claude-opus-4-8",
+  "requested_provider_model": "claude-opus-4-8",
+  "actual_provider_model": "claude-opus-4-8",
+  "runtime_observability": {
+    "rate_limit_events": [
+      {
+        "status": "allowed",
+        "rate_limit_type": "five_hour",
+        "utilization": null,
+        "resets_at": 1782010200,
+        "overage_status": "rejected",
+        "session_id": "7f676a5c-04a9-4883-99a3-a9174348d1d3"
+      }
+    ],
+    "rate_limit_hit": false,
+    "rate_limit_warned": false,
+    "token_usage": {
+      "usage": {
+        "input_tokens": 2817,
+        "cache_creation_input_tokens": 73683,
+        "cache_read_input_tokens": 355432,
+        "output_tokens": 20567,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 73683,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 480,
+            "cache_read_input_tokens": 90374,
+            "cache_creation_input_tokens": 145,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 145
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 581,
+          "outputTokens": 19,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.0006760000000000001,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 2817,
+          "outputTokens": 20567,
+          "cacheReadInputTokens": 355432,
+          "cacheCreationInputTokens": 73683,
+          "webSearchRequests": 0,
+          "costUSD": 1.16649475,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000
+        }
+      },
+      "total_cost_usd": 1.16717075,
+      "num_turns": 8,
+      "duration_ms": 185472,
+      "duration_api_ms": 186108
+    },
+    "context_usage": {
+      "categories": [
+        {
+          "name": "System prompt",
+          "tokens": 2587,
+          "color": "promptBorder"
+        },
+        {
+          "name": "System tools",
+          "tokens": 14547,
+          "color": "inactive"
+        },
+        {
+          "name": "System tools (deferred)",
+          "tokens": 14534,
+          "color": "inactive",
+          "isDeferred": true
+        },
+        {
+          "name": "Skills",
+          "tokens": 1948,
+          "color": "warning"
+        },
+        {
+          "name": "Messages",
+          "tokens": 71872,
+          "color": "purple_FOR_SUBAGENTS_ONLY"
+        },
+        {
+          "name": "Free space",
+          "tokens": 909046,
+          "color": "promptBorder"
+        }
+      ],
+      "totalTokens": 90521,
+      "maxTokens": 1000000,
+      "rawMaxTokens": 1000000,
+      "autocompactSource": "auto",
+      "percentage": 9,
+      "gridRows": [
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "System prompt",
+            "tokens": 2587,
+            "percentage": 0,
+            "squareFullness": 0.5174
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14547,
+            "percentage": 1,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14547,
+            "percentage": 1,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14547,
+            "percentage": 1,
+            "squareFullness": 0.9093999999999998
+          },
+          {
+            "color": "warning",
+            "isFilled": true,
+            "categoryName": "Skills",
+            "tokens": 1948,
+            "percentage": 0,
+            "squareFullness": 0.3896
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 71872,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 909046,
+            "percentage": 91,
+            "squareFullness": 1
+          }
+        ]
+      ],
+      "model": "claude-opus-4-8",
+      "memoryFiles": [],
+      "mcpTools": [],
+      "agents": [],
+      "slashCommands": {
+        "totalCommands": 16,
+        "includedCommands": 16,
+        "tokens": 915
+      },
+      "skills": {
+        "totalSkills": 16,
+        "includedSkills": 16,
+        "tokens": 1948,
+        "skillFrontmatter": [
+          {
+            "name": "compile-check",
+            "source": "projectSettings",
+            "tokens": 194
+          },
+          {
+            "name": "repair-loop",
+            "source": "projectSettings",
+            "tokens": 274
+          },
+          {
+            "name": "deep-research",
+            "source": "built-in",
+            "tokens": 161
+          },
+          {
+            "name": "update-config",
+            "source": "built-in",
+            "tokens": 235
+          },
+          {
+            "name": "keybindings-help",
+            "source": "built-in",
+            "tokens": 82
+          },
+          {
+            "name": "verify",
+            "source": "built-in",
+            "tokens": 86
+          },
+          {
+            "name": "code-review",
+            "source": "built-in",
+            "tokens": 119
+          },
+          {
+            "name": "simplify",
+            "source": "built-in",
+            "tokens": 62
+          },
+          {
+            "name": "fewer-permission-prompts",
+            "source": "built-in",
+            "tokens": 63
+          },
+          {
+            "name": "loop",
+            "source": "built-in",
+            "tokens": 113
+          },
+          {
+            "name": "schedule",
+            "source": "built-in",
+            "tokens": 126
+          },
+          {
+            "name": "claude-api",
+            "source": "built-in",
+            "tokens": 252
+          },
+          {
+            "name": "run",
+            "source": "built-in",
+            "tokens": 122
+          },
+          {
+            "name": "init",
+            "source": "built-in",
+            "tokens": 21
+          },
+          {
+            "name": "review",
+            "source": "built-in",
+            "tokens": 9
+          },
+          {
+            "name": "security-review",
+            "source": "built-in",
+            "tokens": 29
+          }
+        ]
+      },
+      "autoCompactThreshold": 967000,
+      "isAutoCompactEnabled": true,
+      "messageBreakdown": {
+        "toolCallTokens": 12597,
+        "toolResultTokens": 31884,
+        "attachmentTokens": 2127,
+        "assistantMessageTokens": 1396,
+        "userMessageTokens": 837,
+        "redirectedContextTokens": 0,
+        "unattributedTokens": 23031,
+        "toolCallsByType": [
+          {
+            "name": "Read",
+            "callTokens": 139,
+            "resultTokens": 31534
+          },
+          {
+            "name": "Write",
+            "callTokens": 12332,
+            "resultTokens": 98
+          },
+          {
+            "name": "Bash",
+            "callTokens": 93,
+            "resultTokens": 224
+          },
+          {
+            "name": "Skill",
+            "callTokens": 33,
+            "resultTokens": 28
+          }
+        ],
+        "attachmentsByType": [
+          {
+            "name": "skill_listing",
+            "tokens": 1566
+          },
+          {
+            "name": "agent_listing_delta",
+            "tokens": 386
+          },
+          {
+            "name": "deferred_tools_delta",
+            "tokens": 163
+          },
+          {
+            "name": "command_permissions",
+            "tokens": 12
+          }
+        ]
+      },
+      "apiUsage": {
+        "input_tokens": 2,
+        "output_tokens": 480,
+        "cache_creation_input_tokens": 145,
+        "cache_read_input_tokens": 90374
+      }
+    },
+    "auth_used": "oauth",
+    "auth_attempts_available": [
+      "oauth"
+    ]
+  }
+}

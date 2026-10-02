@@ -1,0 +1,679 @@
+[3] AGENT
+I’ll use the compile-check skill after editing, as required, and only touch the generated test in the working directory. First I’m reading the skill instructions and the two allowed Java sources so the rewrite preserves behavior exactly.
+
+[4] COMMAND in_progress
+/bin/zsh -lc pwd
+
+[5] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[6] COMMAND completed
+/bin/zsh -lc pwd
+--- output ---
+/Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/manual/testcases/StringSubstitutorTest/testReplaceEmptyKeyOnly
+
+
+[7] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[8] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-text/manual/testcases/StringSubstitutorTest/StringSubstitutorTest_testReplaceEmptyKeyOnly.java"
+
+[9] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[10] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[11] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-text/manual/testcases/StringSubstitutorTest/StringSubstitutorTest_testReplaceEmptyKeyOnly.java"
+--- output ---
+package org.apache.commons.text;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.SystemProperties;
+import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.text.lookup.StringLookup;
+import org.apache.commons.text.lookup.StringLookupFactory;
+import org.apache.commons.text.matcher.StringMatcher;
+import org.apache.commons.text.matcher.StringMatcherFactory;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+
+// temp, for my sanity during dev
+@TestMethodOrder(MethodOrderer.MethodName.class)
+public class StringSubstitutorTest_testReplaceEmptyKeyOnly {
+
+    private static final String ACTUAL_ANIMAL = "quick brown fox";
+
+    private static final String ACTUAL_TARGET = "lazy dog";
+
+    private static final String CLASSIC_RESULT = "The quick brown fox jumps over the lazy dog.";
+
+    private static final String CLASSIC_TEMPLATE = "The ${animal} jumps over the ${target}.";
+
+    private static final String EMPTY_EXPR = "${}";
+
+    protected Map<String, String> values;
+
+    private void assertEqualsCharSeq(final CharSequence expected, final CharSequence actual) {
+        assertEquals(expected, actual, () -> String.format("expected.length()=%,d, actual.length()=%,d", StringUtils.length(expected), StringUtils.length(actual)));
+    }
+
+    protected void doNotReplace(final String replaceTemplate) throws IOException {
+        doTestNoReplace(new StringSubstitutor(values), replaceTemplate);
+    }
+
+    protected void doReplace(final String expectedResult, final String replaceTemplate, final boolean substring) throws IOException {
+        doTestReplace(new StringSubstitutor(values), expectedResult, replaceTemplate, substring);
+    }
+
+    protected void doTestNoReplace(final StringSubstitutor substitutor, final String replaceTemplate) throws IOException {
+        if (replaceTemplate == null) {
+            assertNull(replace(substitutor, (String) null));
+            assertNull(substitutor.replace((String) null, 0, 100));
+            assertNull(substitutor.replace((char[]) null));
+            assertNull(substitutor.replace((char[]) null, 0, 100));
+            assertNull(substitutor.replace((StringBuffer) null));
+            assertNull(substitutor.replace((StringBuffer) null, 0, 100));
+            assertNull(substitutor.replace((TextStringBuilder) null));
+            assertNull(substitutor.replace((TextStringBuilder) null, 0, 100));
+            assertNull(substitutor.replace((Object) null));
+            assertFalse(substitutor.replaceIn((StringBuffer) null));
+            assertFalse(substitutor.replaceIn((StringBuffer) null, 0, 100));
+            assertFalse(substitutor.replaceIn((TextStringBuilder) null));
+            assertFalse(substitutor.replaceIn((TextStringBuilder) null, 0, 100));
+        } else {
+            assertEquals(replaceTemplate, replace(substitutor, replaceTemplate));
+            final TextStringBuilder builder = new TextStringBuilder(replaceTemplate);
+            assertFalse(substitutor.replaceIn(builder));
+            assertEquals(replaceTemplate, builder.toString());
+        }
+    }
+
+    protected void doTestReplace(final StringSubstitutor sub, final String expectedResult, final String replaceTemplate, final boolean substring) throws IOException {
+        final String expectedShortResult = substring ? expectedResult.substring(1, expectedResult.length() - 1) : expectedResult;
+        // replace using String
+        final String actual = replace(sub, replaceTemplate);
+        assertEquals(expectedResult, actual, () -> String.format("Index of difference: %,d", StringUtils.indexOfDifference(expectedResult, actual)));
+        if (substring) {
+            assertEquals(expectedShortResult, sub.replace(replaceTemplate, 1, replaceTemplate.length() - 2));
+        }
+        // replace using char[]
+        final char[] chars = replaceTemplate.toCharArray();
+        assertEquals(expectedResult, sub.replace(chars));
+        if (substring) {
+            assertEquals(expectedShortResult, sub.replace(chars, 1, chars.length - 2));
+        }
+        // replace using StringBuffer
+        StringBuffer buf = new StringBuffer(replaceTemplate);
+        assertEquals(expectedResult, sub.replace(buf));
+        if (substring) {
+            assertEquals(expectedShortResult, sub.replace(buf, 1, buf.length() - 2));
+        }
+        // replace using StringBuilder
+        StringBuilder builder = new StringBuilder(replaceTemplate);
+        assertEquals(expectedResult, sub.replace(builder));
+        if (substring) {
+            assertEquals(expectedShortResult, sub.replace(builder, 1, builder.length() - 2));
+        }
+        // replace using TextStringBuilder
+        TextStringBuilder bld = new TextStringBuilder(replaceTemplate);
+        assertEquals(expectedResult, sub.replace(bld));
+        if (substring) {
+            assertEquals(expectedShortResult, sub.replace(bld, 1, bld.length() - 2));
+        }
+        // replace using object
+        // toString returns template
+        final MutableObject<String> obj = new MutableObject<>(replaceTemplate);
+        assertEquals(expectedResult, sub.replace(obj));
+        // replace in StringBuffer
+        buf = new StringBuffer(replaceTemplate);
+        assertTrue(sub.replaceIn(buf), replaceTemplate);
+        assertEquals(expectedResult, buf.toString());
+        if (substring) {
+            buf = new StringBuffer(replaceTemplate);
+            assertTrue(sub.replaceIn(buf, 1, buf.length() - 2));
+            // expect full result as remainder is untouched
+            assertEquals(expectedResult, buf.toString());
+        }
+        // replace in StringBuilder
+        builder = new StringBuilder(replaceTemplate);
+        assertTrue(sub.replaceIn(builder));
+        assertEquals(expectedResult, builder.toString());
+        if (substring) {
+            builder = new StringBuilder(replaceTemplate);
+            assertTrue(sub.replaceIn(builder, 1, builder.length() - 2));
+            // expect full result as remainder is untouched
+            assertEquals(expectedResult, builder.toString());
+        }
+        // replace in TextStringBuilder
+        bld = new TextStringBuilder(replaceTemplate);
+        assertTrue(sub.replaceIn(bld));
+        assertEquals(expectedResult, bld.toString());
+        if (substring) {
+            bld = new TextStringBuilder(replaceTemplate);
+            assertTrue(sub.replaceIn(bld, 1, bld.length() - 2));
+            // expect full result as remainder is untouched
+            assertEquals(expectedResult, bld.toString());
+        }
+    }
+
+    /**
+     * For subclasses to override.
+     *
+     * @throws IOException Thrown by subclasses.
+     */
+    protected String replace(final StringSubstitutor stringSubstitutor, final String template) throws IOException {
+        return stringSubstitutor.replace(template);
+    }
+
+    @BeforeEach
+    public void setUp() throws Exception {
+        values = new HashMap<>();
+        // shortest key and value.
+        values.put("a", "1");
+        values.put("aa", "11");
+        values.put("aaa", "111");
+        values.put("b", "2");
+        values.put("bb", "22");
+        values.put("bbb", "222");
+        values.put("a2b", "b");
+        // normal key and value.
+        values.put("animal", ACTUAL_ANIMAL);
+        values.put("target", ACTUAL_TARGET);
+    }
+
+    @AfterEach
+    public void tearDown() {
+        values = null;
+    }
+
+    /**
+     * Tests when no variable name.
+     */
+    @Test
+    void testReplaceEmptyKeyOnly() throws IOException {
+        assertEquals(EMPTY_EXPR, replace(new StringSubstitutor(values), EMPTY_EXPR));
+    }
+}
+
+
+[12] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-text/src/main/java/org/apache/commons/text/StringSubstitutor.java"
+
+[13] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-text/src/main/java/org/apache/commons/text/StringSubstitutor.java"
+--- output ---
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.commons.text;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Properties;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import org.apache.commons.lang3.Validate;
+import org.apache.commons.text.lookup.StringLookup;
+import org.apache.commons.text.lookup.StringLookupFactory;
+import org.apache.commons.text.matcher.StringMatcher;
+import org.apache.commons.text.matcher.StringMatcherFactory;
+
+/**
+ * Substitutes variables within a string by values.
+ * <p>
+ * This class takes a piece of text and substitutes all the variables within it. The default definition of a variable is
+ * {@code ${variableName}}. The prefix and suffix can be changed via constructors and set methods.
+ * </p>
+ * <p>
+ * Variable values are typically resolved from a map, but could also be resolved from system properties, or by supplying
+ * a custom variable resolver.
+ * </p>
+ * <h2>Using System Properties</h2>
+ * <p>
+ * The simplest example is to use this class to replace Java System properties. For example:
+ * </p>
+ *
+ * <pre>
+ * StringSubstitutor
+ *     .replaceSystemProperties("You are running with java.version = ${java.version} and os.name = ${os.name}.");
+ * </pre>
+ *
+ * <h2>Using a Custom Map</h2>
+ * <p>
+ * Typical usage of this class follows the following pattern:
+ * </p>
+ * <ul>
+ * <li>Create and initialize a StringSubstitutor with the map that contains the values for the variables you want to
+ * make available.</li>
+ * <li>Optionally set attributes like variable prefix, variable suffix, default value delimiter, and so on.</li>
+ * <li>Call the {@code replace()} method with in the source text for interpolation.</li>
+ * <li>The returned text contains all variable references (as long as their values are known) as resolved.</li>
+ * </ul>
+ * <p>
+ * For example:
+ * </p>
+ *
+ * <pre>
+ * // Build map
+ * Map&lt;String, String&gt; valuesMap = new HashMap&lt;&gt;();
+ * valuesMap.put(&quot;animal&quot;, &quot;quick brown fox&quot;);
+ * valuesMap.put(&quot;target&quot;, &quot;lazy dog&quot;);
+ * String templateString = &quot;The ${animal} jumped over the ${target}.&quot;;
+ *
+ * // Build StringSubstitutor
+ * StringSubstitutor sub = new StringSubstitutor(valuesMap);
+ *
+ * // Replace
+ * String resolvedString = sub.replace(templateString);
+ * </pre>
+ *
+ * <p>
+ * yielding:
+ * </p>
+ *
+ * <pre>
+ * "The quick brown fox jumped over the lazy dog."
+ * </pre>
+ *
+ * <h2>Providing Default Values</h2>
+ * <p>
+ * You can set a default value for unresolved variables. The default value for a variable can be appended to the
+ * variable name after the variable default value delimiter. The default value of the variable default value delimiter
+ * is ":-", as in bash and other *nix shells.
+ * </p>
+ * <p>
+ * You can set the variable value delimiter with {@link #setValueDelimiterMatcher(StringMatcher)},
+ * {@link #setValueDelimiter(char)} or {@link #setValueDelimiter(String)}.
+ * </p>
+ * <p>
+ * For example:
+ * </p>
+ *
+ * <pre>
+ * // Build map
+ * Map&lt;String, String&gt; valuesMap = new HashMap&lt;&gt;();
+ * valuesMap.put(&quot;animal&quot;, &quot;quick brown fox&quot;);
+ * valuesMap.put(&quot;target&quot;, &quot;lazy dog&quot;);
+ * String templateString = &quot;The ${animal} jumped over the ${target} ${undefined.number:-1234567890} times.&quot;;
+ *
+ * // Build StringSubstitutor
+ * StringSubstitutor sub = new StringSubstitutor(valuesMap);
+ *
+ * // Replace
+ * String resolvedString = sub.replace(templateString);
+ * </pre>
+ *
+ * <p>
+ * yielding:
+ * </p>
+ *
+ * <pre>
+ * "The quick brown fox jumped over the lazy dog 1234567890 times."
+ * </pre>
+ *
+ * <p>
+ * {@code StringSubstitutor} supports throwing exceptions for unresolved variables, you enable this by setting calling
+ * {@link #setEnableUndefinedVariableException(boolean)} with {@code true}.
+ * </p>
+ *
+ * <h2>Reusing Instances</h2>
+ * <p>
+ * Static shortcut methods cover the most common use cases. If multiple replace operations are to be performed, creating
+ * and reusing an instance of this class will be more efficient.
+ * </p>
+ *
+ * <h2>Using Interpolation</h2>
+ * <p>
+ * The default interpolator lets you use string lookups like:
+ * </p>
+ *
+ * <pre>
+ * final StringSubstitutor interpolator = StringSubstitutor.createInterpolator();
+ * final String text = interpolator.replace(
+ *       "Base64 Decoder:        ${base64Decoder:SGVsbG9Xb3JsZCE=}\n"
+ *     + "Base64 Encoder:        ${base64Encoder:HelloWorld!}\n"
+ *     + "Java Constant:         ${const:java.awt.event.KeyEvent.VK_ESCAPE}\n"
+ *     + "Date:                  ${date:yyyy-MM-dd}\n"
+ *     + "Environment Variable:  ${env:USERNAME}\n"
+ *     + "File Content:          ${file:UTF-8:src/test/resources/document.properties}\n"
+ *     + "Java:                  ${java:version}\n"
+ *     + "Localhost:             ${localhost:canonical-name}\n"
+ *     + "Properties File:       ${properties:src/test/resources/document.properties::mykey}\n"
+ *     + "Resource Bundle:       ${resourceBundle:org.apache.commons.text.example.testResourceBundleLookup:mykey}\n"
+ *     + "System Property:       ${sys:user.dir}\n"
+ *     + "URL Decoder:           ${urlDecoder:Hello%20World%21}\n"
+ *     + "URL Encoder:           ${urlEncoder:Hello World!}\n"
+ *     + "XML XPath:             ${xml:src/test/resources/document.xml:/root/path/to/node}\n");
+ * </pre>
+ * <p>
+ * For documentation and a full list of available lookups, see {@link StringLookupFactory}.
+ * </p>
+ * <p><strong>NOTE:</strong> The list of lookups available by default in {@link #createInterpolator()} changed
+ * in version {@code 1.10.0}. See the {@link StringLookupFactory} documentation for details and an explanation
+ * on how to reproduce the previous functionality.
+ * </p>
+ *
+ * <h2>Using Recursive Variable Replacement</h2>
+ * <p>
+ * Variable replacement can work recursively by calling {@link #setEnableSubstitutionInVariables(boolean)} with
+ * {@code true}. If a variable value contains a variable then that variable will also be replaced. Cyclic replacements
+ * are detected and will throw an exception.
+ * </p>
+ * <p>
+ * You can get the replace result to contain a variable prefix. For example:
+ * </p>
+ *
+ * <pre>
+ * "The variable ${${name}} must be used."
+ * </pre>
+ *
+ * <p>
+ * If the value of the "name" variable is "x", then only the variable "name" is replaced resulting in:
+ * </p>
+ *
+ * <pre>
+ * "The variable ${x} must be used."
+ * </pre>
+ *
+ * <p>
+ * To achieve this effect there are two possibilities: Either set a different prefix and suffix for variables which do
+ * not conflict with the result text you want to produce. The other possibility is to use the escape character, by
+ * default '$'. If this character is placed before a variable reference, this reference is ignored and won't be
+ * replaced. For example:
+ * </p>
+ *
+ * <pre>
+ * "The variable $${${name}} must be used."
+ * </pre>
+ * <p>
+ * In some complex scenarios you might even want to perform substitution in the names of variables, for instance
+ * </p>
+ *
+ * <pre>
+ * ${jre-${java.specification.version}}
+ * </pre>
+ *
+ * <p>
+ * {@code StringSubstitutor} supports this recursive substitution in variable names, but it has to be enabled explicitly
+ * by calling {@link #setEnableSubstitutionInVariables(boolean)} with {@code true}.
+ * </p>
+ *
+ * <h2>Thread Safety</h2>
+ * <p>
+ * This class is <strong>not</strong> thread safe.
+ * </p>
+ *
+ * @since 1.3
+ */
+public class StringSubstitutor {
+
+    /**
+     * The low-level result of a substitution.
+     *
+     * @since 1.9
+     */
+    private static final class Result {
+
+        /** Whether the buffer is altered. */
+        public final boolean altered;
+
+        /** The length of change. */
+        public final int lengthChange;
+
+        private Result(final boolean altered, final int lengthChange) {
+            this.altered = altered;
+            this.lengthChange = lengthChange;
+        }
+
+        @Override
+        public String toString() {
+            return "Result [altered=" + altered + ", lengthChange=" + lengthChange + "]";
+        }
+    }
+
+    /**
+     * Constant for the default escape character.
+     */
+    public static final char DEFAULT_ESCAPE = '$';
+
+    /**
+     * The default variable default separator.
+     *
+     * @since 1.5.
+     */
+    public static final String DEFAULT_VAR_DEFAULT = ":-";
+
+    /**
+     * The default variable end separator.
+     *
+
+
+[14] AGENT
+The original test is much larger than this case needs; most helpers and imports are unused for `testReplaceEmptyKeyOnly`. I’m going to create a focused version that keeps the same fixture values, helper call, substitutor construction, replacement argument, and assertion outcome while removing unrelated scaffolding.
+
+[15] FILE_CHANGE in_progress
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/manual/testcases/StringSubstitutorTest/testReplaceEmptyKeyOnly/StringSubstitutorTest_testReplaceEmptyKeyOnly.java
+
+[16] FILE_CHANGE completed
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/manual/testcases/StringSubstitutorTest/testReplaceEmptyKeyOnly/StringSubstitutorTest_testReplaceEmptyKeyOnly.java
+
+[17] AGENT
+The focused test file is in place. I’m now running the required compile check exactly through `bash compile.sh` from the working directory, then I’ll only make a targeted repair if javac reports one.
+
+[18] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[19] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[20] AGENT
+COMPILE_OK: improved test created at [StringSubstitutorTest_testReplaceEmptyKeyOnly.java](/Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/manual/testcases/StringSubstitutorTest/testReplaceEmptyKeyOnly/StringSubstitutorTest_testReplaceEmptyKeyOnly.java).

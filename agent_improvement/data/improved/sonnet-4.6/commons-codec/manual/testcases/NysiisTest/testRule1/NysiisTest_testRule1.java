@@ -1,0 +1,59 @@
+package org.apache.commons.codec.language;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.apache.commons.codec.AbstractStringEncoderTest;
+import org.junit.jupiter.api.Test;
+
+public class NysiisTest_testRule1 extends AbstractStringEncoderTest<Nysiis> {
+
+    private final Nysiis fullNysiis = new Nysiis(false);
+
+    /**
+     * Takes an array of String pairs where each pair's first element is the input and the second element the expected
+     * encoding.
+     *
+     * @param testValues
+     *            an array of String pairs where each pair's first element is the input and the second element the
+     *            expected encoding.
+     */
+    private void assertEncodings(final String[]... testValues) {
+        for (final String[] arr : testValues) {
+            assertEquals(arr[1], this.fullNysiis.encode(arr[0]), "Problem with " + arr[0]);
+        }
+    }
+
+    @Override
+    protected Nysiis createStringEncoder() {
+        return new Nysiis();
+    }
+
+    private void encodeAll(final String[] strings, final String expectedEncoding) {
+        for (final String string : strings) {
+            assertEquals(expectedEncoding, getStringEncoder().encode(string), "Problem with " + string);
+        }
+    }
+
+    /**
+     * Tests Rule 1: Translate first characters of name.
+     * <ul>
+     *   <li>MAC → MCC (e.g. "MACX" encodes to "MCX")</li>
+     *   <li>KN  → N   (e.g. "KNX"  encodes to "NX")</li>
+     *   <li>K   → C   (e.g. "KX"   encodes to "CX")</li>
+     *   <li>PH  → FF  (e.g. "PHX"  encodes to "FX")</li>
+     *   <li>PF  → FF  (e.g. "PFX"  encodes to "FX")</li>
+     *   <li>SCH → SSS (e.g. "SCHX" encodes to "SX")</li>
+     * </ul>
+     */
+    @Test
+    void testRule1() {
+        assertEncodings(
+            new String[] { "MACX", "MCX" },  // MAC → MCC
+            new String[] { "KNX",  "NX"  },  // KN  → N
+            new String[] { "KX",   "CX"  },  // K   → C
+            new String[] { "PHX",  "FX"  },  // PH  → FF
+            new String[] { "PFX",  "FX"  },  // PF  → FF
+            new String[] { "SCHX", "SX"  }   // SCH → SSS
+        );
+    }
+}

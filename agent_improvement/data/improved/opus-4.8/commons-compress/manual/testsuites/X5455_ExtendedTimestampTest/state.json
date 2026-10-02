@@ -1,0 +1,1916 @@
+{
+  "status": "COMPILE_SUCCESS",
+  "attempts_used": 1,
+  "model": "claude-opus-4-8",
+  "prompt_version": "understandability_improvement_constraints",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `X5455_ExtendedTimestampTest.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-compress/src/test/java/org/apache/commons/compress/archivers/zip/X5455_ExtendedTimestampTest.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n"
+    },
+    {
+      "role": "assistant",
+      "content": "I have both files. Now I'll write the improved test, keeping all method calls, arguments, and expected outcomes identical while improving readability — chiefly by collapsing the three near-identical getter/setter blocks in `testGettersSetters` into one well-documented helper, and by giving the cryptic single-letter variables in `testSampleFile` descriptive names.Now let me compile-check the result.Compilation succeeded (`COMPILE_OK`). The improved `X5455_ExtendedTimestampTest.java` preserves the original runtime behavior while collapsing the three identical modify/access/create getter-setter blocks into one documented `assertTimeFieldRoundTrips` helper, giving cryptic variables in `testSampleFile` descriptive names, and adding clarifying comments to the byte-array spec in `testParseReparse`."
+    }
+  ],
+  "last_code": "/*\n * Licensed to the Apache Software Foundation (ASF) under one\n * or more contributor license agreements.  See the NOTICE file\n * distributed with this work for additional information\n * regarding copyright ownership.  The ASF licenses this file\n * to you under the Apache License, Version 2.0 (the\n * \"License\"); you may not use this file except in compliance\n * with the License.  You may obtain a copy of the License at\n *\n *   https://www.apache.org/licenses/LICENSE-2.0\n *\n * Unless required by applicable law or agreed to in writing,\n * software distributed under the License is distributed on an\n * \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY\n * KIND, either express or implied.  See the License for the\n * specific language governing permissions and limitations\n * under the License.\n */\npackage org.apache.commons.compress.archivers.zip;\n\nimport static org.apache.commons.compress.archivers.zip.X5455_ExtendedTimestamp.ACCESS_TIME_BIT;\nimport static org.apache.commons.compress.archivers.zip.X5455_ExtendedTimestamp.CREATE_TIME_BIT;\nimport static org.apache.commons.compress.archivers.zip.X5455_ExtendedTimestamp.MODIFY_TIME_BIT;\nimport static org.junit.jupiter.api.Assertions.assertArrayEquals;\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nimport static org.junit.jupiter.api.Assertions.assertFalse;\nimport static org.junit.jupiter.api.Assertions.assertNotEquals;\nimport static org.junit.jupiter.api.Assertions.assertNotNull;\nimport static org.junit.jupiter.api.Assertions.assertNull;\nimport static org.junit.jupiter.api.Assertions.assertThrows;\nimport static org.junit.jupiter.api.Assertions.assertTrue;\n\nimport java.io.File;\nimport java.io.IOException;\nimport java.io.OutputStream;\nimport java.nio.file.Files;\nimport java.nio.file.attribute.FileTime;\nimport java.text.SimpleDateFormat;\nimport java.util.Calendar;\nimport java.util.Date;\nimport java.util.Enumeration;\nimport java.util.TimeZone;\nimport java.util.function.BooleanSupplier;\nimport java.util.function.Consumer;\nimport java.util.function.Supplier;\nimport java.util.zip.ZipException;\n\nimport org.apache.commons.compress.AbstractTest;\nimport org.junit.jupiter.api.AfterEach;\nimport org.junit.jupiter.api.BeforeEach;\nimport org.junit.jupiter.api.Test;\nimport org.junit.jupiter.api.io.TempDir;\n\nclass X5455_ExtendedTimestampTest {\n    private static final ZipShort X5455 = new ZipShort(0x5455);\n\n    private static final ZipLong ZERO_TIME = new ZipLong(0);\n    private static final ZipLong MAX_TIME_SECONDS = new ZipLong(Integer.MAX_VALUE);\n    private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat(\"yyyy-MM-dd/HH:mm:ss Z\");\n\n    static {\n        DATE_FORMAT.setTimeZone(TimeZone.getTimeZone(\"UTC\"));\n    }\n\n    /**\n     * InfoZIP seems to adjust the time stored inside the LFH and CD to GMT when writing ZIPs while java.util.zip.ZipEntry thinks it was in local time.\n     *\n     * The archive read in {@link #testSampleFile} has been created with GMT-8, so we need to adjust for the difference.\n     */\n    private static Date adjustFromGMTToExpectedOffset(final Date from) {\n        final Calendar cal = Calendar.getInstance();\n        cal.setTime(from);\n        cal.add(Calendar.MILLISECOND, cal.get(Calendar.ZONE_OFFSET));\n        if (cal.getTimeZone().inDaylightTime(from)) {\n            cal.add(Calendar.MILLISECOND, cal.get(Calendar.DST_OFFSET));\n        }\n        cal.add(Calendar.HOUR, 8);\n        return cal.getTime();\n    }\n\n    private static boolean isFlagSet(final byte data, final byte flag) {\n        return (data & flag) == flag;\n    }\n\n    /**\n     * The extended field (xf) we are testing.\n     */\n    private X5455_ExtendedTimestamp xf;\n\n    @TempDir\n    private File tmpDir;\n\n    @BeforeEach\n    public void before() {\n        xf = new X5455_ExtendedTimestamp();\n    }\n\n    /**\n     * Exercises one of the three timestamp fields (modify, access or create), which all expose an identical set of accessors. The field is supplied through its\n     * setters and getters so that this single routine can drive all three without duplicating the assertions.\n     *\n     * <p>\n     * The checks verify, in order, that: a value set as a {@link ZipLong}, a {@link Date} or a {@link FileTime} is reported consistently by every getter; that\n     * sub-second milliseconds are truncated; and that clearing the value through any one of the three setters clears every view of it.\n     * </p>\n     *\n     * @param setZipTime    setter accepting the time as a {@link ZipLong} (seconds since epoch).\n     * @param setJavaTime   setter accepting the time as a {@link Date}.\n     * @param setFileTime   setter accepting the time as a {@link FileTime}.\n     * @param getZipTime    getter returning the time as a {@link ZipLong}.\n     * @param getJavaTime   getter returning the time as a {@link Date}.\n     * @param getFileTime   getter returning the time as a {@link FileTime}.\n     * @param isTimePresent predicate reporting whether the corresponding flag bit is set.\n     * @param time          the expected {@link ZipLong} value (whole seconds).\n     * @param timeMillis    the same instant expressed in milliseconds since epoch.\n     */\n    private void assertTimeFieldRoundTrips(final Consumer<ZipLong> setZipTime, final Consumer<Date> setJavaTime, final Consumer<FileTime> setFileTime,\n            final Supplier<ZipLong> getZipTime, final Supplier<Date> getJavaTime, final Supplier<FileTime> getFileTime, final BooleanSupplier isTimePresent,\n            final ZipLong time, final long timeMillis) {\n\n        // Set via ZipLong (seconds since epoch).\n        setZipTime.accept(time);\n        assertEquals(time, getZipTime.get());\n        assertEquals(timeMillis, getJavaTime.get().getTime());\n        assertEquals(timeMillis, getFileTime.get().toMillis());\n        assertTrue(isTimePresent.getAsBoolean());\n\n        // Set via java.util.Date on an exact second boundary.\n        setJavaTime.accept(new Date(timeMillis));\n        assertEquals(time, getZipTime.get());\n        assertEquals(timeMillis, getJavaTime.get().getTime());\n        assertEquals(timeMillis, getFileTime.get().toMillis());\n        assertTrue(isTimePresent.getAsBoolean());\n\n        // Sub-second milliseconds must be zeroed out.\n        setJavaTime.accept(new Date(timeMillis + 123));\n        assertEquals(time, getZipTime.get());\n        assertEquals(timeMillis, getJavaTime.get().getTime());\n        assertEquals(timeMillis, getFileTime.get().toMillis());\n        assertTrue(isTimePresent.getAsBoolean());\n\n        // The same truncation applies when setting via FileTime.\n        setFileTime.accept(FileTime.fromMillis(timeMillis + 123));\n        assertEquals(time, getZipTime.get());\n        assertEquals(timeMillis, getJavaTime.get().getTime());\n        assertEquals(timeMillis, getFileTime.get().toMillis());\n        assertTrue(isTimePresent.getAsBoolean());\n\n        // Clearing via any one setter clears the value seen through every getter, and unsets the flag.\n        setZipTime.accept(null);\n        assertNull(getJavaTime.get());\n        assertNull(getFileTime.get());\n        assertFalse(isTimePresent.getAsBoolean());\n        setJavaTime.accept(null);\n        assertNull(getZipTime.get());\n        assertNull(getFileTime.get());\n        assertFalse(isTimePresent.getAsBoolean());\n        setFileTime.accept(null);\n        assertNull(getJavaTime.get());\n        assertNull(getZipTime.get());\n        assertFalse(isTimePresent.getAsBoolean());\n    }\n\n    private void parseReparse(final byte providedFlags, final ZipLong time, final byte expectedFlags, final byte[] expectedLocal,\n            final byte[] almostExpectedCentral) throws ZipException {\n\n        // We're responsible for expectedCentral's flags. Too annoying to set in caller.\n        final byte[] expectedCentral = new byte[almostExpectedCentral.length];\n        System.arraycopy(almostExpectedCentral, 0, expectedCentral, 0, almostExpectedCentral.length);\n        expectedCentral[0] = expectedFlags;\n\n        xf.setModifyTime(time);\n        xf.setAccessTime(time);\n        xf.setCreateTime(time);\n        xf.setFlags(providedFlags);\n        byte[] result = xf.getLocalFileDataData();\n        assertArrayEquals(expectedLocal, result);\n\n        // And now we re-parse:\n        xf.parseFromLocalFileData(result, 0, result.length);\n        assertEquals(expectedFlags, xf.getFlags());\n        if (isFlagSet(expectedFlags, MODIFY_TIME_BIT)) {\n            assertTrue(xf.isBit0_modifyTimePresent());\n            assertEquals(time, xf.getModifyTime());\n        }\n        if (isFlagSet(expectedFlags, ACCESS_TIME_BIT)) {\n            assertTrue(xf.isBit1_accessTimePresent());\n            assertEquals(time, xf.getAccessTime());\n        }\n        if (isFlagSet(expectedFlags, CREATE_TIME_BIT)) {\n            assertTrue(xf.isBit2_createTimePresent());\n            assertEquals(time, xf.getCreateTime());\n        }\n\n        // Do the same as above, but with Central Directory data:\n        xf.setModifyTime(time);\n        xf.setAccessTime(time);\n        xf.setCreateTime(time);\n        xf.setFlags(providedFlags);\n        result = xf.getCentralDirectoryData();\n        assertArrayEquals(expectedCentral, result);\n\n        // And now we re-parse:\n        xf.parseFromCentralDirectoryData(result, 0, result.length);\n        assertEquals(expectedFlags, xf.getFlags());\n        // Central Directory never contains ACCESS or CREATE, but\n        // may contain MODIFY.\n        if (isFlagSet(expectedFlags, MODIFY_TIME_BIT)) {\n            assertTrue(xf.isBit0_modifyTimePresent());\n            assertEquals(time, xf.getModifyTime());\n        }\n    }\n\n    private void parseReparse(final ZipLong time, final byte[] expectedLocal, final byte[] almostExpectedCentral) throws ZipException {\n        parseReparse(expectedLocal[0], time, expectedLocal[0], expectedLocal, almostExpectedCentral);\n    }\n\n    @AfterEach\n    public void removeTempFiles() {\n        if (tmpDir != null) {\n            AbstractTest.forceDelete(tmpDir);\n        }\n    }\n\n    @Test\n    void testBitsAreSetWithTime() {\n        xf.setModifyJavaTime(new Date(1111));\n        assertTrue(xf.isBit0_modifyTimePresent());\n        assertEquals(1, xf.getFlags());\n        xf.setAccessJavaTime(new Date(2222));\n        assertTrue(xf.isBit1_accessTimePresent());\n        assertEquals(3, xf.getFlags());\n        xf.setCreateJavaTime(new Date(3333));\n        assertTrue(xf.isBit2_createTimePresent());\n        assertEquals(7, xf.getFlags());\n        xf.setModifyJavaTime(null);\n        assertFalse(xf.isBit0_modifyTimePresent());\n        assertEquals(6, xf.getFlags());\n        xf.setAccessJavaTime(null);\n        assertFalse(xf.isBit1_accessTimePresent());\n        assertEquals(4, xf.getFlags());\n        xf.setCreateJavaTime(null);\n        assertFalse(xf.isBit2_createTimePresent());\n        assertEquals(0, xf.getFlags());\n    }\n\n    @Test\n    void testGetHeaderId() {\n        assertEquals(X5455, xf.getHeaderId());\n    }\n\n    @Test\n    void testGettersSetters() {\n        // X5455 is concerned with time, so let's\n        // get a timestamp to play with (Jan 1st, 2000).\n        final Calendar cal = Calendar.getInstance(TimeZone.getTimeZone(\"UTC\"));\n        cal.set(Calendar.YEAR, 2000);\n        cal.set(Calendar.MONTH, Calendar.JANUARY);\n        cal.set(Calendar.DATE, 1);\n        cal.set(Calendar.HOUR_OF_DAY, 0);\n        cal.set(Calendar.MINUTE, 0);\n        cal.set(Calendar.SECOND, 0);\n        cal.set(Calendar.MILLISECOND, 0);\n        final long timeMillis = cal.getTimeInMillis();\n        final ZipLong time = new ZipLong(timeMillis / 1000);\n\n        // set too big\n        // Java time is 1000 x larger (milliseconds).\n        assertThrows(IllegalArgumentException.class, () -> xf.setModifyJavaTime(new Date(1000L * (MAX_TIME_SECONDS.getValue() + 1L))),\n                \"Time too big for 32 bits!\");\n\n        // The modify, access and create fields share an identical accessor contract, so each is exercised by the same helper.\n        assertTimeFieldRoundTrips(xf::setModifyTime, xf::setModifyJavaTime, xf::setModifyFileTime, xf::getModifyTime, xf::getModifyJavaTime,\n                xf::getModifyFileTime, xf::isBit0_modifyTimePresent, time, timeMillis);\n        assertTimeFieldRoundTrips(xf::setAccessTime, xf::setAccessJavaTime, xf::setAccessFileTime, xf::getAccessTime, xf::getAccessJavaTime,\n                xf::getAccessFileTime, xf::isBit1_accessTimePresent, time, timeMillis);\n        assertTimeFieldRoundTrips(xf::setCreateTime, xf::setCreateJavaTime, xf::setCreateFileTime, xf::getCreateTime, xf::getCreateJavaTime,\n                xf::getCreateFileTime, xf::isBit2_createTimePresent, time, timeMillis);\n\n        // initialize for flags\n        xf.setModifyTime(time);\n        xf.setAccessTime(time);\n        xf.setCreateTime(time);\n\n        // get/set flags: 000\n        xf.setFlags((byte) 0);\n        assertEquals(0, xf.getFlags());\n        assertFalse(xf.isBit0_modifyTimePresent());\n        assertFalse(xf.isBit1_accessTimePresent());\n        assertFalse(xf.isBit2_createTimePresent());\n        // Local length=1, Central length=1 (flags only!)\n        assertEquals(1, xf.getLocalFileDataLength().getValue());\n        assertEquals(1, xf.getCentralDirectoryLength().getValue());\n\n        // get/set flags: 001\n        xf.setFlags((byte) 1);\n        assertEquals(1, xf.getFlags());\n        assertTrue(xf.isBit0_modifyTimePresent());\n        assertFalse(xf.isBit1_accessTimePresent());\n        assertFalse(xf.isBit2_createTimePresent());\n        // Local length=5, Central length=5 (flags + mod)\n        assertEquals(5, xf.getLocalFileDataLength().getValue());\n        assertEquals(5, xf.getCentralDirectoryLength().getValue());\n\n        // get/set flags: 010\n        xf.setFlags((byte) 2);\n        assertEquals(2, xf.getFlags());\n        assertFalse(xf.isBit0_modifyTimePresent());\n        assertTrue(xf.isBit1_accessTimePresent());\n        assertFalse(xf.isBit2_createTimePresent());\n        // Local length=5, Central length=1\n        assertEquals(5, xf.getLocalFileDataLength().getValue());\n        assertEquals(1, xf.getCentralDirectoryLength().getValue());\n\n        // get/set flags: 100\n        xf.setFlags((byte) 4);\n        assertEquals(4, xf.getFlags());\n        assertFalse(xf.isBit0_modifyTimePresent());\n        assertFalse(xf.isBit1_accessTimePresent());\n        assertTrue(xf.isBit2_createTimePresent());\n        // Local length=5, Central length=1\n        assertEquals(5, xf.getLocalFileDataLength().getValue());\n        assertEquals(1, xf.getCentralDirectoryLength().getValue());\n\n        // get/set flags: 111\n        xf.setFlags((byte) 7);\n        assertEquals(7, xf.getFlags());\n        assertTrue(xf.isBit0_modifyTimePresent());\n        assertTrue(xf.isBit1_accessTimePresent());\n        assertTrue(xf.isBit2_createTimePresent());\n        // Local length=13, Central length=5\n        assertEquals(13, xf.getLocalFileDataLength().getValue());\n        assertEquals(5, xf.getCentralDirectoryLength().getValue());\n\n        // get/set flags: 11111111\n        xf.setFlags((byte) -1);\n        assertEquals(-1, xf.getFlags());\n        assertTrue(xf.isBit0_modifyTimePresent());\n        assertTrue(xf.isBit1_accessTimePresent());\n        assertTrue(xf.isBit2_createTimePresent());\n        // Local length=13, Central length=5\n        assertEquals(13, xf.getLocalFileDataLength().getValue());\n        assertEquals(5, xf.getCentralDirectoryLength().getValue());\n    }\n\n    @Test\n    void testMisc() throws Exception {\n        assertNotEquals(xf, new Object());\n        assertTrue(xf.toString().startsWith(\"0x5455 Zip Extra Field\"));\n        assertFalse(xf.toString().contains(\" Modify:\"));\n        assertFalse(xf.toString().contains(\" Access:\"));\n        assertFalse(xf.toString().contains(\" Create:\"));\n        Object o = xf.clone();\n        assertEquals(o.hashCode(), xf.hashCode());\n        assertEquals(xf, o);\n\n        xf.setModifyJavaTime(new Date(1111));\n        xf.setAccessJavaTime(new Date(2222));\n        xf.setCreateJavaTime(new Date(3333));\n        xf.setFlags((byte) 7);\n        assertNotEquals(xf, o);\n        assertTrue(xf.toString().startsWith(\"0x5455 Zip Extra Field\"));\n        assertTrue(xf.toString().contains(\" Modify:\"));\n        assertTrue(xf.toString().contains(\" Access:\"));\n        assertTrue(xf.toString().contains(\" Create:\"));\n        o = xf.clone();\n        assertEquals(o.hashCode(), xf.hashCode());\n        assertEquals(xf, o);\n    }\n\n    @Test\n    void testParseReparse() throws ZipException {\n        /*\n         * Recall the spec:\n         *\n         * 0x5455 Short tag for this extra block type (\"UT\") TSize Short total data size for this block Flags Byte info bits (ModTime) Long time of last\n         * modification (UTC/GMT) (AcTime) Long time of last access (UTC/GMT) (CrTime) Long time of original creation (UTC/GMT)\n         */\n\n        // Each byte[] below is the expected serialized form: byte 0 is the flags, followed by 4 little-endian bytes per\n        // present timestamp. {0,0,0,0} encodes ZERO_TIME and {-1,-1,-1,0x7f} encodes MAX_TIME_SECONDS (Integer.MAX_VALUE).\n\n        final byte[] NULL_FLAGS = { 0 };\n        final byte[] AC_CENTRAL = { 2 }; // central data only contains the AC flag and no actual data\n        final byte[] CR_CENTRAL = { 4 }; // central data only contains the CR flag and no actual data\n\n        final byte[] MOD_ZERO = { 1, 0, 0, 0, 0 };\n        final byte[] MOD_MAX = { 1, -1, -1, -1, 0x7f };\n        final byte[] AC_ZERO = { 2, 0, 0, 0, 0 };\n        final byte[] AC_MAX = { 2, -1, -1, -1, 0x7f };\n        final byte[] CR_ZERO = { 4, 0, 0, 0, 0 };\n        final byte[] CR_MAX = { 4, -1, -1, -1, 0x7f };\n        final byte[] MOD_AC_ZERO = { 3, 0, 0, 0, 0, 0, 0, 0, 0 };\n        final byte[] MOD_AC_MAX = { 3, -1, -1, -1, 0x7f, -1, -1, -1, 0x7f };\n        final byte[] MOD_AC_CR_ZERO = { 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };\n        final byte[] MOD_AC_CR_MAX = { 7, -1, -1, -1, 0x7f, -1, -1, -1, 0x7f, -1, -1, -1, 0x7f };\n\n        parseReparse(null, NULL_FLAGS, NULL_FLAGS);\n        parseReparse(ZERO_TIME, MOD_ZERO, MOD_ZERO);\n        parseReparse(MAX_TIME_SECONDS, MOD_MAX, MOD_MAX);\n        parseReparse(ZERO_TIME, AC_ZERO, AC_CENTRAL);\n        parseReparse(MAX_TIME_SECONDS, AC_MAX, AC_CENTRAL);\n        parseReparse(ZERO_TIME, CR_ZERO, CR_CENTRAL);\n        parseReparse(MAX_TIME_SECONDS, CR_MAX, CR_CENTRAL);\n        parseReparse(ZERO_TIME, MOD_AC_ZERO, MOD_ZERO);\n        parseReparse(MAX_TIME_SECONDS, MOD_AC_MAX, MOD_MAX);\n        parseReparse(ZERO_TIME, MOD_AC_CR_ZERO, MOD_ZERO);\n        parseReparse(MAX_TIME_SECONDS, MOD_AC_CR_MAX, MOD_MAX);\n\n        // As far as the spec is concerned (December 2012) all of these flags\n        // are spurious versions of 7 (a.k.a. binary 00000111).\n        parseReparse((byte) 15, MAX_TIME_SECONDS, (byte) 7, MOD_AC_CR_MAX, MOD_MAX);\n        parseReparse((byte) 31, MAX_TIME_SECONDS, (byte) 7, MOD_AC_CR_MAX, MOD_MAX);\n        parseReparse((byte) 63, MAX_TIME_SECONDS, (byte) 7, MOD_AC_CR_MAX, MOD_MAX);\n        parseReparse((byte) 71, MAX_TIME_SECONDS, (byte) 7, MOD_AC_CR_MAX, MOD_MAX);\n        parseReparse((byte) 127, MAX_TIME_SECONDS, (byte) 7, MOD_AC_CR_MAX, MOD_MAX);\n        parseReparse((byte) -1, MAX_TIME_SECONDS, (byte) 7, MOD_AC_CR_MAX, MOD_MAX);\n    }\n\n    @Test\n    void testResetsFlagsWhenLocalFileArrayIsTooShort() throws Exception {\n        final byte[] local = { 7 }; // claims all three time values would be present, but they are not\n        xf.parseFromLocalFileData(local, 0, 1);\n        assertArrayEquals(new byte[1], xf.getLocalFileDataData());\n    }\n\n    @Test\n    void testSampleFile() throws Exception {\n\n        /*\n         * Contains entries with zipTime, accessTime, and modifyTime. The file name tells you the year we tried to set the time to (Jan 1st, Midnight, UTC).\n         *\n         * For example:\n         *\n         * COMPRESS-210_unix_time_zip_test/1999 COMPRESS-210_unix_time_zip_test/2000 COMPRESS-210_unix_time_zip_test/2108\n         *\n         * File's last-modified is 1st second after midnight. Zip-time's 2-second granularity rounds that up to 2nd second. File's last-access is 3rd second\n         * after midnight.\n         *\n         * So, from example above:\n         *\n         * 1999's zip time: Jan 1st, 1999-01-01/00:00:02 1999's mod time: Jan 1st, 1999-01-01/00:00:01 1999's acc time: Jan 1st, 1999-01-01/00:00:03\n         *\n         * Starting with a patch release of Java8, \"zip time\" actually uses the extended time stamp field itself and should be the same as \"mod time\".\n         * https://hg.openjdk.java.net/jdk8u/jdk8u/jdk/rev/90df6756406f\n         *\n         * Starting with Java9 the parser for extended time stamps has been fixed to use signed integers which was detected during the triage of COMPRESS-416.\n         * Signed integers is the correct format and Compress 1.15 has started to use signed integers as well.\n         */\n\n        final File archive = AbstractTest.getFile(\"COMPRESS-210_unix_time_zip_test.zip\");\n\n        try (ZipFile zipFile = ZipFile.builder().setFile(archive).get()) {\n            final Enumeration<ZipArchiveEntry> en = zipFile.getEntries();\n\n            // We expect EVERY entry of this ZIP file\n            // to contain extra field 0x5455.\n            while (en.hasMoreElements()) {\n\n                final ZipArchiveEntry zae = en.nextElement();\n                if (zae.isDirectory()) {\n                    continue;\n                }\n                final String name = zae.getName();\n                final int x = name.lastIndexOf('/');\n                final String yearString = name.substring(x + 1);\n                final int year;\n                try {\n                    year = Integer.parseInt(yearString);\n                } catch (final NumberFormatException nfe) {\n                    // setTime.sh, skip\n                    continue;\n                }\n\n                final X5455_ExtendedTimestamp xf = (X5455_ExtendedTimestamp) zae.getExtraField(X5455);\n                // The last-modified time java.util.zip read from the standard ZIP fields.\n                final Date rawZipModifiedDate = zae.getLastModifiedDate();\n                // The modify/access times this library read from the 0x5455 extended field.\n                final Date modifyDate = xf.getModifyJavaTime();\n\n                /*\n                 * We must distinguish three cases: - Java has read the extended time field itself and agrees with us (Java9 or Java8 and years prior to 2038) -\n                 * Java has read the extended time field but found a year >= 2038 (Java8) - Java hasn't read the extended time field at all (Java7- or early\n                 * Java8)\n                 */\n\n                final boolean zipTimeUsesExtendedTimestampCorrectly = rawZipModifiedDate.equals(modifyDate);\n                final boolean zipTimeUsesExtendedTimestampButUnsigned = year > 2037 && rawZipModifiedDate.getSeconds() == 1;\n                final boolean zipTimeUsesExtendedTimestamp = zipTimeUsesExtendedTimestampCorrectly || zipTimeUsesExtendedTimestampButUnsigned;\n\n                // When Java did not consult the extended field, its raw zip time is in local time and must be shifted to the expected offset.\n                final Date effectiveZipDate = zipTimeUsesExtendedTimestamp ? rawZipModifiedDate : adjustFromGMTToExpectedOffset(rawZipModifiedDate);\n                final Date accessDate = xf.getAccessJavaTime();\n\n                final String zipTime = DATE_FORMAT.format(effectiveZipDate);\n                final String modTime = DATE_FORMAT.format(modifyDate);\n                final String accTime = DATE_FORMAT.format(accessDate);\n\n                switch (year) {\n                case 2109:\n                    // All three timestamps have overflowed by 2109.\n                    if (!zipTimeUsesExtendedTimestamp) {\n                        assertEquals(\"1981-01-01/00:00:02 +0000\", zipTime);\n                    }\n                    break;\n                default:\n                    if (!zipTimeUsesExtendedTimestamp) {\n                        // X5455 time is good from epoch (1970) to 2037.\n                        // Zip time is good from 1980 to 2107.\n                        if (year < 1980) {\n                            assertEquals(\"1980-01-01/08:00:00 +0000\", zipTime);\n                        } else {\n                            assertEquals(year + \"-01-01/00:00:02 +0000\", zipTime);\n                        }\n                    }\n\n                    if (year < 2038) {\n                        assertEquals(year + \"-01-01/00:00:01 +0000\", modTime);\n                        assertEquals(year + \"-01-01/00:00:03 +0000\", accTime);\n                    }\n                    break;\n                }\n            }\n        }\n    }\n\n    @Test\n    void testWriteReadRoundtrip() throws IOException {\n        final File output = new File(tmpDir, \"write_rewrite.zip\");\n        final Calendar instance = Calendar.getInstance();\n        instance.clear();\n        instance.set(1997, 8, 24, 15, 10, 2);\n        final Date date = instance.getTime();\n        try (OutputStream out = Files.newOutputStream(output.toPath());\n                ZipArchiveOutputStream os = new ZipArchiveOutputStream(out)) {\n            final ZipArchiveEntry ze = new ZipArchiveEntry(\"foo\");\n            xf.setModifyJavaTime(date);\n            xf.setFlags((byte) 1);\n            ze.addExtraField(xf);\n            os.putArchiveEntry(ze);\n            os.closeArchiveEntry();\n        }\n\n        try (ZipFile zf = ZipFile.builder().setFile(output).get()) {\n            final ZipArchiveEntry ze = zf.getEntry(\"foo\");\n            final X5455_ExtendedTimestamp ext = (X5455_ExtendedTimestamp) ze.getExtraField(X5455);\n            assertNotNull(ext);\n            assertTrue(ext.isBit0_modifyTimePresent());\n            assertEquals(date, ext.getModifyJavaTime());\n        }\n    }\n}\n",
+  "last_error": "",
+  "last_java_path": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/commons-compress/manual/testsuites/X5455_ExtendedTimestampTest/X5455_ExtendedTimestampTest.java",
+  "initial_prompt": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `X5455_ExtendedTimestampTest.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-compress/src/test/java/org/apache/commons/compress/archivers/zip/X5455_ExtendedTimestampTest.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n",
+  "improvement_mode": "agent_improve_and_repair",
+  "file_prefix": "",
+  "project_id": "commons-compress",
+  "target_class": "org.apache.commons.compress.archivers.zip.X5455_ExtendedTimestamp",
+  "test_category": "manual_suite",
+  "test_id": "X5455_ExtendedTimestampTest",
+  "suite_class": "X5455_ExtendedTimestampTest",
+  "is_evosuite": false,
+  "scaffolding_java": null,
+  "original_java": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-compress/src/test/java/org/apache/commons/compress/archivers/zip/X5455_ExtendedTimestampTest.java",
+  "agent_sandbox": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/commons-compress/manual/testsuites/X5455_ExtendedTimestampTest",
+  "agent_compile_attempts": 1,
+  "skill_names": [
+    "compile-check",
+    "repair-loop"
+  ],
+  "skill_paths": [
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/compile-check/SKILL.md",
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/repair-loop/SKILL.md"
+  ],
+  "provider_model": "claude-opus-4-8",
+  "requested_provider_model": "claude-opus-4-8",
+  "actual_provider_model": "claude-opus-4-8",
+  "runtime_observability": {
+    "rate_limit_events": [],
+    "rate_limit_hit": false,
+    "rate_limit_warned": false,
+    "token_usage": {
+      "usage": {
+        "input_tokens": 2169,
+        "cache_creation_input_tokens": 44273,
+        "cache_read_input_tokens": 204426,
+        "output_tokens": 15128,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 44273
+        },
+        "inference_geo": "global",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 151,
+            "cache_read_input_tokens": 61450,
+            "cache_creation_input_tokens": 150,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 150,
+              "ephemeral_1h_input_tokens": 0
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 597,
+          "outputTokens": 26,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000727,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 2169,
+          "outputTokens": 15128,
+          "cacheReadInputTokens": 204426,
+          "cacheCreationInputTokens": 44273,
+          "webSearchRequests": 0,
+          "costUSD": 0.76796425,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000
+        }
+      },
+      "total_cost_usd": 0.76869125,
+      "num_turns": 7,
+      "duration_ms": 143058,
+      "duration_api_ms": 143260
+    },
+    "context_usage": {
+      "categories": [
+        {
+          "name": "System prompt",
+          "tokens": 2315,
+          "color": "promptBorder"
+        },
+        {
+          "name": "System tools",
+          "tokens": 15164,
+          "color": "inactive"
+        },
+        {
+          "name": "System tools (deferred)",
+          "tokens": 14258,
+          "color": "inactive",
+          "isDeferred": true
+        },
+        {
+          "name": "Skills",
+          "tokens": 1822,
+          "color": "warning"
+        },
+        {
+          "name": "Messages",
+          "tokens": 42417,
+          "color": "purple_FOR_SUBAGENTS_ONLY"
+        },
+        {
+          "name": "Free space",
+          "tokens": 938282,
+          "color": "promptBorder"
+        }
+      ],
+      "totalTokens": 61602,
+      "maxTokens": 1000000,
+      "rawMaxTokens": 1000000,
+      "autocompactSource": "auto",
+      "percentage": 6,
+      "gridRows": [
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "System prompt",
+            "tokens": 2315,
+            "percentage": 0,
+            "squareFullness": 0.46299999999999997
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 15164,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 15164,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 15164,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "warning",
+            "isFilled": true,
+            "categoryName": "Skills",
+            "tokens": 1822,
+            "percentage": 0,
+            "squareFullness": 0.3644
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 42417,
+            "percentage": 4,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 42417,
+            "percentage": 4,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 42417,
+            "percentage": 4,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 42417,
+            "percentage": 4,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 42417,
+            "percentage": 4,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 42417,
+            "percentage": 4,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 42417,
+            "percentage": 4,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 42417,
+            "percentage": 4,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 938282,
+            "percentage": 94,
+            "squareFullness": 1
+          }
+        ]
+      ],
+      "model": "claude-opus-4-8",
+      "memoryFiles": [],
+      "mcpTools": [],
+      "agents": [],
+      "slashCommands": {
+        "totalCommands": 15,
+        "includedCommands": 15,
+        "tokens": 915
+      },
+      "skills": {
+        "totalSkills": 15,
+        "includedSkills": 15,
+        "tokens": 1822,
+        "skillFrontmatter": [
+          {
+            "name": "compile-check",
+            "source": "projectSettings",
+            "tokens": 194
+          },
+          {
+            "name": "repair-loop",
+            "source": "projectSettings",
+            "tokens": 274
+          },
+          {
+            "name": "deep-research",
+            "source": "built-in",
+            "tokens": 161
+          },
+          {
+            "name": "update-config",
+            "source": "built-in",
+            "tokens": 235
+          },
+          {
+            "name": "keybindings-help",
+            "source": "built-in",
+            "tokens": 82
+          },
+          {
+            "name": "verify",
+            "source": "built-in",
+            "tokens": 86
+          },
+          {
+            "name": "code-review",
+            "source": "built-in",
+            "tokens": 119
+          },
+          {
+            "name": "simplify",
+            "source": "built-in",
+            "tokens": 62
+          },
+          {
+            "name": "fewer-permission-prompts",
+            "source": "built-in",
+            "tokens": 63
+          },
+          {
+            "name": "loop",
+            "source": "built-in",
+            "tokens": 113
+          },
+          {
+            "name": "claude-api",
+            "source": "built-in",
+            "tokens": 252
+          },
+          {
+            "name": "run",
+            "source": "built-in",
+            "tokens": 122
+          },
+          {
+            "name": "init",
+            "source": "built-in",
+            "tokens": 21
+          },
+          {
+            "name": "review",
+            "source": "built-in",
+            "tokens": 9
+          },
+          {
+            "name": "security-review",
+            "source": "built-in",
+            "tokens": 29
+          }
+        ]
+      },
+      "autoCompactThreshold": 967000,
+      "isAutoCompactEnabled": true,
+      "messageBreakdown": {
+        "toolCallTokens": 6929,
+        "toolResultTokens": 14918,
+        "attachmentTokens": 1633,
+        "assistantMessageTokens": 3117,
+        "userMessageTokens": 848,
+        "redirectedContextTokens": 0,
+        "unattributedTokens": 14972,
+        "toolCallsByType": [
+          {
+            "name": "Read",
+            "callTokens": 153,
+            "resultTokens": 14728
+          },
+          {
+            "name": "Write",
+            "callTokens": 6697,
+            "resultTokens": 102
+          },
+          {
+            "name": "Bash",
+            "callTokens": 46,
+            "resultTokens": 60
+          },
+          {
+            "name": "Skill",
+            "callTokens": 33,
+            "resultTokens": 28
+          }
+        ],
+        "attachmentsByType": [
+          {
+            "name": "skill_listing",
+            "tokens": 1466
+          },
+          {
+            "name": "deferred_tools_delta",
+            "tokens": 155
+          },
+          {
+            "name": "command_permissions",
+            "tokens": 12
+          }
+        ]
+      },
+      "apiUsage": {
+        "input_tokens": 2,
+        "output_tokens": 151,
+        "cache_creation_input_tokens": 150,
+        "cache_read_input_tokens": 61450
+      }
+    },
+    "auth_used": "api_key",
+    "auth_attempts_available": [
+      "api_key"
+    ]
+  }
+}

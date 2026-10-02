@@ -1,0 +1,847 @@
+[3] AGENT
+I’ll use the compile-check skill as required, so I’m reading its instructions first. Then I’ll inspect only the original test, the CUT, and files in the working directory needed to produce the refactored test.
+
+[4] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[5] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[6] COMMAND in_progress
+/bin/zsh -lc pwd
+
+[7] COMMAND completed
+/bin/zsh -lc pwd
+--- output ---
+/Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/jackson-annotations/auto/testsuites/JsonSetter_ESTest
+
+
+[8] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[9] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[10] AGENT
+I’ve got the compile workflow constraints. Next I’m reading the EvoSuite test and the `JsonSetter` API so the refactor preserves the exact calls and assertions while making the generated code easier to follow.
+
+[11] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/jackson-annotations/src/main/java/com/fasterxml/jackson/annotation/JsonSetter.java"
+
+[12] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/data/baseline/jackson-annotations/_evosuite_raw/com/fasterxml/jackson/annotation/JsonSetter_ESTest.java"
+
+[13] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/jackson-annotations/src/main/java/com/fasterxml/jackson/annotation/JsonSetter.java"
+--- output ---
+package com.fasterxml.jackson.annotation;
+
+import java.lang.annotation.*;
+
+/**
+ * Annotation that can be used to define a non-static,
+ * single-argument method to be used as a "setter" for a logical property
+ * as an alternative to recommended
+ * {@link JsonProperty} annotation;
+ * or (as of 2.9 and later), specify additional aspects of the
+ * assigning property a value during serialization.
+ */
+@Target({ElementType.ANNOTATION_TYPE, ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER})
+// ^^^ allowed on Fields, (constructor) parameters since 2.9
+@Retention(RetentionPolicy.RUNTIME)
+@JacksonAnnotation
+public @interface JsonSetter
+{
+    /**
+     * Optional default argument that defines logical property this
+     * method is used to modify ("set"); this is the property
+     * name used in JSON content.
+     */
+    String value() default "";
+
+    /**
+     * Specifies action to take when input contains explicit `null` value
+     * (if format has one).
+     * Default action, in absence of any explicit configuration,
+     * is usually {@link Nulls#SET}, meaning that the `null` is set as
+     * value using setter.
+     *<p>
+     * NOTE: is not usually used in case property value is missing, unless
+     * data format specifies that there is defaulting which would result
+     * in an explicit null assignment.
+     */
+    Nulls nulls() default Nulls.DEFAULT;
+
+    /**
+     * Specifies action to take when input to match into content value
+     * (of a {@link java.util.Collection}, {@link java.util.Map}, array,
+     * or referential value) contains explicit `null` value
+     * (if format has one) to bind.
+     * Default action, in absence of any explicit configuration,
+     * is usually {@link Nulls#SET}, meaning that the `null` is included as usual.
+     */
+    Nulls contentNulls() default Nulls.DEFAULT;
+
+    /*
+    /**********************************************************
+    /* Value class used to enclose information, allow for
+    /* merging of layered configuration settings.
+    /**********************************************************
+     */
+
+    /**
+     * Helper class used to contain information from a single {@link JsonSetter}
+     * annotation, as well as to provide possible overrides from non-annotation sources.
+     *
+     * @since 2.9
+     */
+    public static class Value
+        implements JacksonAnnotationValue<JsonSetter>,
+            java.io.Serializable
+    {
+        private static final long serialVersionUID = 1L;
+
+        private final Nulls _nulls;
+
+        private final Nulls _contentNulls;
+
+        /**
+         * Default instance used in place of "default settings".
+         */
+        protected final static Value EMPTY = new Value(Nulls.DEFAULT, Nulls.DEFAULT);
+
+        protected Value(Nulls nulls, Nulls contentNulls) {
+            _nulls = nulls;
+            _contentNulls = contentNulls;
+        }
+
+        @Override
+        public Class<JsonSetter> valueFor() {
+            return JsonSetter.class;
+        }
+
+        // for JDK serialization
+        protected Object readResolve() {
+            if (_empty(_nulls, _contentNulls)) {
+                return EMPTY;
+            }
+            return this;
+        }
+
+        public static Value from(JsonSetter src) {
+            if (src == null) {
+                return EMPTY;
+            }
+            return construct(src.nulls(), src.contentNulls());
+        }
+
+        /**
+         * Factory method that may be used (although is NOT the recommended way)
+         * to construct an instance from a full set of properties. Most users would
+         * be better off starting by {@link #empty()} instance and using `withXxx`/`withoutXxx`
+         * methods, as this factory method may need to be changed if new properties
+         * are added in {@link JsonIgnoreProperties} annotation.
+         */
+        public static Value construct(Nulls nulls, Nulls contentNulls) {
+            if (nulls == null) {
+                nulls = Nulls.DEFAULT;
+            }
+            if (contentNulls == null) {
+                contentNulls = Nulls.DEFAULT;
+            }
+            if (_empty(nulls, contentNulls)) {
+                return EMPTY;
+            }
+            return new Value(nulls, contentNulls);
+        }
+
+        /**
+         * Accessor for default instances which has "empty" settings; that is:
+         *<ul>
+         * <li>Null handling using global defaults, {@link Nulls#DEFAULT}.
+         *  </li>
+         * </ul>
+         */
+        public static Value empty() {
+            return EMPTY;
+        }
+
+        /**
+         * Helper method that will try to combine values from two {@link Value}
+         * instances, using one as base settings, and the other as overrides
+         * to use instead of base values when defined; base values are only
+         * use if override does not specify a value (matching value is null
+         * or logically missing).
+         * Note that one or both of value instances may be `null`, directly;
+         * if both are `null`, result will also be `null`; otherwise never null.
+         */
+        public static Value merge(Value base, Value overrides)
+        {
+            return (base == null) ? overrides
+                    : base.withOverrides(overrides);
+        }
+
+        public static Value forValueNulls(Nulls nulls) {
+            return construct(nulls, Nulls.DEFAULT);
+        }
+
+        public static Value forValueNulls(Nulls nulls, Nulls contentNulls) {
+            return construct(nulls, contentNulls);
+        }
+
+        public static Value forContentNulls(Nulls nulls) {
+            return construct(Nulls.DEFAULT, nulls);
+        }
+
+        /**
+         * Mutant factory method that merges values of this value with given override
+         * values, so that any explicitly defined inclusion in overrides has precedence over
+         * settings of this value instance. If no overrides exist will return <code>this</code>
+         * instance; otherwise new {@link Value} with changed inclusion values.
+         */
+        public Value withOverrides(Value overrides) {
+            if ((overrides == null) || (overrides == EMPTY)) {
+                return this;
+            }
+            Nulls nulls = overrides._nulls;
+            Nulls contentNulls = overrides._contentNulls;
+
+            if (nulls == Nulls.DEFAULT) {
+                nulls = _nulls;
+            }
+            if (contentNulls == Nulls.DEFAULT) {
+                contentNulls = _contentNulls;
+            }
+
+            if ((nulls == _nulls) && (contentNulls == _contentNulls)) {
+                return this;
+            }
+            return construct(nulls, contentNulls);
+        }
+
+        public Value withValueNulls(Nulls nulls) {
+            if (nulls == null) {
+                nulls = Nulls.DEFAULT;
+            }
+            if (nulls == _nulls) {
+                return this;
+            }
+            return construct(nulls, _contentNulls);
+        }
+
+        public Value withValueNulls(Nulls valueNulls, Nulls contentNulls) {
+            if (valueNulls == null) {
+                valueNulls = Nulls.DEFAULT;
+            }
+            if (contentNulls == null) {
+                contentNulls = Nulls.DEFAULT;
+            }
+            if ((valueNulls == _nulls) && (contentNulls == _contentNulls)) {
+                return this;
+            }
+            return construct(valueNulls, contentNulls);
+        }
+
+        public Value withContentNulls(Nulls nulls) {
+            if (nulls == null) {
+                nulls = Nulls.DEFAULT;
+            }
+            if (nulls == _contentNulls) {
+                return this;
+            }
+            return construct(_nulls, nulls);
+        }
+
+        public Nulls getValueNulls() { return _nulls; }
+        public Nulls getContentNulls() { return _contentNulls; }
+
+        /**
+         * Returns same as {@link #getValueNulls()} unless value would be
+         * {@link Nulls#DEFAULT} in which case `null` is returned.
+         */
+        public Nulls nonDefaultValueNulls() {
+            return (_nulls == Nulls.DEFAULT) ? null : _nulls;
+        }
+
+        /**
+         * Returns same as {@link #getContentNulls()} unless value would be
+         * {@link Nulls#DEFAULT} in which case `null` is returned.
+         */
+        public Nulls nonDefaultContentNulls() {
+            return (_contentNulls == Nulls.DEFAULT) ? null : _contentNulls;
+        }
+
+        /*
+        /**********************************************************
+        /* Std method overrides
+        /**********************************************************
+         */
+
+        @Override
+        public String toString() {
+            return String.format("JsonSetter.Value(valueNulls=%s,contentNulls=%s)",
+                    _nulls, _contentNulls);
+        }
+
+        @Override
+        public int hashCode() {
+            return _nulls.ordinal() + (_contentNulls.ordinal() << 2);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o == this) return true;
+            if (o == null) return false;
+            if (o.getClass() == getClass()) {
+                Value other = (Value) o;
+
+
+[14] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/data/baseline/jackson-annotations/_evosuite_raw/com/fasterxml/jackson/annotation/JsonSetter_ESTest.java"
+--- output ---
+/*
+ * This file was automatically generated by EvoSuite
+ * Tue Jun 16 06:10:45 GMT 2026
+ */
+
+package com.fasterxml.jackson.annotation;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.shaded.org.mockito.Mockito.*;
+import com.fasterxml.jackson.annotation.JsonSetter;
+import com.fasterxml.jackson.annotation.Nulls;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.evosuite.runtime.ViolatedAssumptionAnswer;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class) @EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false) 
+public class JsonSetter_ESTest extends JsonSetter_ESTest_scaffolding {
+
+  @Test(timeout = 4000)
+  public void test00()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = new JsonSetter.Value(nulls0, nulls0);
+      boolean boolean0 = jsonSetter_Value1.equals(jsonSetter_Value0);
+      assertTrue(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test01()  throws Throwable  {
+      Nulls nulls0 = Nulls.AS_EMPTY;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter jsonSetter0 = mock(JsonSetter.class, CALLS_REAL_METHODS);
+      doReturn((Nulls) null).when(jsonSetter0).contentNulls();
+      doReturn((Nulls) null).when(jsonSetter0).nulls();
+      JsonSetter.Value jsonSetter_Value1 = JsonSetter.Value.from(jsonSetter0);
+      boolean boolean0 = jsonSetter_Value0.equals(jsonSetter_Value1);
+      assertEquals(Nulls.AS_EMPTY, jsonSetter_Value0.getContentNulls());
+      assertEquals(Nulls.AS_EMPTY, jsonSetter_Value0.getValueNulls());
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test02()  throws Throwable  {
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.EMPTY;
+      boolean boolean0 = jsonSetter_Value0.equals((Object) null);
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test03()  throws Throwable  {
+      Nulls nulls0 = Nulls.DEFAULT;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.forContentNulls(nulls0);
+      boolean boolean0 = jsonSetter_Value0.equals(jsonSetter_Value0);
+      assertTrue(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test04()  throws Throwable  {
+      Nulls nulls0 = Nulls.DEFAULT;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.forContentNulls(nulls0);
+      Object object0 = new Object();
+      boolean boolean0 = jsonSetter_Value0.equals(object0);
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test05()  throws Throwable  {
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.EMPTY;
+      jsonSetter_Value0.nonDefaultContentNulls();
+  }
+
+  @Test(timeout = 4000)
+  public void test06()  throws Throwable  {
+      Nulls nulls0 = Nulls.AS_EMPTY;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      jsonSetter_Value0.nonDefaultContentNulls();
+      assertEquals(Nulls.AS_EMPTY, jsonSetter_Value0.getContentNulls());
+      assertEquals(Nulls.AS_EMPTY, jsonSetter_Value0.getValueNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test07()  throws Throwable  {
+      Nulls nulls0 = Nulls.DEFAULT;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.forContentNulls(nulls0);
+      jsonSetter_Value0.nonDefaultValueNulls();
+  }
+
+  @Test(timeout = 4000)
+  public void test08()  throws Throwable  {
+      Nulls nulls0 = Nulls.AS_EMPTY;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.forValueNulls(nulls0, nulls0);
+      jsonSetter_Value0.nonDefaultValueNulls();
+      assertEquals(Nulls.AS_EMPTY, jsonSetter_Value0.getValueNulls());
+      assertEquals(Nulls.AS_EMPTY, jsonSetter_Value0.getContentNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test09()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = jsonSetter_Value0.withContentNulls((Nulls) null);
+      assertEquals(Nulls.FAIL, jsonSetter_Value0.getContentNulls());
+      assertEquals(Nulls.DEFAULT, jsonSetter_Value1.getContentNulls());
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getValueNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test10()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = jsonSetter_Value0.withContentNulls(nulls0);
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getValueNulls());
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getContentNulls());
+      assertSame(jsonSetter_Value1, jsonSetter_Value0);
+  }
+
+  @Test(timeout = 4000)
+  public void test11()  throws Throwable  {
+      JsonSetter jsonSetter0 = mock(JsonSetter.class, CALLS_REAL_METHODS);
+      doReturn((Nulls) null).when(jsonSetter0).contentNulls();
+      doReturn((Nulls) null).when(jsonSetter0).nulls();
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.from(jsonSetter0);
+      Nulls nulls0 = Nulls.AS_EMPTY;
+      JsonSetter.Value jsonSetter_Value1 = jsonSetter_Value0.withValueNulls(nulls0, nulls0);
+      assertEquals(Nulls.AS_EMPTY, jsonSetter_Value1.getValueNulls());
+      assertEquals(Nulls.AS_EMPTY, jsonSetter_Value1.getContentNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test12()  throws Throwable  {
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.empty();
+      JsonSetter.Value jsonSetter_Value1 = jsonSetter_Value0.withValueNulls((Nulls) null, (Nulls) null);
+      assertEquals(Nulls.DEFAULT, jsonSetter_Value1.getValueNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test13()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = jsonSetter_Value0.withValueNulls((Nulls) null);
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getContentNulls());
+      assertEquals(Nulls.DEFAULT, jsonSetter_Value1.getValueNulls());
+      assertEquals(Nulls.FAIL, jsonSetter_Value0.getValueNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test14()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = jsonSetter_Value0.withValueNulls(nulls0);
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getContentNulls());
+      assertSame(jsonSetter_Value1, jsonSetter_Value0);
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getValueNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test15()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = JsonSetter.Value.EMPTY;
+      JsonSetter.Value jsonSetter_Value2 = jsonSetter_Value1.withOverrides(jsonSetter_Value0);
+      assertEquals(Nulls.FAIL, jsonSetter_Value2.getValueNulls());
+      assertEquals(Nulls.FAIL, jsonSetter_Value2.getContentNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test16()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = JsonSetter.Value.forValueNulls(nulls0);
+      JsonSetter.Value jsonSetter_Value2 = JsonSetter.Value.merge(jsonSetter_Value0, jsonSetter_Value1);
+      assertFalse(jsonSetter_Value1.equals((Object)jsonSetter_Value0));
+      assertSame(jsonSetter_Value2, jsonSetter_Value0);
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getValueNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test17()  throws Throwable  {
+      Nulls nulls0 = Nulls.DEFAULT;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.forContentNulls(nulls0);
+      Nulls nulls1 = Nulls.SET;
+      JsonSetter.Value jsonSetter_Value1 = jsonSetter_Value0.withValueNulls(nulls0, nulls1);
+      JsonSetter.Value jsonSetter_Value2 = jsonSetter_Value0.withOverrides(jsonSetter_Value1);
+      assertEquals(Nulls.SET, jsonSetter_Value2.getContentNulls());
+      assertEquals(Nulls.DEFAULT, jsonSetter_Value2.getValueNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test18()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = JsonSetter.Value.EMPTY;
+      JsonSetter.Value jsonSetter_Value2 = jsonSetter_Value0.withOverrides(jsonSetter_Value1);
+      assertEquals(Nulls.FAIL, jsonSetter_Value2.getContentNulls());
+      assertEquals(Nulls.FAIL, jsonSetter_Value2.getValueNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test19()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = jsonSetter_Value0.withOverrides((JsonSetter.Value) null);
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getValueNulls());
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getContentNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test20()  throws Throwable  {
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.from((JsonSetter) null);
+      assertEquals(Nulls.DEFAULT, jsonSetter_Value0.getValueNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test21()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = (JsonSetter.Value)jsonSetter_Value0.readResolve();
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getValueNulls());
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getContentNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test22()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.construct(nulls0, nulls0);
+      String string0 = jsonSetter_Value0.toString();
+      assertEquals("JsonSetter.Value(valueNulls=FAIL,contentNulls=FAIL)", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test23()  throws Throwable  {
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.empty();
+      JsonSetter.Value jsonSetter_Value1 = (JsonSetter.Value)jsonSetter_Value0.readResolve();
+      assertEquals(Nulls.DEFAULT, jsonSetter_Value1.getContentNulls());
+  }
+
+  @Test(timeout = 4000)
+  public void test24()  throws Throwable  {
+      JsonSetter jsonSetter0 = mock(JsonSetter.class, CALLS_REAL_METHODS);
+      doReturn((Nulls) null).when(jsonSetter0).contentNulls();
+      doReturn((Nulls) null).when(jsonSetter0).nulls();
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.from(jsonSetter0);
+      Nulls nulls0 = jsonSetter_Value0.getContentNulls();
+      assertEquals(Nulls.DEFAULT, nulls0);
+  }
+
+  @Test(timeout = 4000)
+  public void test25()  throws Throwable  {
+      Nulls nulls0 = Nulls.FAIL;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.forValueNulls(nulls0, nulls0);
+      JsonSetter.Value jsonSetter_Value1 = JsonSetter.Value.merge((JsonSetter.Value) null, jsonSetter_Value0);
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getContentNulls());
+      assertEquals(Nulls.FAIL, jsonSetter_Value1.getValueNulls());
+      assertNotNull(jsonSetter_Value1);
+  }
+
+  @Test(timeout = 4000)
+  public void test26()  throws Throwable  {
+
+
+[15] COMMAND in_progress
+/bin/zsh -lc 'ls -la'
+
+[16] COMMAND completed
+/bin/zsh -lc 'ls -la'
+--- output ---
+total 8
+drwxr-xr-x  5 tenghaha  staff   160 Jun 21 10:32 .
+drwxr-xr-x  9 tenghaha  staff   288 Jun 21 10:31 ..
+lrwxr-xr-x  1 tenghaha  staff    49 Jun 21 10:32 .agents -> /Users/tenghaha/Desktop/Codex_Improvement/.agents
+-rwxr-xr-x  1 tenghaha  staff  2053 Jun 21 10:32 compile.sh
+drwxr-xr-x  2 tenghaha  staff    64 Jun 21 10:32 test-classes
+
+
+[17] AGENT
+The original test is a compact set of `JsonSetter.Value` factory and mutator checks. I need the remaining test methods and the tail of the CUT before editing, then I’ll write the same behavior with clearer names and grouping while keeping the EvoSuite runner/import setup intact.
+
+[18] COMMAND in_progress
+/bin/zsh -lc "sed -n '261,520p' /Users/tenghaha/Desktop/Codex_Improvement/data/baseline/jackson-annotations/_evosuite_raw/com/fasterxml/jackson/annotation/JsonSetter_ESTest.java"
+
+[19] COMMAND completed
+/bin/zsh -lc "sed -n '261,520p' /Users/tenghaha/Desktop/Codex_Improvement/data/baseline/jackson-annotations/_evosuite_raw/com/fasterxml/jackson/annotation/JsonSetter_ESTest.java"
+--- output ---
+      Nulls nulls0 = Nulls.DEFAULT;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.forContentNulls(nulls0);
+      Class<JsonSetter> class0 = jsonSetter_Value0.valueFor();
+      assertEquals(9729, class0.getModifiers());
+  }
+
+  @Test(timeout = 4000)
+  public void test27()  throws Throwable  {
+      Nulls nulls0 = Nulls.DEFAULT;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.forContentNulls(nulls0);
+      Nulls nulls1 = jsonSetter_Value0.getValueNulls();
+      assertEquals(Nulls.DEFAULT, nulls1);
+  }
+
+  @Test(timeout = 4000)
+  public void test28()  throws Throwable  {
+      Nulls nulls0 = Nulls.AS_EMPTY;
+      JsonSetter.Value jsonSetter_Value0 = JsonSetter.Value.forContentNulls(nulls0);
+      JsonSetter.Value jsonSetter_Value1 = JsonSetter.Value.EMPTY;
+      boolean boolean0 = jsonSetter_Value1.equals(jsonSetter_Value0);
+      assertEquals(Nulls.DEFAULT, jsonSetter_Value0.getValueNulls());
+      assertFalse(boolean0);
+  }
+}
+
+
+[20] COMMAND in_progress
+/bin/zsh -lc "sed -n '261,420p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/jackson-annotations/src/main/java/com/fasterxml/jackson/annotation/JsonSetter.java"
+
+[21] COMMAND completed
+/bin/zsh -lc "sed -n '261,420p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/jackson-annotations/src/main/java/com/fasterxml/jackson/annotation/JsonSetter.java"
+--- output ---
+                return (other._nulls == _nulls)
+                        && (other._contentNulls == _contentNulls);
+            }
+            return false;
+        }
+
+        /*
+        /**********************************************************
+        /* Internal methods
+        /**********************************************************
+         */
+
+        private static boolean _empty(Nulls nulls, Nulls contentNulls) {
+            return (nulls == Nulls.DEFAULT)
+                    && (contentNulls == Nulls.DEFAULT);
+        }
+    }
+}
+
+
+[22] COMMAND in_progress
+/bin/zsh -lc 'find . -maxdepth 2 -type f -o -type l'
+
+[23] COMMAND completed
+/bin/zsh -lc 'find . -maxdepth 2 -type f -o -type l'
+--- output ---
+./compile.sh
+./.agents
+
+
+[24] AGENT
+I’m going to create the improved `JsonSetter_ESTest.java` in the working directory now. The changes are deliberately conservative: clearer test names and local variable names, with the same factory/mutator calls, Mockito setup calls, and assertions.
+
+[25] FILE_CHANGE in_progress
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/jackson-annotations/auto/testsuites/JsonSetter_ESTest/JsonSetter_ESTest.java
+
+[26] FILE_CHANGE completed
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/jackson-annotations/auto/testsuites/JsonSetter_ESTest/JsonSetter_ESTest.java
+
+[27] AGENT
+The refactored test file is in place. I’m running the required compile check now; if javac reports anything, I’ll repair only the reported lines and re-check.
+
+[28] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[29] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[30] AGENT
+Refactored `JsonSetter_ESTest.java` for understandability and verified it with `bash compile.sh`.
+
+`COMPILE_OK`

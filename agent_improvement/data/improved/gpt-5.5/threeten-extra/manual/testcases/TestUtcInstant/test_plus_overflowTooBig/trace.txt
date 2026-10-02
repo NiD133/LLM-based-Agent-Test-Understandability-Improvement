@@ -1,0 +1,592 @@
+[3] AGENT
+I’ll use the required `compile-check` workflow, and `repair-loop` only if compilation fails. First I’m reading the skill instructions plus the CUT and original test so the refactor keeps the exact behavior.
+
+[4] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[5] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[6] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[7] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[8] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/data/original/threeten-extra/manual/testcases/TestUtcInstant/TestUtcInstant_test_plus_overflowTooBig.java"
+
+[9] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/data/original/threeten-extra/manual/testcases/TestUtcInstant/TestUtcInstant_test_plus_overflowTooBig.java"
+--- output ---
+package org.threeten.extra.scale;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
+import java.time.DateTimeException;
+import java.time.Duration;
+import java.time.Instant;
+import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import com.google.common.testing.EqualsTester;
+
+public class TestUtcInstant_test_plus_overflowTooBig {
+
+    private static final long MJD_1972_12_30 = 41681;
+
+    private static final long MJD_1972_12_31_LEAP = 41682;
+
+    private static final long MJD_1973_01_01 = 41683;
+
+    private static final long MJD_1973_12_31_LEAP = MJD_1972_12_31_LEAP + 365;
+
+    private static final long SECS_PER_DAY = 24L * 60 * 60;
+
+    private static final long NANOS_PER_SEC = 1000000000L;
+
+    private static final long NANOS_PER_DAY = SECS_PER_DAY * NANOS_PER_SEC;
+
+    private static final long NANOS_PER_LEAP_DAY = (SECS_PER_DAY + 1) * NANOS_PER_SEC;
+
+    public static Object[][] data_badParse() {
+        return new Object[][] { { "" }, { "A" }, // bad month
+        { "2012-13-01T00:00:00Z" } };
+    }
+
+    //-----------------------------------------------------------------------
+    @Nullable
+    public static Object[][] data_withModifiedJulianDay() {
+        return new @Nullable Object[][] { { 0L, 12345L, 1L, 1L, 12345L }, { 0L, 12345L, -1L, -1L, 12345L }, { 7L, 12345L, 2L, 2L, 12345L }, { 7L, 12345L, -2L, -2L, 12345L }, { -99L, 12345L, 3L, 3L, 12345L }, { -99L, 12345L, -3L, -3L, 12345L }, { MJD_1972_12_31_LEAP, NANOS_PER_DAY, MJD_1972_12_30, null, 0L }, { MJD_1972_12_31_LEAP, NANOS_PER_DAY, MJD_1972_12_31_LEAP, MJD_1972_12_31_LEAP, NANOS_PER_DAY }, { MJD_1972_12_31_LEAP, NANOS_PER_DAY, MJD_1973_01_01, null, 0L }, { MJD_1972_12_31_LEAP, NANOS_PER_DAY, MJD_1973_12_31_LEAP, MJD_1973_12_31_LEAP, NANOS_PER_DAY } };
+    }
+
+    //-----------------------------------------------------------------------
+    @Nullable
+    public static Object[][] data_withNanoOfDay() {
+        return new @Nullable Object[][] { { 0L, 12345L, 1L, 0L, 1L }, { 0L, 12345L, -1L, null, 0L }, { 7L, 12345L, 2L, 7L, 2L }, { -99L, 12345L, 3L, -99L, 3L }, { MJD_1972_12_30, NANOS_PER_DAY - 1, NANOS_PER_DAY - 1, MJD_1972_12_30, NANOS_PER_DAY - 1 }, { MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1, NANOS_PER_DAY - 1, MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1 }, { MJD_1973_01_01, NANOS_PER_DAY - 1, NANOS_PER_DAY - 1, MJD_1973_01_01, NANOS_PER_DAY - 1 }, { MJD_1972_12_30, NANOS_PER_DAY - 1, NANOS_PER_DAY, null, 0L }, { MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1, NANOS_PER_DAY, MJD_1972_12_31_LEAP, NANOS_PER_DAY }, { MJD_1973_01_01, NANOS_PER_DAY - 1, NANOS_PER_DAY, null, 0L }, { MJD_1972_12_30, NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY - 1, null, 0L }, { MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY - 1, MJD_1972_12_31_LEAP, NANOS_PER_LEAP_DAY - 1 }, { MJD_1973_01_01, NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY - 1, null, 0L }, { MJD_1972_12_30, NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY, null, 0L }, { MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY, null, 0L }, { MJD_1973_01_01, NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY, null, 0L } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_plus() {
+        return new Object[][] { { 0, 0, -2 * SECS_PER_DAY, 5, -2, 5 }, { 0, 0, -1 * SECS_PER_DAY, 1, -1, 1 }, { 0, 0, -1 * SECS_PER_DAY, 0, -1, 0 }, { 0, 0, 0, -2, -1, NANOS_PER_DAY - 2 }, { 0, 0, 0, -1, -1, NANOS_PER_DAY - 1 }, { 0, 0, 0, 0, 0, 0 }, { 0, 0, 0, 1, 0, 1 }, { 0, 0, 0, 2, 0, 2 }, { 0, 0, 1, 0, 0, 1 * NANOS_PER_SEC }, { 0, 0, 2, 0, 0, 2 * NANOS_PER_SEC }, { 0, 0, 3, 333333333, 0, 3 * NANOS_PER_SEC + 333333333 }, { 0, 0, 1 * SECS_PER_DAY, 0, 1, 0 }, { 0, 0, 1 * SECS_PER_DAY, 1, 1, 1 }, { 0, 0, 2 * SECS_PER_DAY, 5, 2, 5 }, { 1, 0, -2 * SECS_PER_DAY, 5, -1, 5 }, { 1, 0, -1 * SECS_PER_DAY, 1, 0, 1 }, { 1, 0, -1 * SECS_PER_DAY, 0, 0, 0 }, { 1, 0, 0, -2, 0, NANOS_PER_DAY - 2 }, { 1, 0, 0, -1, 0, NANOS_PER_DAY - 1 }, { 1, 0, 0, 0, 1, 0 }, { 1, 0, 0, 1, 1, 1 }, { 1, 0, 0, 2, 1, 2 }, { 1, 0, 1, 0, 1, 1 * NANOS_PER_SEC }, { 1, 0, 2, 0, 1, 2 * NANOS_PER_SEC }, { 1, 0, 3, 333333333, 1, 3 * NANOS_PER_SEC + 333333333 }, { 1, 0, 1 * SECS_PER_DAY, 0, 2, 0 }, { 1, 0, 1 * SECS_PER_DAY, 1, 2, 1 }, { 1, 0, 2 * SECS_PER_DAY, 5, 3, 5 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_minus() {
+        return new Object[][] { { 0, 0, 2 * SECS_PER_DAY, -5, -2, 5 }, { 0, 0, 1 * SECS_PER_DAY, -1, -1, 1 }, { 0, 0, 1 * SECS_PER_DAY, 0, -1, 0 }, { 0, 0, 0, 2, -1, NANOS_PER_DAY - 2 }, { 0, 0, 0, 1, -1, NANOS_PER_DAY - 1 }, { 0, 0, 0, 0, 0, 0 }, { 0, 0, 0, -1, 0, 1 }, { 0, 0, 0, -2, 0, 2 }, { 0, 0, -1, 0, 0, 1 * NANOS_PER_SEC }, { 0, 0, -2, 0, 0, 2 * NANOS_PER_SEC }, { 0, 0, -3, -333333333, 0, 3 * NANOS_PER_SEC + 333333333 }, { 0, 0, -1 * SECS_PER_DAY, 0, 1, 0 }, { 0, 0, -1 * SECS_PER_DAY, -1, 1, 1 }, { 0, 0, -2 * SECS_PER_DAY, -5, 2, 5 }, { 1, 0, 2 * SECS_PER_DAY, -5, -1, 5 }, { 1, 0, 1 * SECS_PER_DAY, -1, 0, 1 }, { 1, 0, 1 * SECS_PER_DAY, 0, 0, 0 }, { 1, 0, 0, 2, 0, NANOS_PER_DAY - 2 }, { 1, 0, 0, 1, 0, NANOS_PER_DAY - 1 }, { 1, 0, 0, 0, 1, 0 }, { 1, 0, 0, -1, 1, 1 }, { 1, 0, 0, -2, 1, 2 }, { 1, 0, -1, 0, 1, 1 * NANOS_PER_SEC }, { 1, 0, -2, 0, 1, 2 * NANOS_PER_SEC }, { 1, 0, -3, -333333333, 1, 3 * NANOS_PER_SEC + 333333333 }, { 1, 0, -1 * SECS_PER_DAY, 0, 2, 0 }, { 1, 0, -1 * SECS_PER_DAY, -1, 2, 1 }, { 1, 0, -2 * SECS_PER_DAY, -5, 3, 5 } };
+    }
+
+    void doTest_comparisons_UtcInstant(UtcInstant... instants) {
+        for (int i = 0; i < instants.length; i++) {
+            UtcInstant a = instants[i];
+            for (int j = 0; j < instants.length; j++) {
+                UtcInstant b = instants[j];
+                if (i < j) {
+                    assertEquals(-1, a.compareTo(b));
+                    assertNotEquals(a, b);
+                    assertTrue(a.isBefore(b));
+                    assertFalse(a.isAfter(b));
+                } else if (i > j) {
+                    assertEquals(1, a.compareTo(b));
+                    assertNotEquals(a, b);
+                    assertFalse(a.isBefore(b));
+                    assertTrue(a.isAfter(b));
+                } else {
+                    assertEquals(0, a.compareTo(b));
+                    assertEquals(a, b);
+                    assertFalse(a.isBefore(b));
+                    assertFalse(a.isAfter(b));
+                }
+            }
+        }
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_toString() {
+        return new Object[][] { { 40587, 0, "1970-01-01T00:00:00Z" }, { 40588, 1, "1970-01-02T00:00:00.000000001Z" }, { 40588, 999, "1970-01-02T00:00:00.000000999Z" }, { 40588, 1000, "1970-01-02T00:00:00.000001Z" }, { 40588, 999000, "1970-01-02T00:00:00.000999Z" }, { 40588, 1000000, "1970-01-02T00:00:00.001Z" }, { 40618, 999999999, "1970-02-01T00:00:00.999999999Z" }, { 40619, 1000000000, "1970-02-02T00:00:01Z" }, { 40620, 60L * 1000000000L, "1970-02-03T00:01:00Z" }, { 40621, 60L * 60L * 1000000000L, "1970-02-04T01:00:00Z" }, { MJD_1972_12_31_LEAP, 24L * 60L * 60L * 1000000000L - 1000000000L, "1972-12-31T23:59:59Z" }, { MJD_1972_12_31_LEAP, NANOS_PER_DAY, "1972-12-31T23:59:60Z" }, { MJD_1973_01_01, 0, "1973-01-01T00:00:00Z" } };
+    }
+
+    @Test
+    public void test_plus_overflowTooBig() {
+        UtcInstant i = UtcInstant.ofModifiedJulianDay(Long.MAX_VALUE, NANOS_PER_DAY - 1);
+        assertThrows(ArithmeticException.class, () -> i.plus(Duration.ofNanos(1)));
+    }
+}
+
+
+[10] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/scale/UtcInstant.java"
+
+[11] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/scale/UtcInstant.java"
+--- output ---
+/*
+ * Copyright (c) 2007-present, Stephen Colebourne & Michael Nascimento Santos
+ *
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *  * Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ *  * Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ *  * Neither the name of JSR-310 nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package org.threeten.extra.scale;
+
+import static java.time.temporal.ChronoField.INSTANT_SECONDS;
+import static java.time.temporal.ChronoField.NANO_OF_SECOND;
+import static org.threeten.extra.scale.UtcRules.NANOS_PER_SECOND;
+import static org.threeten.extra.scale.UtcRules.OFFSET_MJD_EPOCH;
+import static org.threeten.extra.scale.UtcRules.SECS_PER_DAY;
+
+import java.io.Serializable;
+import java.time.DateTimeException;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.JulianFields;
+import java.time.temporal.TemporalAccessor;
+
+import org.joda.convert.FromString;
+import org.joda.convert.ToString;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * An instantaneous point on the time-line measured in the UTC time-scale
+ * with leap seconds.
+ * <p>
+ * The <code>java.time</code> classes use the Java time-scale for simplicity.
+ * That scale works on the assumption that the time-line is simple, there are no leap-seconds
+ * and there are always 24 * 60 * 60 seconds in a day. Unfortunately, the Earth's rotation
+ * is not straightforward, and a solar day does not match this definition.
+ * <p>
+ * This class is an alternative representation based on the UTC time-scale which
+ * includes leap-seconds. Leap-seconds are additional seconds that are inserted into the
+ * year-month-day-hour-minute-second time-line in order to keep UTC in line with the solar day.
+ * When a leap second occurs, an accurate clock will show the time {@code 23:59:60} just before midnight.
+ * <p>
+ * Leap-seconds are announced in advance, typically at least six months.
+ * The {@link UtcRules} class models which dates have leap-seconds.
+ * All the methods on this class use the latest available system rules.
+ * <p>
+ * The system leap-second rules fix the start point of UTC as 1972.
+ * This date was chosen as UTC was more complex before 1972.
+ * <p>
+ * The duration between two points on the UTC time-scale is calculated solely using this class.
+ * Do not use the {@code between} method on {@code Duration} as that will lose information.
+ * Instead, use {@link #durationUntil(UtcInstant)} on this class.
+ * <p>
+ * It is intended that most applications will use the {@code Instant} class
+ * which uses the UTC-SLS mapping from UTC to guarantee 86400 seconds per day.
+ * Specialist applications with access to an accurate time-source may find this class useful.
+ *
+ * <h3>Time-scale</h3>
+ * <p>
+ * The length of the solar day is the standard way that humans measure time.
+ * As the Earth's rotation changes, the length of the day varies.
+ * In general, a solar day is slightly longer than 86400 SI seconds.
+ * The actual length is not predictable and can only be determined by measurement.
+ * The UT1 time-scale captures these measurements.
+ * <p>
+ * The UTC time-scale is a standard approach to bundle up all the additional fractions
+ * of a second from UT1 into whole seconds, known as <i>leap-seconds</i>.
+ * A leap-second may be added or removed depending on the Earth's rotational changes.
+ * If it is removed, then the relevant date will have no time of {@code 23:59:59}.
+ * If it is added, then the relevant date will have an extra second of {@code 23:59:60}.
+ * <p>
+ * The modern UTC time-scale was introduced in 1972, introducing the concept of whole leap-seconds.
+ * Between 1958 and 1972, the definition of UTC was complex, with minor sub-second leaps and
+ * alterations to the length of the notional second.
+ * <p>
+ * This class may be used for instants in the far past and far future.
+ * Since some instants will be prior to 1972, it is not strictly an implementation of UTC.
+ * Instead, it is a proleptic time-scale based on TAI and equivalent to it since 1972.
+ *
+ * <h3>Implementation Requirements:</h3>
+ * This class is immutable and thread-safe.
+ * <p>
+ * This class must be treated as a value type. Do not synchronize, rely on the
+ * identity hash code or use the distinction between equals() and ==.
+ */
+public final class UtcInstant
+        implements Comparable<UtcInstant>, Serializable {
+    // does not implement Temporal as that would enable methods like
+    // Duration.between which gives the wrong answer due to lossy conversion
+
+    /**
+     * Serialization version.
+     */
+    private static final long serialVersionUID = 2600294095511836210L;
+
+    /**
+     * The Modified Julian Day, from the epoch of 1858-11-17.
+     */
+    private final long mjDay;
+    /**
+     * The number of nanoseconds, later along the time-line, from the MJD field.
+     * This is always positive and includes leap seconds.
+     */
+    private final long nanoOfDay;
+    /**
+     * A cache of the result from {@link #toString()} 
+     */
+    private transient @Nullable String toString;
+
+    //-----------------------------------------------------------------------
+    /**
+     * Obtains an instance of {@code UtcInstant} from a Modified Julian Day with
+     * a nanosecond fraction of day.
+     * <p>
+     * Modified Julian Day is a simple incrementing count of days where day 0 is 1858-11-17.
+     * Nanosecond-of-day is a simple count of nanoseconds from the start of the day
+     * including any additional leap-second.
+     * This method validates the nanosecond-of-day value against the Modified Julian Day.
+     * <p>
+     * The nanosecond-of-day value has a valid range from {@code 0} to
+     * {@code 86,400,000,000,000 - 1} on most days, and a larger or smaller range
+     * on leap-second days.
+     * <p>
+     * The nanosecond value must be positive even for negative values of Modified
+     * Julian Day. One nanosecond before Modified Julian Day zero will be
+     * {@code -1} days and the maximum nanosecond value.
+     *
+     * @param mjDay  the date as a Modified Julian Day (number of days from the epoch of 1858-11-17)
+     * @param nanoOfDay  the nanoseconds within the day, including leap seconds
+     * @return the UTC instant, not null
+     * @throws IllegalArgumentException if nanoOfDay is out of range
+     */
+    public static UtcInstant ofModifiedJulianDay(long mjDay, long nanoOfDay) {
+        UtcRules.system().validateModifiedJulianDay(mjDay, nanoOfDay);
+        return new UtcInstant(mjDay, nanoOfDay);
+    }
+
+    /**
+     * Obtains an instance of {@code UtcInstant} from an {@code Instant}.
+     * <p>
+     * Converting a UTC-SLS instant to UTC requires leap second rules.
+     * This method uses the latest available system rules.
+     * <p>
+     * Conversion from an {@code Instant} will not be completely accurate near
+     * a leap second in accordance with UTC-SLS.
+     *
+     * @param instant  the instant to convert, not null
+     * @return the UTC instant, not null
+     * @throws DateTimeException if the range of {@code UtcInstant} is exceeded
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public static UtcInstant of(Instant instant) {
+        return UtcRules.system().convertToUtc(instant);
+    }
+
+    /**
+     * Obtains an instance of {@code UtcInstant} from a {@code TaiInstant}.
+     * <p>
+     * Converting a TAI instant to UTC requires leap second rules.
+     * This method uses the latest available system rules.
+     * <p>
+     * The {@code UtcInstant} will represent exactly the same point on the
+     * time-line as per the available leap-second rules.
+     * If the leap-second rules change then conversion back to TAI may
+     * result in a different instant.
+     *
+     * @param instant  the instant to convert, not null
+     * @return the UTC instant, not null
+     * @throws DateTimeException if the range of {@code UtcInstant} is exceeded
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public static UtcInstant of(TaiInstant instant) {
+        return UtcRules.system().convertToUtc(instant);
+    }
+
+    //-------------------------------------------------------------------------
+    /**
+     * Obtains an instance of {@code UtcInstant} from a text string,
+     * such as {@code 2007-12-03T10:15:30.00Z}.
+     * <p>
+     * The string must represent a valid instant in UTC and is parsed using
+     * {@link DateTimeFormatter#ISO_INSTANT} with leap seconds handled.
+     *
+     * @param text  the text to parse such as "2007-12-03T10:15:30.00Z", not null
+     * @return the parsed instant, not null
+     * @throws DateTimeParseException if the text cannot be parsed
+     * @throws DateTimeException if parsed text represents an invalid leap second
+     */
+    @FromString
+    public static UtcInstant parse(CharSequence text) {
+        TemporalAccessor parsed = DateTimeFormatter.ISO_INSTANT.parse(text);
+        long epochSecond = parsed.getLong(INSTANT_SECONDS);
+        long nanoOfSecond = parsed.getLong(NANO_OF_SECOND);
+        boolean leap = parsed.query(DateTimeFormatter.parsedLeapSecond());
+        long epochDay = Math.floorDiv(epochSecond, SECS_PER_DAY);
+        long mjd = epochDay + OFFSET_MJD_EPOCH;
+        long nanoOfDay = Math.floorMod(epochSecond, SECS_PER_DAY) * NANOS_PER_SECOND + nanoOfSecond;
+        if (leap) {
+            nanoOfDay += NANOS_PER_SECOND;
+        }
+        return UtcInstant.ofModifiedJulianDay(mjd, nanoOfDay);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Constructs an instance.
+     *
+     * @param mjDay  the date as a Modified Julian Day (number of days from the epoch of 1858-11-17)
+     * @param nanoOfDay  the nanoseconds within the day, including leap seconds
+     */
+    private UtcInstant(long mjDay, long nanoOfDay) {
+        super();
+        this.mjDay = mjDay;
+        this.nanoOfDay = nanoOfDay;
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Gets the Modified Julian Day (MJD).
+     * <p>
+     * The Modified Julian Day is a simple incrementing count of days where day 0 is 1858-11-17.
+     * The nanosecond part of the day is returned by {@code getNanosOfDay}.
+     * The day varies in length, being one second longer on a leap day.
+     *
+     * @return the Modified Julian Day based on the epoch 1858-11-17
+     */
+    public long getModifiedJulianDay() {
+        return mjDay;
+    }
+
+    /**
+     * Returns a copy of this {@code UtcInstant} with the Modified Julian Day (MJD) altered.
+     * <p>
+     * The Modified Julian Day is a simple incrementing count of days where day 0 is 1858-11-17.
+     * The nanosecond part of the day is returned by {@code getNanosOfDay}.
+
+
+[12] AGENT
+The original file contains a large amount of unrelated fixture data and imports, but this specific test only exercises one overflow path. I’m replacing that with a focused JUnit test that preserves the same constructor call, duration argument, and expected `ArithmeticException`.
+
+[13] FILE_CHANGE in_progress
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestUtcInstant/test_plus_overflowTooBig/TestUtcInstant_test_plus_overflowTooBig.java
+
+[14] FILE_CHANGE completed
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestUtcInstant/test_plus_overflowTooBig/TestUtcInstant_test_plus_overflowTooBig.java
+
+[15] AGENT
+The improved test file is now in place. Per the required skill, I’m running only `bash compile.sh` from the working directory to verify it compiles.
+
+[16] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[17] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[18] AGENT
+Implemented the focused refactor in `TestUtcInstant_test_plus_overflowTooBig.java` and verified it with `bash compile.sh`.
+
+`COMPILE_OK`

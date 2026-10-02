@@ -1,0 +1,889 @@
+[3] AGENT
+I’ll use the `compile-check` skill after editing, and `repair-loop` only if compilation fails. First I’m reading the relevant skill instructions and the original/CUT files so the refactor preserves behavior exactly.
+
+[4] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md'
+
+[5] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md'
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[6] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md'
+
+[7] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md'
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[8] AGENT
+I’ve got the compile workflow. Next I’m comparing the original test with the CUT API surface, then I’ll write a clearer equivalent test file in the working directory.
+
+[9] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Projects/Codex_Improvement/data/original/threeten-extra/manual/testcases/TestSymmetry454Chronology/TestSymmetry454Chronology_test_Symmetry454Date_chronology_dateEpochDay.java'
+
+[10] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Projects/Codex_Improvement/data/original/threeten-extra/manual/testcases/TestSymmetry454Chronology/TestSymmetry454Chronology_test_Symmetry454Date_chronology_dateEpochDay.java'
+--- output ---
+package org.threeten.extra.chrono;
+
+import static java.time.temporal.ChronoField.ALIGNED_DAY_OF_WEEK_IN_MONTH;
+import static java.time.temporal.ChronoField.ALIGNED_DAY_OF_WEEK_IN_YEAR;
+import static java.time.temporal.ChronoField.ALIGNED_WEEK_OF_MONTH;
+import static java.time.temporal.ChronoField.ALIGNED_WEEK_OF_YEAR;
+import static java.time.temporal.ChronoField.DAY_OF_MONTH;
+import static java.time.temporal.ChronoField.DAY_OF_WEEK;
+import static java.time.temporal.ChronoField.DAY_OF_YEAR;
+import static java.time.temporal.ChronoField.EPOCH_DAY;
+import static java.time.temporal.ChronoField.ERA;
+import static java.time.temporal.ChronoField.MINUTE_OF_DAY;
+import static java.time.temporal.ChronoField.MONTH_OF_YEAR;
+import static java.time.temporal.ChronoField.PROLEPTIC_MONTH;
+import static java.time.temporal.ChronoField.YEAR;
+import static java.time.temporal.ChronoField.YEAR_OF_ERA;
+import static java.time.temporal.ChronoUnit.CENTURIES;
+import static java.time.temporal.ChronoUnit.DAYS;
+import static java.time.temporal.ChronoUnit.DECADES;
+import static java.time.temporal.ChronoUnit.ERAS;
+import static java.time.temporal.ChronoUnit.MILLENNIA;
+import static java.time.temporal.ChronoUnit.MINUTES;
+import static java.time.temporal.ChronoUnit.MONTHS;
+import static java.time.temporal.ChronoUnit.WEEKS;
+import static java.time.temporal.ChronoUnit.YEARS;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.DateTimeException;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.Month;
+import java.time.Period;
+import java.time.chrono.ChronoPeriod;
+import java.time.chrono.Chronology;
+import java.time.chrono.Era;
+import java.time.chrono.HijrahEra;
+import java.time.chrono.IsoEra;
+import java.time.chrono.JapaneseEra;
+import java.time.chrono.MinguoEra;
+import java.time.chrono.ThaiBuddhistEra;
+import java.time.temporal.TemporalAdjusters;
+import java.time.temporal.TemporalField;
+import java.time.temporal.TemporalUnit;
+import java.time.temporal.UnsupportedTemporalTypeException;
+import java.time.temporal.ValueRange;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import com.google.common.testing.EqualsTester;
+
+@SuppressWarnings({ "static-method" })
+public class TestSymmetry454Chronology_test_Symmetry454Date_chronology_dateEpochDay {
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_samples() {
+        return new Object[][] { { Symmetry454Date.of(1, 1, 1), LocalDate.of(1, 1, 1) }, // Constantine the Great, Roman emperor (d. 337)
+        { Symmetry454Date.of(272, 2, 30), LocalDate.of(272, 2, 27) }, { Symmetry454Date.of(272, 2, 27), LocalDate.of(272, 2, 24) }, // Charlemagne, Frankish king (d. 814)
+        { Symmetry454Date.of(742, 3, 25), LocalDate.of(742, 4, 2) }, { Symmetry454Date.of(742, 4, 2), LocalDate.of(742, 4, 7) }, // Norman Conquest: Battle of Hastings
+        { Symmetry454Date.of(1066, 10, 14), LocalDate.of(1066, 10, 14) }, // Francesco Petrarca - Petrarch, Italian scholar and poet in Renaissance Italy, "Father of Humanism" (d. 1374).
+        { Symmetry454Date.of(1304, 7, 21), LocalDate.of(1304, 7, 20) }, { Symmetry454Date.of(1304, 7, 20), LocalDate.of(1304, 7, 19) }, // Charles the Bold, French son of Isabella of Portugal, Duchess of Burgundy (d. 1477)
+        { Symmetry454Date.of(1433, 11, 14), LocalDate.of(1433, 11, 10) }, { Symmetry454Date.of(1433, 11, 10), LocalDate.of(1433, 11, 6) }, // Leonardo da Vinci, Italian painter, sculptor, and architect (d. 1519)
+        { Symmetry454Date.of(1452, 4, 11), LocalDate.of(1452, 4, 15) }, { Symmetry454Date.of(1452, 4, 15), LocalDate.of(1452, 4, 19) }, // Christopher Columbus's expedition makes landfall in the Caribbean
+        { Symmetry454Date.of(1492, 10, 10), LocalDate.of(1492, 10, 12) }, { Symmetry454Date.of(1492, 10, 12), LocalDate.of(1492, 10, 14) }, // Galileo Galilei, Italian astronomer and physicist (d. 1642)
+        { Symmetry454Date.of(1564, 2, 20), LocalDate.of(1564, 2, 15) }, { Symmetry454Date.of(1564, 2, 15), LocalDate.of(1564, 2, 10) }, // William Shakespeare is baptized in Stratford-upon-Avon, Warwickshire, England (date of actual birth is unknown, d. 1616).
+        { Symmetry454Date.of(1564, 4, 28), LocalDate.of(1564, 4, 26) }, { Symmetry454Date.of(1564, 4, 26), LocalDate.of(1564, 4, 24) }, // Sir Isaac Newton, English physicist and mathematician (d. 1727)
+        { Symmetry454Date.of(1643, 1, 7), LocalDate.of(1643, 1, 4) }, { Symmetry454Date.of(1643, 1, 4), LocalDate.of(1643, 1, 1) }, // Leonhard Euler, Swiss mathematician and physicist (d. 1783)
+        { Symmetry454Date.of(1707, 4, 12), LocalDate.of(1707, 4, 15) }, { Symmetry454Date.of(1707, 4, 15), LocalDate.of(1707, 4, 18) }, // French Revolution: Citizens of Paris storm the Bastille.
+        { Symmetry454Date.of(1789, 7, 16), LocalDate.of(1789, 7, 14) }, { Symmetry454Date.of(1789, 7, 14), LocalDate.of(1789, 7, 12) }, // Albert Einstein, German theoretical physicist (d. 1955).
+        { Symmetry454Date.of(1879, 3, 12), LocalDate.of(1879, 3, 14) }, { Symmetry454Date.of(1879, 3, 14), LocalDate.of(1879, 3, 16) }, // Dennis MacAlistair Ritchie, American computer scientist (d. 2011)
+        { Symmetry454Date.of(1941, 9, 9), LocalDate.of(1941, 9, 9) }, // Unix time begins at 00:00:00 UTC/GMT.
+        { Symmetry454Date.of(1970, 1, 4), LocalDate.of(1970, 1, 1) }, { Symmetry454Date.of(1970, 1, 1), LocalDate.of(1969, 12, 29) }, // Start of the 21st century or 3rd millennium
+        { Symmetry454Date.of(1999, 12, 27), LocalDate.of(2000, 1, 1) }, { Symmetry454Date.of(2000, 1, 1), LocalDate.of(2000, 1, 3) } };
+    }
+
+    public static Object[][] data_badDates() {
+        return new Object[][] { { -1, 13, 28 }, { -1, 13, 29 }, { 2000, -2, 1 }, { 2000, 13, 1 }, { 2000, 15, 1 }, { 2000, 1, -1 }, { 2000, 1, 0 }, { 2000, 0, 1 }, { 2000, -1, 0 }, { 2000, -1, 1 }, { 2000, 1, 29 }, { 2000, 2, 36 }, { 2000, 3, 29 }, { 2000, 4, 29 }, { 2000, 5, 36 }, { 2000, 6, 29 }, { 2000, 7, 29 }, { 2000, 8, 36 }, { 2000, 9, 29 }, { 2000, 10, 29 }, { 2000, 11, 36 }, { 2000, 12, 29 }, { 2004, 12, 36 } };
+    }
+
+    public static Object[][] data_badLeapDates() {
+        return new Object[][] { { 1 }, { 100 }, { 200 }, { 2000 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_lengthOfMonth() {
+        return new Object[][] { { 2000, 1, 28, 28 }, { 2000, 2, 28, 35 }, { 2000, 3, 28, 28 }, { 2000, 4, 28, 28 }, { 2000, 5, 28, 35 }, { 2000, 6, 28, 28 }, { 2000, 7, 28, 28 }, { 2000, 8, 28, 35 }, { 2000, 9, 28, 28 }, { 2000, 10, 28, 28 }, { 2000, 11, 28, 35 }, { 2000, 12, 28, 28 }, { 2004, 12, 20, 35 } };
+    }
+
+    public static Object[][] data_prolepticYear_badEra() {
+        return new Era[][] { { AccountingEra.BCE }, { AccountingEra.CE }, { CopticEra.BEFORE_AM }, { CopticEra.AM }, { DiscordianEra.YOLD }, { EthiopicEra.BEFORE_INCARNATION }, { EthiopicEra.INCARNATION }, { HijrahEra.AH }, { InternationalFixedEra.CE }, { JapaneseEra.MEIJI }, { JapaneseEra.TAISHO }, { JapaneseEra.SHOWA }, { JapaneseEra.HEISEI }, { JulianEra.BC }, { JulianEra.AD }, { MinguoEra.BEFORE_ROC }, { MinguoEra.ROC }, { PaxEra.BCE }, { PaxEra.CE }, { ThaiBuddhistEra.BEFORE_BE }, { ThaiBuddhistEra.BE } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_ranges() {
+        return new Object[][] { // Leap Day and Year Day are members of months
+        { 2012, 1, 23, DAY_OF_MONTH, ValueRange.of(1, 28) }, { 2012, 2, 23, DAY_OF_MONTH, ValueRange.of(1, 35) }, { 2012, 3, 23, DAY_OF_MONTH, ValueRange.of(1, 28) }, { 2012, 4, 23, DAY_OF_MONTH, ValueRange.of(1, 28) }, { 2012, 5, 23, DAY_OF_MONTH, ValueRange.of(1, 35) }, { 2012, 6, 23, DAY_OF_MONTH, ValueRange.of(1, 28) }, { 2012, 7, 23, DAY_OF_MONTH, ValueRange.of(1, 28) }, { 2012, 8, 23, DAY_OF_MONTH, ValueRange.of(1, 35) }, { 2012, 9, 23, DAY_OF_MONTH, ValueRange.of(1, 28) }, { 2012, 10, 23, DAY_OF_MONTH, ValueRange.of(1, 28) }, { 2012, 11, 23, DAY_OF_MONTH, ValueRange.of(1, 35) }, { 2012, 12, 23, DAY_OF_MONTH, ValueRange.of(1, 28) }, { 2015, 12, 23, DAY_OF_MONTH, ValueRange.of(1, 35) }, { 2012, 1, 23, DAY_OF_WEEK, ValueRange.of(1, 7) }, { 2012, 6, 23, DAY_OF_WEEK, ValueRange.of(1, 7) }, { 2012, 12, 23, DAY_OF_WEEK, ValueRange.of(1, 7) }, { 2012, 1, 23, DAY_OF_YEAR, ValueRange.of(1, 364) }, { 2015, 1, 23, DAY_OF_YEAR, ValueRange.of(1, 371) }, { 2012, 1, 23, MONTH_OF_YEAR, ValueRange.of(1, 12) }, { 2012, 1, 23, ALIGNED_DAY_OF_WEEK_IN_MONTH, ValueRange.of(1, 7) }, { 2012, 6, 23, ALIGNED_DAY_OF_WEEK_IN_MONTH, ValueRange.of(1, 7) }, { 2012, 12, 23, ALIGNED_DAY_OF_WEEK_IN_MONTH, ValueRange.of(1, 7) }, { 2012, 1, 23, ALIGNED_WEEK_OF_MONTH, ValueRange.of(1, 4) }, { 2012, 2, 23, ALIGNED_WEEK_OF_MONTH, ValueRange.of(1, 5) }, { 2015, 12, 23, ALIGNED_WEEK_OF_MONTH, ValueRange.of(1, 5) }, { 2012, 1, 23, ALIGNED_DAY_OF_WEEK_IN_YEAR, ValueRange.of(1, 7) }, { 2012, 6, 23, ALIGNED_DAY_OF_WEEK_IN_YEAR, ValueRange.of(1, 7) }, { 2012, 12, 23, ALIGNED_DAY_OF_WEEK_IN_YEAR, ValueRange.of(1, 7) }, { 2012, 1, 23, ALIGNED_WEEK_OF_YEAR, ValueRange.of(1, 52) }, { 2012, 6, 23, ALIGNED_WEEK_OF_YEAR, ValueRange.of(1, 52) }, { 2012, 12, 23, ALIGNED_WEEK_OF_YEAR, ValueRange.of(1, 52) }, { 2015, 12, 30, ALIGNED_WEEK_OF_YEAR, ValueRange.of(1, 53) } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_getLong() {
+        return new Object[][] { { 2014, 5, 26, DAY_OF_WEEK, 5 }, { 2014, 5, 26, DAY_OF_MONTH, 26 }, { 2014, 5, 26, DAY_OF_YEAR, 28 + 35 + 28 + 28 + 26 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_MONTH, 5 }, { 2014, 5, 26, ALIGNED_WEEK_OF_MONTH, 4 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_YEAR, 5 }, { 2014, 5, 26, ALIGNED_WEEK_OF_YEAR, 4 + 5 + 4 + 4 + 4 }, { 2014, 5, 26, MONTH_OF_YEAR, 5 }, { 2014, 5, 26, PROLEPTIC_MONTH, 2014 * 12 + 5 - 1 }, { 2014, 5, 26, YEAR, 2014 }, { 2014, 5, 26, ERA, 1 }, { 1, 5, 8, ERA, 1 }, { 2012, 9, 26, DAY_OF_WEEK, 5 }, { 2012, 9, 26, DAY_OF_YEAR, 3 * (4 + 5 + 4) * 7 - 2 }, { 2012, 9, 26, ALIGNED_DAY_OF_WEEK_IN_MONTH, 5 }, { 2012, 9, 26, ALIGNED_WEEK_OF_MONTH, 4 }, { 2012, 9, 26, ALIGNED_DAY_OF_WEEK_IN_YEAR, 5 }, { 2012, 9, 26, ALIGNED_WEEK_OF_YEAR, 3 * (4 + 5 + 4) }, { 2015, 12, 35, DAY_OF_WEEK, 7 }, { 2015, 12, 35, DAY_OF_MONTH, 35 }, { 2015, 12, 35, DAY_OF_YEAR, 4 * (4 + 5 + 4) * 7 + 7 }, { 2015, 12, 35, ALIGNED_DAY_OF_WEEK_IN_MONTH, 7 }, { 2015, 12, 35, ALIGNED_WEEK_OF_MONTH, 5 }, { 2015, 12, 35, ALIGNED_DAY_OF_WEEK_IN_YEAR, 7 }, { 2015, 12, 35, ALIGNED_WEEK_OF_YEAR, 53 }, { 2015, 12, 35, MONTH_OF_YEAR, 12 }, { 2015, 12, 35, PROLEPTIC_MONTH, 2016 * 12 - 1 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_with() {
+        return new Object[][] { { 2014, 5, 26, DAY_OF_WEEK, 1, 2014, 5, 22 }, { 2014, 5, 26, DAY_OF_WEEK, 5, 2014, 5, 26 }, { 2014, 5, 26, DAY_OF_MONTH, 28, 2014, 5, 28 }, { 2014, 5, 26, DAY_OF_MONTH, 26, 2014, 5, 26 }, { 2014, 5, 26, DAY_OF_YEAR, 364, 2014, 12, 28 }, { 2014, 5, 26, DAY_OF_YEAR, 138, 2014, 5, 19 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_MONTH, 3, 2014, 5, 24 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_MONTH, 5, 2014, 5, 26 }, { 2014, 5, 26, ALIGNED_WEEK_OF_MONTH, 1, 2014, 5, 5 }, { 2014, 5, 26, ALIGNED_WEEK_OF_MONTH, 4, 2014, 5, 26 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_YEAR, 2, 2014, 5, 23 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_YEAR, 5, 2014, 5, 26 }, { 2014, 5, 26, ALIGNED_WEEK_OF_YEAR, 23, 2014, 6, 19 }, { 2014, 5, 26, ALIGNED_WEEK_OF_YEAR, 20, 2014, 5, 26 }, { 2014, 5, 26, MONTH_OF_YEAR, 4, 2014, 4, 26 }, { 2014, 5, 26, MONTH_OF_YEAR, 5, 2014, 5, 26 }, { 2014, 5, 26, PROLEPTIC_MONTH, 2013 * 12 + 3 - 1, 2013, 3, 26 }, { 2014, 5, 26, PROLEPTIC_MONTH, 2014 * 12 + 5 - 1, 2014, 5, 26 }, { 2014, 5, 26, YEAR, 2012, 2012, 5, 26 }, { 2014, 5, 26, YEAR, 2014, 2014, 5, 26 }, { 2014, 5, 26, YEAR_OF_ERA, 2012, 2012, 5, 26 }, { 2014, 5, 26, YEAR_OF_ERA, 2014, 2014, 5, 26 }, { 2014, 5, 26, ERA, 1, 2014, 5, 26 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_MONTH, 1, 2015, 12, 22 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_MONTH, 2, 2015, 12, 23 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_MONTH, 3, 2015, 12, 24 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_MONTH, 4, 2015, 12, 25 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_MONTH, 5, 2015, 12, 26 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_MONTH, 6, 2015, 12, 27 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_MONTH, 7, 2015, 12, 28 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_YEAR, 1, 2015, 12, 22 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_YEAR, 2, 2015, 12, 23 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_YEAR, 3, 2015, 12, 24 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_YEAR, 4, 2015, 12, 25 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_YEAR, 5, 2015, 12, 26 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_YEAR, 6, 2015, 12, 27 }, { 2015, 12, 22, ALIGNED_DAY_OF_WEEK_IN_YEAR, 7, 2015, 12, 28 }, { 2015, 12, 29, ALIGNED_WEEK_OF_MONTH, 0, 2015, 12, 29 }, { 2015, 12, 29, ALIGNED_WEEK_OF_MONTH, 3, 2015, 12, 15 }, { 2015, 12, 29, ALIGNED_WEEK_OF_YEAR, 0, 2015, 12, 29 }, { 2015, 12, 29, ALIGNED_WEEK_OF_YEAR, 3, 2015, 1, 15 }, { 2015, 12, 29, DAY_OF_WEEK, 0, 2015, 12, 29 }, { 2015, 12, 28, DAY_OF_WEEK, 1, 2015, 12, 22 }, { 2015, 12, 28, DAY_OF_WEEK, 2, 2015, 12, 23 }, { 2015, 12, 28, DAY_OF_WEEK, 3, 2015, 12, 24 }, { 2015, 12, 28, DAY_OF_WEEK, 4, 2015, 12, 25 }, { 2015, 12, 28, DAY_OF_WEEK, 5, 2015, 12, 26 }, { 2015, 12, 28, DAY_OF_WEEK, 6, 2015, 12, 27 }, { 2015, 12, 28, DAY_OF_WEEK, 7, 2015, 12, 28 }, { 2015, 12, 29, DAY_OF_MONTH, 1, 2015, 12, 1 }, { 2015, 12, 29, DAY_OF_MONTH, 3, 2015, 12, 3 }, { 2015, 12, 29, MONTH_OF_YEAR, 1, 2015, 1, 28 }, { 2015, 12, 29, MONTH_OF_YEAR, 12, 2015, 12, 29 }, { 2015, 12, 29, MONTH_OF_YEAR, 2, 2015, 2, 29 }, { 2015, 12, 29, YEAR, 2014, 2014, 12, 28 }, { 2015, 12, 29, YEAR, 2013, 2013, 12, 28 }, { 2014, 3, 28, DAY_OF_MONTH, 1, 2014, 3, 1 }, { 2014, 1, 28, DAY_OF_MONTH, 1, 2014, 1, 1 }, { 2014, 3, 28, MONTH_OF_YEAR, 1, 2014, 1, 28 }, { 2015, 3, 28, DAY_OF_YEAR, 371, 2015, 12, 35 }, { 2012, 3, 28, DAY_OF_YEAR, 364, 2012, 12, 28 } };
+    }
+
+    public static Object[][] data_with_bad() {
+        return new Object[][] { { 2013, 1, 1, ALIGNED_DAY_OF_WEEK_IN_MONTH, -1 }, { 2013, 1, 1, ALIGNED_DAY_OF_WEEK_IN_MONTH, 8 }, { 2013, 1, 1, ALIGNED_DAY_OF_WEEK_IN_YEAR, -1 }, { 2013, 1, 1, ALIGNED_DAY_OF_WEEK_IN_YEAR, 8 }, { 2013, 1, 1, ALIGNED_WEEK_OF_MONTH, -1 }, { 2013, 1, 1, ALIGNED_WEEK_OF_MONTH, 5 }, { 2013, 2, 1, ALIGNED_WEEK_OF_MONTH, 6 }, { 2013, 1, 1, ALIGNED_WEEK_OF_YEAR, -1 }, { 2013, 1, 1, ALIGNED_WEEK_OF_YEAR, 53 }, { 2015, 1, 1, ALIGNED_WEEK_OF_YEAR, 54 }, { 2013, 1, 1, DAY_OF_WEEK, -1 }, { 2013, 1, 1, DAY_OF_WEEK, 8 }, { 2013, 1, 1, DAY_OF_MONTH, -1 }, { 2013, 1, 1, DAY_OF_MONTH, 29 }, { 2013, 6, 1, DAY_OF_MONTH, 29 }, { 2013, 12, 1, DAY_OF_MONTH, 30 }, { 2015, 12, 1, DAY_OF_MONTH, 36 }, { 2013, 1, 1, DAY_OF_YEAR, -1 }, { 2013, 1, 1, DAY_OF_YEAR, 365 }, { 2015, 1, 1, DAY_OF_YEAR, 372 }, { 2013, 1, 1, MONTH_OF_YEAR, -1 }, { 2013, 1, 1, MONTH_OF_YEAR, 14 }, { 2013, 1, 1, MONTH_OF_YEAR, -2 }, { 2013, 1, 1, MONTH_OF_YEAR, 14 }, { 2013, 1, 1, EPOCH_DAY, -365_961_481 }, { 2013, 1, 1, EPOCH_DAY, 364_523_156 }, { 2013, 1, 1, YEAR, -1_000_001 }, { 2013, 1, 1, YEAR, 1_000_001 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_temporalAdjusters_lastDayOfMonth() {
+        return new Object[][] { { 2012, 1, 23, 2012, 1, 28 }, { 2012, 2, 23, 2012, 2, 35 }, { 2012, 3, 23, 2012, 3, 28 }, { 2012, 4, 23, 2012, 4, 28 }, { 2012, 5, 23, 2012, 5, 35 }, { 2012, 6, 23, 2012, 6, 28 }, { 2012, 7, 23, 2012, 7, 28 }, { 2012, 8, 23, 2012, 8, 35 }, { 2012, 9, 23, 2012, 9, 28 }, { 2012, 10, 23, 2012, 10, 28 }, { 2012, 11, 23, 2012, 11, 35 }, { 2012, 12, 23, 2012, 12, 28 }, { 2009, 12, 23, 2009, 12, 35 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_plus() {
+        return new Object[][] { { 2014, 5, 26, 0, DAYS, 2014, 5, 26 }, { 2014, 5, 26, 8, DAYS, 2014, 5, 34 }, { 2014, 5, 26, -3, DAYS, 2014, 5, 23 }, { 2014, 5, 26, 0, WEEKS, 2014, 5, 26 }, { 2014, 5, 26, 3, WEEKS, 2014, 6, 12 }, { 2014, 5, 26, -5, WEEKS, 2014, 4, 19 }, { 2014, 5, 26, 0, MONTHS, 2014, 5, 26 }, { 2014, 5, 26, 3, MONTHS, 2014, 8, 26 }, { 2014, 5, 26, -5, MONTHS, 2013, 12, 26 }, { 2014, 5, 26, 0, YEARS, 2014, 5, 26 }, { 2014, 5, 26, 3, YEARS, 2017, 5, 26 }, { 2014, 5, 26, -5, YEARS, 2009, 5, 26 }, { 2014, 5, 26, 0, DECADES, 2014, 5, 26 }, { 2014, 5, 26, 3, DECADES, 2044, 5, 26 }, { 2014, 5, 26, -5, DECADES, 1964, 5, 26 }, { 2014, 5, 26, 0, CENTURIES, 2014, 5, 26 }, { 2014, 5, 26, 3, CENTURIES, 2314, 5, 26 }, { 2014, 5, 26, -5, CENTURIES, 1514, 5, 26 }, { 2014, 5, 26, 0, MILLENNIA, 2014, 5, 26 }, { 2014, 5, 26, 3, MILLENNIA, 5014, 5, 26 }, { 2014, 5, 26, -1, MILLENNIA, 2014 - 1000, 5, 26 }, { 2014, 12, 26, 3, WEEKS, 2015, 1, 19 }, { 2014, 1, 26, -5, WEEKS, 2013, 12, 19 }, { 2012, 6, 26, 3, WEEKS, 2012, 7, 19 }, { 2012, 7, 26, -5, WEEKS, 2012, 6, 19 }, { 2012, 6, 21, 52 + 1, WEEKS, 2013, 6, 28 }, { 2013, 6, 21, 6 * 52 + 1, WEEKS, 2019, 6, 21 } };
+    }
+
+    public static Object[][] data_plus_leapWeek() {
+        return new Object[][] { { 2015, 12, 28, 0, DAYS, 2015, 12, 28 }, { 2015, 12, 28, 8, DAYS, 2016, 1, 1 }, { 2015, 12, 28, -3, DAYS, 2015, 12, 25 }, { 2015, 12, 28, 0, WEEKS, 2015, 12, 28 }, { 2015, 12, 28, 3, WEEKS, 2016, 1, 14 }, { 2015, 12, 28, -5, WEEKS, 2015, 11, 28 }, { 2015, 12, 28, 52, WEEKS, 2016, 12, 21 }, { 2015, 12, 28, 0, MONTHS, 2015, 12, 28 }, { 2015, 12, 28, 3, MONTHS, 2016, 3, 28 }, { 2015, 12, 28, -5, MONTHS, 2015, 7, 28 }, { 2015, 12, 28, 12, MONTHS, 2016, 12, 28 }, { 2015, 12, 28, 0, YEARS, 2015, 12, 28 }, { 2015, 12, 28, 3, YEARS, 2018, 12, 28 }, { 2015, 12, 28, -5, YEARS, 2010, 12, 28 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_until() {
+        return new Object[][] { { 2014, 5, 26, 2014, 5, 26, DAYS, 0 }, { 2014, 5, 26, 2014, 6, 4, DAYS, 13 }, { 2014, 5, 26, 2014, 5, 20, DAYS, -6 }, { 2014, 5, 26, 2014, 5, 26, WEEKS, 0 }, { 2014, 5, 26, 2014, 6, 4, WEEKS, 0 }, { 2014, 5, 26, 2014, 6, 5, WEEKS, 1 }, { 2014, 5, 26, 2014, 5, 26, MONTHS, 0 }, { 2014, 5, 26, 2014, 6, 25, MONTHS, 0 }, { 2014, 5, 26, 2014, 6, 26, MONTHS, 1 }, { 2014, 5, 26, 2014, 5, 26, YEARS, 0 }, { 2014, 5, 26, 2015, 5, 25, YEARS, 0 }, { 2014, 5, 26, 2015, 5, 26, YEARS, 1 }, { 2014, 5, 26, 2014, 5, 26, DECADES, 0 }, { 2014, 5, 26, 2024, 5, 25, DECADES, 0 }, { 2014, 5, 26, 2024, 5, 26, DECADES, 1 }, { 2014, 5, 26, 2014, 5, 26, CENTURIES, 0 }, { 2014, 5, 26, 2114, 5, 25, CENTURIES, 0 }, { 2014, 5, 26, 2114, 5, 26, CENTURIES, 1 }, { 2014, 5, 26, 2014, 5, 26, MILLENNIA, 0 }, { 2014, 5, 26, 3014, 5, 25, MILLENNIA, 0 }, { 2014, 5, 26, 3014, 5, 26, MILLENNIA, 1 }, { 2014, 5, 26, 3014, 5, 26, ERAS, 0 } };
+    }
+
+    public static Object[][] data_until_period() {
+        return new Object[][] { { 2014, 5, 26, 2014, 5, 26, 0, 0, 0 }, { 2014, 5, 26, 2014, 6, 4, 0, 0, 13 }, { 2014, 5, 26, 2014, 5, 20, 0, 0, -6 }, { 2014, 5, 26, 2014, 6, 5, 0, 0, 14 }, { 2014, 5, 26, 2014, 6, 25, 0, 0, 34 }, { 2014, 5, 26, 2014, 6, 26, 0, 1, 0 }, { 2014, 5, 26, 2015, 5, 25, 0, 11, 27 }, { 2014, 5, 26, 2015, 5, 26, 1, 0, 0 }, { 2014, 5, 26, 2024, 5, 25, 9, 11, 27 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_toString() {
+        return new Object[][] { { Symmetry454Date.of(1, 1, 1), "Sym454 CE 1/01/01" }, { Symmetry454Date.of(1970, 2, 35), "Sym454 CE 1970/02/35" }, { Symmetry454Date.of(2000, 8, 35), "Sym454 CE 2000/08/35" }, { Symmetry454Date.of(1970, 12, 35), "Sym454 CE 1970/12/35" } };
+    }
+
+    @ParameterizedTest
+    @MethodSource("data_samples")
+    public void test_Symmetry454Date_chronology_dateEpochDay(Symmetry454Date sym454, LocalDate iso) {
+        assertEquals(sym454, Symmetry454Chronology.INSTANCE.dateEpochDay(iso.toEpochDay()));
+    }
+}
+
+
+[11] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/chrono/Symmetry454Chronology.java'
+
+[12] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/chrono/Symmetry454Chronology.java'
+--- output ---
+/*
+ * Copyright (c) 2007-present, Stephen Colebourne & Michael Nascimento Santos
+ *
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *  * Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ *  * Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ *  * Neither the name of JSR-310 nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package org.threeten.extra.chrono;
+
+import java.io.Serializable;
+import java.time.Clock;
+import java.time.DateTimeException;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.chrono.AbstractChronology;
+import java.time.chrono.ChronoLocalDateTime;
+import java.time.chrono.ChronoZonedDateTime;
+import java.time.chrono.Chronology;
+import java.time.chrono.Era;
+import java.time.chrono.IsoEra;
+import java.time.temporal.ChronoField;
+import java.time.temporal.TemporalAccessor;
+import java.time.temporal.ValueRange;
+import java.util.Arrays;
+import java.util.List;
+
+import org.jspecify.annotations.Nullable;
+
+/**
+ * The Symmetry454 calendar system.
+ * <p>
+ * This chronology defines the rules of the Symmetry454 calendar system.
+ * Dates are aligned such that {@code 0001/01/01 (Sym454)} is {@code 0001-01-01 (ISO)}.
+ * <p>
+ * The calendar implemented by this class is proleptic, with January 1st as the start of the year.
+ * Each month either has 28 days or 35 days, in an alternating pattern; January has 28 days,
+ * February has 35 days and March again has 28 days. Due to this, each quarter consists of 13 weeks.
+ * <p>
+ * Normal years thus have 364 days, whereas leap years have an extra week, aptly called leap week,
+ * added to the end, extending the year to 371 days.
+ * <p>
+ * The fields are defined as follows:
+ * <ul>
+ * <li>era - Same eras as used in the Gregorian calendar: 'Before Common Era' (BCE) and 'Common Era' (CE).
+ * <li>year-of-era - The year-of-era for the current era increases uniformly from the epoch at year 1.
+ * <li>proleptic-year - The proleptic year is the same as the year-of-era for the current era.
+ * <li>month-of-year - There are 12 months in a Symmetry454 year, numbered from 1 to 12.
+ * <li>day-of-month - There are 28 days in a standard Symmetry454 month, numbered from 1 to 28, except for the middle-month
+ * in each quarter, which spans 35 days: February, May, August, November; and December in leap years.
+ * <li>day-of-year - There are 364 days in a standard Symmetry454 year and 371 days in a leap year.
+ *  The days are numbered accordingly.
+ * <li>leap-year - Leap years occur every 5 or 6 years, evenly spread over 293 years according the formula:
+ *     (52 &gt; ((52 * year + 146) % 293)).
+ * <li>Week day - every month starts on a Monday.  There are no days outside the week or month.
+ * </ul>
+ *
+ * <h3>Implementation Requirements</h3>
+ * This class is immutable and thread-safe.
+ */
+public final class Symmetry454Chronology
+        extends AbstractChronology
+        implements Serializable {
+
+    /**
+     * Singleton instance for the Symmetry454 chronology.
+     */
+    public static final Symmetry454Chronology INSTANCE = new Symmetry454Chronology();
+    /**
+     * Serialization version.
+     */
+    private static final long serialVersionUID = -1287766365831162587L;
+
+    /**
+     * Standard 7-day weeks.
+     */
+    static final int DAYS_IN_WEEK = 7;
+    /**
+     * Standard 12-month years.
+     */
+    static final int MONTHS_IN_YEAR = 12;
+    /**
+     * Normal month is 4 weeks.
+     */
+    static final int WEEKS_IN_MONTH = 4;
+    /**
+     * Long month is 5 weeks.
+     */
+    static final int WEEKS_IN_MONTH_LONG = 5;
+    /**
+     * Days in quarter, (4 + 5 + 4) * 7 = 91
+     */
+    static final int DAYS_IN_QUARTER = (WEEKS_IN_MONTH + WEEKS_IN_MONTH_LONG + WEEKS_IN_MONTH) * DAYS_IN_WEEK;
+    /**
+     * Days in year, 8 months of 28 days plus 4 months of 35 days, or 364 days in a normal year.
+     */
+    static final int DAYS_IN_YEAR = 4 * DAYS_IN_QUARTER;
+    /**
+     * Leap years are 364 + 7 days.
+     */
+    static final int DAYS_IN_YEAR_LONG = DAYS_IN_YEAR + DAYS_IN_WEEK;
+    /**
+     * Days in long month.
+     */
+    static final int DAYS_IN_MONTH_LONG = WEEKS_IN_MONTH_LONG * DAYS_IN_WEEK;
+    /**
+     * Days in normal month.
+     */
+    static final int DAYS_IN_MONTH = WEEKS_IN_MONTH * DAYS_IN_WEEK;
+    /**
+     * 52 weeks in a normal year.
+     */
+    static final int WEEKS_IN_YEAR = DAYS_IN_YEAR / DAYS_IN_WEEK;
+    /**
+     * Number of years in a cycle.
+     */
+    private static final int YEARS_IN_CYCLE = 293;
+    /**
+     * Number of days in a cycle.
+     */
+    static final int DAYS_PER_CYCLE = YEARS_IN_CYCLE * DAYS_IN_YEAR + WEEKS_IN_YEAR * DAYS_IN_WEEK; // == 294 full years!
+    /**
+     * The number of days from year zero to CE 1970, still the era only allows CE 1 and higher.
+     * There are 6 full 293-year cycles from CE 1 to 1758, with 6 * 52 leap years, i.e. 312.
+     * There are 37 leap years from CE 1758 to 1970.
+     */
+    public static final long DAYS_0001_TO_1970 = (146097 * 5L) - (31L * 365L + 7L) - 1;
+    /**
+     * Highest year in the range.
+     */
+    private static final long MAX_YEAR = 1_000_000L;
+    /**
+     * Range of year.
+     */
+    static final ValueRange YEAR_RANGE = ValueRange.of(-MAX_YEAR, MAX_YEAR);
+    /**
+     * Epoch day range.
+     */
+    static final ValueRange EPOCH_DAY_RANGE = ValueRange.of(
+            -MAX_YEAR * DAYS_IN_YEAR - getLeapYearsBefore(MAX_YEAR) * DAYS_IN_WEEK - DAYS_0001_TO_1970,
+             MAX_YEAR * DAYS_IN_YEAR + getLeapYearsBefore(MAX_YEAR) * DAYS_IN_WEEK - DAYS_0001_TO_1970);
+    /**
+     * Range of proleptic month.
+     */
+    private static final ValueRange PROLEPTIC_MONTH_RANGE = ValueRange.of(-MAX_YEAR * MONTHS_IN_YEAR, MAX_YEAR * MONTHS_IN_YEAR - 1);
+    /**
+     * Range of day of month.
+     */
+    static final ValueRange DAY_OF_MONTH_RANGE = ValueRange.of(1, DAYS_IN_MONTH, DAYS_IN_MONTH_LONG);
+    /**
+     * Range of day of year.
+     */
+    static final ValueRange DAY_OF_YEAR_RANGE = ValueRange.of(1, DAYS_IN_YEAR, DAYS_IN_YEAR + DAYS_IN_WEEK);
+    /**
+     * Range of month of year.
+     */
+    static final ValueRange MONTH_OF_YEAR_RANGE = ValueRange.of(1, MONTHS_IN_YEAR);
+    /**
+     * Range of eras.
+     */
+    static final ValueRange ERA_RANGE = ValueRange.of(0, 1);
+
+    /**
+     * Private constructor, that is public to satisfy the {@code ServiceLoader}.
+     * @deprecated Use the singleton {@link #INSTANCE} instead.
+     */
+    @Deprecated
+    public Symmetry454Chronology() {
+    }
+
+    /**
+     * Resolve singleton.
+     *
+     * @return the singleton instance, not null
+     */
+    private Object readResolve() {
+        return INSTANCE;
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Gets the ID of the chronology - 'Sym454'.
+     * <p>
+     * The ID uniquely identifies the {@code Chronology}.
+     * It can be used to lookup the {@code Chronology} using {@link Chronology#of(String)}.
+     *
+     * @return the chronology ID - 'Sym454'
+     * @see #getCalendarType()
+     */
+    @Override
+    public String getId() {
+        return "Sym454";
+    }
+
+    /**
+     * Gets the calendar type of the underlying calendar system, which returns null.
+     * <p>
+     * The <em>Unicode Locale Data Markup Language (LDML)</em> specification
+     * does not define an identifier for this calendar system, thus null is returned.
+     *
+     * @return the calendar system type, null
+     * @see #getId()
+     */
+    @Override
+    public @Nullable String getCalendarType() {
+        return null;
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Obtains a local date in Symmetry454 calendar system from the
+     * era, year-of-era, month-of-year and day-of-month fields.
+     *
+     * @param era  the Symmetry454 era, not null
+     * @param yearOfEra  the year-of-era
+     * @param month  the month-of-year
+     * @param dayOfMonth  the day-of-month
+     * @return the Symmetry454 local date, not null
+     * @throws DateTimeException if unable to create the date
+     * @throws ClassCastException if the {@code era} is not a {@code IsoEra}
+     */
+    @Override
+    public Symmetry454Date date(Era era, int yearOfEra, int month, int dayOfMonth) {
+        return date(prolepticYear(era, yearOfEra), month, dayOfMonth);
+    }
+
+    /**
+     * Obtains a local date in Symmetry454 calendar system from the
+     * proleptic-year, month-of-year and day-of-month fields.
+     *
+     * @param prolepticYear  the proleptic-year
+     * @param month  the month-of-year
+     * @param dayOfMonth  the day-of-month
+     * @return the Symmetry454 local date, not null
+     * @throws DateTimeException if unable to create the date
+     */
+    @Override
+    public Symmetry454Date date(int prolepticYear, int month, int dayOfMonth) {
+        return Symmetry454Date.of(prolepticYear, month, dayOfMonth);
+    }
+
+    /**
+     * Obtains a local date in Symmetry454 calendar system from the
+     * era, year-of-era and day-of-year fields.
+     *
+     * @param era  the Symmetry454 era, not null
+     * @param yearOfEra  the year-of-era
+     * @param dayOfYear  the day-of-year
+     * @return the Symmetry454 local date, not null
+     * @throws DateTimeException if unable to create the date
+     * @throws ClassCastException if the {@code era} is not a {@code IsoEra}
+     */
+    @Override
+    public Symmetry454Date dateYearDay(Era era, int yearOfEra, int dayOfYear) {
+        return dateYearDay(prolepticYear(era, yearOfEra), dayOfYear);
+    }
+
+    /**
+     * Obtains a local date in Symmetry454 calendar system from the
+     * proleptic-year and day-of-year fields.
+     *
+     * @param prolepticYear  the proleptic-year
+     * @param dayOfYear  the day-of-year
+     * @return the Symmetry454 local date, not null
+     * @throws DateTimeException if unable to create the date
+     */
+    @Override
+    public Symmetry454Date dateYearDay(int prolepticYear, int dayOfYear) {
+        return Symmetry454Date.ofYearDay(prolepticYear, dayOfYear);
+    }
+
+    /**
+     * Obtains a local date in the Symmetry454 calendar system from the epoch-day.
+     *
+     * @param epochDay  the epoch day
+     * @return the Symmetry454 local date, not null
+     * @throws DateTimeException if unable to create the date
+     */
+    @Override  // override with covariant return type
+    public Symmetry454Date dateEpochDay(long epochDay) {
+        return Symmetry454Date.ofEpochDay(epochDay);
+    }
+
+    //-------------------------------------------------------------------------
+    /**
+     * Obtains the current Symmetry454 local date from the system clock in the default time-zone.
+     * <p>
+     * This will query the {@link Clock#systemDefaultZone() system clock} in the default
+     * time-zone to obtain the current date.
+     * <p>
+     * Using this method will prevent the ability to use an alternate clock for testing
+     * because the clock is hard-coded.
+     *
+     * @return the current Symmetry454 local date using the system clock and default time-zone, not null
+     * @throws DateTimeException if unable to create the date
+     */
+    @Override  // override with covariant return type
+    public Symmetry454Date dateNow() {
+        return Symmetry454Date.now();
+    }
+
+    /**
+     * Obtains the current Symmetry454 local date from the system clock in the specified time-zone.
+     * <p>
+     * This will query the {@link Clock#system(ZoneId) system clock} to obtain the current date.
+     * Specifying the time-zone avoids dependence on the default time-zone.
+     * <p>
+     * Using this method will prevent the ability to use an alternate clock for testing
+     * because the clock is hard-coded.
+     *
+     * @param zone  the zone ID to use, not null
+     * @return the current Symmetry454 local date using the system clock, not null
+     * @throws DateTimeException if unable to create the date
+     */
+    @Override  // override with covariant return type
+    public Symmetry454Date dateNow(ZoneId zone) {
+        return Symmetry454Date.now(zone);
+    }
+
+    /**
+     * Obtains the current Symmetry454 local date from the specified clock.
+     * <p>
+     * This will query the specified clock to obtain the current date - today.
+     * Using this method allows the use of an alternate clock for testing.
+     * The alternate clock may be introduced using {@link Clock dependency injection}.
+     *
+     * @param clock  the clock to use, not null
+     * @return the current Symmetry454 local date, not null
+     * @throws DateTimeException if unable to create the date
+     */
+    @Override  // override with covariant return type
+    public Symmetry454Date dateNow(Clock clock) {
+        return Symmetry454Date.now(clock);
+    }
+
+    //-------------------------------------------------------------------------
+    /**
+     * Obtains a Symmetry454 local date from another date-time object.
+     *
+     * @param temporal  the date-time object to convert, not null
+     * @return the Symmetry454 local date, not null
+     * @throws DateTimeException if unable to create the date
+     */
+    @Override
+    public Symmetry454Date date(TemporalAccessor temporal) {
+        return Symmetry454Date.from(temporal);
+    }
+
+    /**
+     * Obtains a Symmetry454 local date-time from another date-time object.
+     *
+     * @param temporal  the date-time object to convert, not null
+     * @return the Symmetry454 local date-time, not null
+     * @throws DateTimeException if unable to create the date-time
+     */
+    @Override
+    @SuppressWarnings("unchecked")
+    public ChronoLocalDateTime<Symmetry454Date> localDateTime(TemporalAccessor temporal) {
+        return (ChronoLocalDateTime<Symmetry454Date>) super.localDateTime(temporal);
+    }
+
+    /**
+     * Obtains a Symmetry454 zoned date-time from another date-time object.
+     *
+     * @param temporal  the date-time object to convert, not null
+     * @return the Symmetry454 zoned date-time, not null
+     * @throws DateTimeException if unable to create the date-time
+     */
+    @Override
+    @SuppressWarnings("unchecked")
+    public ChronoZonedDateTime<Symmetry454Date> zonedDateTime(TemporalAccessor temporal) {
+        return (ChronoZonedDateTime<Symmetry454Date>) super.zonedDateTime(temporal);
+    }
+
+    /**
+     * Obtains a Symmetry454 zoned date-time in this chronology from an {@code Instant}.
+     *
+     * @param instant  the instant to create the date-time from, not null
+     * @param zone  the time-zone, not null
+     * @return the Symmetry454 zoned date-time, not null
+     * @throws DateTimeException if the result exceeds the supported range
+     */
+    @Override
+    @SuppressWarnings("unchecked")
+    public ChronoZonedDateTime<Symmetry454Date> zonedDateTime(Instant instant, ZoneId zone) {
+        return (ChronoZonedDateTime<Symmetry454Date>) super.zonedDateTime(instant, zone);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Checks if the specified year is a leap year.
+     * <p>
+     * A leap-year is a year of a longer length than normal.
+     * Leap years in the calendar system match those of the ISO calendar system.
+     *
+     * @param year  the proleptic-year to check, not validated for range
+     * @return true if the year is a leap year
+     */
+    @Override
+    public boolean isLeapYear(long year) {
+        return WEEKS_IN_YEAR > ((WEEKS_IN_YEAR * year + 146) % YEARS_IN_CYCLE);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Creates the chronology era object from the numeric value.
+     * <p>
+     * The list of eras is shared with {@link IsoEra}.
+     *
+     * @param eraValue  the era value
+     * @return the calendar system era, not null
+     * @throws DateTimeException if unable to create the era
+     */
+    @Override
+    public IsoEra eraOf(int eraValue) {
+        return IsoEra.of(eraValue);
+    }
+
+    /**
+     * Gets the list of eras for the chronology.
+     * <p>
+     * The list of eras is shared with {@link IsoEra}.
+     *
+     * @return the list of eras for the chronology, may be immutable, not null
+     */
+    @Override
+    public List<Era> eras() {
+        return Arrays.asList(IsoEra.values());
+    }
+
+    //-----------------------------------------------------------------------
+    @Override
+    public ValueRange range(ChronoField field) {
+        switch (field) {
+            case ALIGNED_DAY_OF_WEEK_IN_YEAR:
+            case ALIGNED_DAY_OF_WEEK_IN_MONTH:
+            case DAY_OF_WEEK:
+                return ValueRange.of(1, DAYS_IN_WEEK);
+            case ALIGNED_WEEK_OF_MONTH:
+                return ValueRange.of(1, WEEKS_IN_MONTH, WEEKS_IN_MONTH_LONG);
+            case ALIGNED_WEEK_OF_YEAR:
+                return ValueRange.of(1, WEEKS_IN_YEAR, WEEKS_IN_YEAR + 1);
+            case DAY_OF_MONTH:
+                return DAY_OF_MONTH_RANGE;
+            case DAY_OF_YEAR:
+                return DAY_OF_YEAR_RANGE;
+            case EPOCH_DAY:
+                return EPOCH_DAY_RANGE;
+            case ERA:
+                return ERA_RANGE;
+            case MONTH_OF_YEAR:
+                return MONTH_OF_YEAR_RANGE;
+            case PROLEPTIC_MONTH:
+                return PROLEPTIC_MONTH_RANGE;
+            case YEAR_OF_ERA:
+            case YEAR:
+                return YEAR_RANGE;
+            default:
+                return field.range();
+        }
+    }
+
+    @Override
+    public int prolepticYear(Era era, int yearOfEra) {
+        if (!(era instanceof IsoEra)) {
+            throw new ClassCastException("Invalid era: " + era);
+        }
+        return YEAR_RANGE.checkValidIntValue(yearOfEra, ChronoField.YEAR_OF_ERA);
+    }
+
+    /**
+     * Get the count of leap years since CE 1.
+     *
+     * @param prolepticYear  the year
+     * @return the number of leap years since CE 1
+     */
+    public static long getLeapYearsBefore(long prolepticYear) {
+        return Math.floorDiv(WEEKS_IN_YEAR * (prolepticYear - 1) + 146, YEARS_IN_CYCLE);
+    }
+}
+
+
+[13] AGENT
+The original file is mostly unrelated fixtures; the active test only uses `data_samples` and one parameterized method. I’m going to keep every sample and assertion intact, but strip unused imports and format the cases into named, readable rows.
+
+[16] AGENT
+I’m editing only the generated test file in the working directory. The refactor keeps the same dataset values and the same `dateEpochDay(iso.toEpochDay())` assertion, with the fixture rows grouped and labeled for maintainability.
+
+[17] FILE_CHANGE in_progress
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestSymmetry454Chronology/test_Symmetry454Date_chronology_dateEpochDay/TestSymmetry454Chronology_test_Symmetry454Date_chronology_dateEpochDay.java
+
+[18] FILE_CHANGE completed
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestSymmetry454Chronology/test_Symmetry454Date_chronology_dateEpochDay/TestSymmetry454Chronology_test_Symmetry454Date_chronology_dateEpochDay.java
+
+[19] AGENT
+The generated test file is in place. I’m running the required compile check now; if javac reports anything, I’ll make the smallest targeted repair and re-run it.
+
+[20] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[21] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[22] AGENT
+Implemented the understandability refactor and verified it with `bash compile.sh`.
+
+`COMPILE_OK`

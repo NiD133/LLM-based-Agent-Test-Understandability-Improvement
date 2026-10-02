@@ -1,0 +1,32 @@
+package org.apache.commons.text.similarity;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import java.nio.CharBuffer;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class LongestCommonSubsequence_ESTest_test03 extends LongestCommonSubsequence_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test03_throwsIllegalArgumentExceptionWhenRightSequenceIsNull() throws Throwable {
+        LongestCommonSubsequence lcs = new LongestCommonSubsequence();
+        char[] tenNullChars = new char[10];
+        CharBuffer leftSequence = CharBuffer.wrap(tenNullChars);
+
+        // longestCommonSubsequence must reject a null right argument
+        try {
+            lcs.longestCommonSubsequence(leftSequence, (CharSequence) null);
+            fail("Expecting exception: IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            //
+            // Inputs must not be null
+            //
+            verifyException("org.apache.commons.text.similarity.LongestCommonSubsequence", e);
+        }
+    }
+}

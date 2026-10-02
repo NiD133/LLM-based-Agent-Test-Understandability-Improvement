@@ -1,0 +1,231 @@
+package org.threeten.extra.scale;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import java.time.Duration;
+
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+
+public class TestTaiInstant_test_plus {
+
+    private static Object[] plusCase(
+            long seconds,
+            int nanos,
+            long plusSeconds,
+            int plusNanos,
+            long expectedSeconds,
+            int expectedNanoOfSecond) {
+        return new Object[] {seconds, nanos, plusSeconds, plusNanos, expectedSeconds, expectedNanoOfSecond};
+    }
+
+    public static Object[][] data_plus() {
+        return new Object[][] {
+            // Base instant: Long.MIN_VALUEs + 0ns
+            plusCase(Long.MIN_VALUE, 0, Long.MAX_VALUE, 0, -1, 0),
+
+            // Base instant: -4s + 666666667ns
+            plusCase(-4, 666666667, -4, 666666667, -7, 333333334),
+            plusCase(-4, 666666667, -3, 0, -7, 666666667),
+            plusCase(-4, 666666667, -2, 0, -6, 666666667),
+            plusCase(-4, 666666667, -1, 0, -5, 666666667),
+            plusCase(-4, 666666667, -1, 333333334, -4, 1),
+            plusCase(-4, 666666667, -1, 666666667, -4, 333333334),
+            plusCase(-4, 666666667, -1, 999999999, -4, 666666666),
+            plusCase(-4, 666666667, 0, 0, -4, 666666667),
+            plusCase(-4, 666666667, 0, 1, -4, 666666668),
+            plusCase(-4, 666666667, 0, 333333333, -3, 0),
+            plusCase(-4, 666666667, 0, 666666666, -3, 333333333),
+            plusCase(-4, 666666667, 1, 0, -3, 666666667),
+            plusCase(-4, 666666667, 2, 0, -2, 666666667),
+            plusCase(-4, 666666667, 3, 0, -1, 666666667),
+            plusCase(-4, 666666667, 3, 333333333, 0, 0),
+
+            // Base instant: -3s + 0ns
+            plusCase(-3, 0, -4, 666666667, -7, 666666667),
+            plusCase(-3, 0, -3, 0, -6, 0),
+            plusCase(-3, 0, -2, 0, -5, 0),
+            plusCase(-3, 0, -1, 0, -4, 0),
+            plusCase(-3, 0, -1, 333333334, -4, 333333334),
+            plusCase(-3, 0, -1, 666666667, -4, 666666667),
+            plusCase(-3, 0, -1, 999999999, -4, 999999999),
+            plusCase(-3, 0, 0, 0, -3, 0),
+            plusCase(-3, 0, 0, 1, -3, 1),
+            plusCase(-3, 0, 0, 333333333, -3, 333333333),
+            plusCase(-3, 0, 0, 666666666, -3, 666666666),
+            plusCase(-3, 0, 1, 0, -2, 0),
+            plusCase(-3, 0, 2, 0, -1, 0),
+            plusCase(-3, 0, 3, 0, 0, 0),
+            plusCase(-3, 0, 3, 333333333, 0, 333333333),
+
+            // Base instant: -2s + 0ns
+            plusCase(-2, 0, -4, 666666667, -6, 666666667),
+            plusCase(-2, 0, -3, 0, -5, 0),
+            plusCase(-2, 0, -2, 0, -4, 0),
+            plusCase(-2, 0, -1, 0, -3, 0),
+            plusCase(-2, 0, -1, 333333334, -3, 333333334),
+            plusCase(-2, 0, -1, 666666667, -3, 666666667),
+            plusCase(-2, 0, -1, 999999999, -3, 999999999),
+            plusCase(-2, 0, 0, 0, -2, 0),
+            plusCase(-2, 0, 0, 1, -2, 1),
+            plusCase(-2, 0, 0, 333333333, -2, 333333333),
+            plusCase(-2, 0, 0, 666666666, -2, 666666666),
+            plusCase(-2, 0, 1, 0, -1, 0),
+            plusCase(-2, 0, 2, 0, 0, 0),
+            plusCase(-2, 0, 3, 0, 1, 0),
+            plusCase(-2, 0, 3, 333333333, 1, 333333333),
+
+            // Base instant: -1s + 0ns
+            plusCase(-1, 0, -4, 666666667, -5, 666666667),
+            plusCase(-1, 0, -3, 0, -4, 0),
+            plusCase(-1, 0, -2, 0, -3, 0),
+            plusCase(-1, 0, -1, 0, -2, 0),
+            plusCase(-1, 0, -1, 333333334, -2, 333333334),
+            plusCase(-1, 0, -1, 666666667, -2, 666666667),
+            plusCase(-1, 0, -1, 999999999, -2, 999999999),
+            plusCase(-1, 0, 0, 0, -1, 0),
+            plusCase(-1, 0, 0, 1, -1, 1),
+            plusCase(-1, 0, 0, 333333333, -1, 333333333),
+            plusCase(-1, 0, 0, 666666666, -1, 666666666),
+            plusCase(-1, 0, 1, 0, 0, 0),
+            plusCase(-1, 0, 2, 0, 1, 0),
+            plusCase(-1, 0, 3, 0, 2, 0),
+            plusCase(-1, 0, 3, 333333333, 2, 333333333),
+
+            // Base instant: -1s + 666666667ns
+            plusCase(-1, 666666667, -4, 666666667, -4, 333333334),
+            plusCase(-1, 666666667, -3, 0, -4, 666666667),
+            plusCase(-1, 666666667, -2, 0, -3, 666666667),
+            plusCase(-1, 666666667, -1, 0, -2, 666666667),
+            plusCase(-1, 666666667, -1, 333333334, -1, 1),
+            plusCase(-1, 666666667, -1, 666666667, -1, 333333334),
+            plusCase(-1, 666666667, -1, 999999999, -1, 666666666),
+            plusCase(-1, 666666667, 0, 0, -1, 666666667),
+            plusCase(-1, 666666667, 0, 1, -1, 666666668),
+            plusCase(-1, 666666667, 0, 333333333, 0, 0),
+            plusCase(-1, 666666667, 0, 666666666, 0, 333333333),
+            plusCase(-1, 666666667, 1, 0, 0, 666666667),
+            plusCase(-1, 666666667, 2, 0, 1, 666666667),
+            plusCase(-1, 666666667, 3, 0, 2, 666666667),
+            plusCase(-1, 666666667, 3, 333333333, 3, 0),
+
+            // Base instant: 0s + 0ns
+            plusCase(0, 0, -4, 666666667, -4, 666666667),
+            plusCase(0, 0, -3, 0, -3, 0),
+            plusCase(0, 0, -2, 0, -2, 0),
+            plusCase(0, 0, -1, 0, -1, 0),
+            plusCase(0, 0, -1, 333333334, -1, 333333334),
+            plusCase(0, 0, -1, 666666667, -1, 666666667),
+            plusCase(0, 0, -1, 999999999, -1, 999999999),
+            plusCase(0, 0, 0, 0, 0, 0),
+            plusCase(0, 0, 0, 1, 0, 1),
+            plusCase(0, 0, 0, 333333333, 0, 333333333),
+            plusCase(0, 0, 0, 666666666, 0, 666666666),
+            plusCase(0, 0, 1, 0, 1, 0),
+            plusCase(0, 0, 2, 0, 2, 0),
+            plusCase(0, 0, 3, 0, 3, 0),
+            plusCase(0, 0, 3, 333333333, 3, 333333333),
+
+            // Base instant: 0s + 333333333ns
+            plusCase(0, 333333333, -4, 666666667, -3, 0),
+            plusCase(0, 333333333, -3, 0, -3, 333333333),
+            plusCase(0, 333333333, -2, 0, -2, 333333333),
+            plusCase(0, 333333333, -1, 0, -1, 333333333),
+            plusCase(0, 333333333, -1, 333333334, -1, 666666667),
+            plusCase(0, 333333333, -1, 666666667, 0, 0),
+            plusCase(0, 333333333, -1, 999999999, 0, 333333332),
+            plusCase(0, 333333333, 0, 0, 0, 333333333),
+            plusCase(0, 333333333, 0, 1, 0, 333333334),
+            plusCase(0, 333333333, 0, 333333333, 0, 666666666),
+            plusCase(0, 333333333, 0, 666666666, 0, 999999999),
+            plusCase(0, 333333333, 1, 0, 1, 333333333),
+            plusCase(0, 333333333, 2, 0, 2, 333333333),
+            plusCase(0, 333333333, 3, 0, 3, 333333333),
+            plusCase(0, 333333333, 3, 333333333, 3, 666666666),
+
+            // Base instant: 1s + 0ns
+            plusCase(1, 0, -4, 666666667, -3, 666666667),
+            plusCase(1, 0, -3, 0, -2, 0),
+            plusCase(1, 0, -2, 0, -1, 0),
+            plusCase(1, 0, -1, 0, 0, 0),
+            plusCase(1, 0, -1, 333333334, 0, 333333334),
+            plusCase(1, 0, -1, 666666667, 0, 666666667),
+            plusCase(1, 0, -1, 999999999, 0, 999999999),
+            plusCase(1, 0, 0, 0, 1, 0),
+            plusCase(1, 0, 0, 1, 1, 1),
+            plusCase(1, 0, 0, 333333333, 1, 333333333),
+            plusCase(1, 0, 0, 666666666, 1, 666666666),
+            plusCase(1, 0, 1, 0, 2, 0),
+            plusCase(1, 0, 2, 0, 3, 0),
+            plusCase(1, 0, 3, 0, 4, 0),
+            plusCase(1, 0, 3, 333333333, 4, 333333333),
+
+            // Base instant: 2s + 0ns
+            plusCase(2, 0, -4, 666666667, -2, 666666667),
+            plusCase(2, 0, -3, 0, -1, 0),
+            plusCase(2, 0, -2, 0, 0, 0),
+            plusCase(2, 0, -1, 0, 1, 0),
+            plusCase(2, 0, -1, 333333334, 1, 333333334),
+            plusCase(2, 0, -1, 666666667, 1, 666666667),
+            plusCase(2, 0, -1, 999999999, 1, 999999999),
+            plusCase(2, 0, 0, 0, 2, 0),
+            plusCase(2, 0, 0, 1, 2, 1),
+            plusCase(2, 0, 0, 333333333, 2, 333333333),
+            plusCase(2, 0, 0, 666666666, 2, 666666666),
+            plusCase(2, 0, 1, 0, 3, 0),
+            plusCase(2, 0, 2, 0, 4, 0),
+            plusCase(2, 0, 3, 0, 5, 0),
+            plusCase(2, 0, 3, 333333333, 5, 333333333),
+
+            // Base instant: 3s + 0ns
+            plusCase(3, 0, -4, 666666667, -1, 666666667),
+            plusCase(3, 0, -3, 0, 0, 0),
+            plusCase(3, 0, -2, 0, 1, 0),
+            plusCase(3, 0, -1, 0, 2, 0),
+            plusCase(3, 0, -1, 333333334, 2, 333333334),
+            plusCase(3, 0, -1, 666666667, 2, 666666667),
+            plusCase(3, 0, -1, 999999999, 2, 999999999),
+            plusCase(3, 0, 0, 0, 3, 0),
+            plusCase(3, 0, 0, 1, 3, 1),
+            plusCase(3, 0, 0, 333333333, 3, 333333333),
+            plusCase(3, 0, 0, 666666666, 3, 666666666),
+            plusCase(3, 0, 1, 0, 4, 0),
+            plusCase(3, 0, 2, 0, 5, 0),
+            plusCase(3, 0, 3, 0, 6, 0),
+            plusCase(3, 0, 3, 333333333, 6, 333333333),
+
+            // Base instant: 3s + 333333333ns
+            plusCase(3, 333333333, -4, 666666667, 0, 0),
+            plusCase(3, 333333333, -3, 0, 0, 333333333),
+            plusCase(3, 333333333, -2, 0, 1, 333333333),
+            plusCase(3, 333333333, -1, 0, 2, 333333333),
+            plusCase(3, 333333333, -1, 333333334, 2, 666666667),
+            plusCase(3, 333333333, -1, 666666667, 3, 0),
+            plusCase(3, 333333333, -1, 999999999, 3, 333333332),
+            plusCase(3, 333333333, 0, 0, 3, 333333333),
+            plusCase(3, 333333333, 0, 1, 3, 333333334),
+            plusCase(3, 333333333, 0, 333333333, 3, 666666666),
+            plusCase(3, 333333333, 0, 666666666, 3, 999999999),
+            plusCase(3, 333333333, 1, 0, 4, 333333333),
+            plusCase(3, 333333333, 2, 0, 5, 333333333),
+            plusCase(3, 333333333, 3, 0, 6, 333333333),
+            plusCase(3, 333333333, 3, 333333333, 6, 666666666),
+        };
+    }
+
+    @ParameterizedTest
+    @MethodSource("data_plus")
+    public void test_plus(
+            long seconds,
+            int nanos,
+            long plusSeconds,
+            int plusNanos,
+            long expectedSeconds,
+            int expectedNanoOfSecond) {
+
+        TaiInstant i = TaiInstant.ofTaiSeconds(seconds, nanos).plus(Duration.ofSeconds(plusSeconds, plusNanos));
+
+        assertEquals(expectedSeconds, i.getTaiSeconds());
+        assertEquals(expectedNanoOfSecond, i.getNano());
+    }
+}

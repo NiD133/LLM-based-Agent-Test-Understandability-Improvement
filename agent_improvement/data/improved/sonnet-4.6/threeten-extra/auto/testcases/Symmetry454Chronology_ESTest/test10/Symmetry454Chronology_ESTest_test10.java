@@ -1,0 +1,42 @@
+package org.threeten.extra.chrono;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import java.time.Clock;
+import java.time.DateTimeException;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.chrono.ChronoZonedDateTime;
+import java.time.chrono.Era;
+import java.time.chrono.IsoEra;
+import java.time.temporal.ChronoField;
+import java.time.temporal.TemporalAccessor;
+import java.time.temporal.TemporalAdjuster;
+import java.time.temporal.ValueRange;
+import java.util.List;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.evosuite.runtime.mock.java.time.MockClock;
+import org.evosuite.runtime.mock.java.time.MockOffsetDateTime;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class Symmetry454Chronology_ESTest_test10 extends Symmetry454Chronology_ESTest_scaffolding {
+
+    /**
+     * Verifies that querying the value range for DAY_OF_WEEK returns a non-null result,
+     * confirming the chronology handles this standard calendar field correctly.
+     */
+    @Test(timeout = 4000)
+    public void test_range_dayOfWeekField_returnsNonNullValueRange() throws Throwable {
+        Symmetry454Chronology chronology = new Symmetry454Chronology();
+        ChronoField dayOfWeekField = ChronoField.DAY_OF_WEEK;
+
+        ValueRange dayOfWeekRange = chronology.range(dayOfWeekField);
+
+        assertNotNull(dayOfWeekRange);
+    }
+}

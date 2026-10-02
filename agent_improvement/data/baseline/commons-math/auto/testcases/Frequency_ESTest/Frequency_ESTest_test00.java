@@ -1,0 +1,26 @@
+package org.apache.commons.math4.legacy.stat;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.shaded.org.mockito.Mockito.*;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.LinkedList;
+import java.util.List;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.evosuite.runtime.ViolatedAssumptionAnswer;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class Frequency_ESTest_test00 extends Frequency_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test00() throws Throwable {
+        Frequency<Integer> frequency0 = new Frequency<Integer>();
+        Frequency<Integer> frequency1 = new Frequency<Integer>();
+        boolean boolean0 = frequency0.equals(frequency1);
+        assertTrue(boolean0);
+    }
+}

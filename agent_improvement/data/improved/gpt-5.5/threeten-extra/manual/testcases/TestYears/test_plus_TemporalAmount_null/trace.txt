@@ -1,0 +1,874 @@
+[3] AGENT
+I’m using the `compile-check` skill because this task requires compiling the generated JUnit test before finishing. If compilation fails, I’ll follow the `repair-loop` skill exactly.
+
+[4] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[5] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[6] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[7] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[8] AGENT
+I’m going to inspect the original test and the `Years` API just enough to preserve behavior while making the test easier to read. After that I’ll create only the improved test file in the working directory.
+
+[9] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/data/original/threeten-extra/manual/testcases/TestYears/TestYears_test_plus_TemporalAmount_null.java"
+
+[10] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/Years.java"
+
+[11] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/data/original/threeten-extra/manual/testcases/TestYears/TestYears_test_plus_TemporalAmount_null.java"
+--- output ---
+package org.threeten.extra;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
+import java.time.DateTimeException;
+import java.time.Duration;
+import java.time.LocalDate;
+import java.time.Period;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.IsoFields;
+import java.time.temporal.Temporal;
+import java.time.temporal.TemporalAmount;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import com.google.common.testing.EqualsTester;
+
+public class TestYears_test_plus_TemporalAmount_null {
+
+    public static Object[][] data_invalid() {
+        return new Object[][] { { "P3M" }, { "P3W" }, { "P3D" }, { "3" }, { "-3" }, { "3Y" }, { "-3Y" }, { "P3" }, { "P-3" }, { "PY" } };
+    }
+
+    @Test
+    public void test_plus_TemporalAmount_null() {
+        //noinspection DataFlowIssue - testing nulls
+        assertThrows(NullPointerException.class, () -> Years.of(Integer.MIN_VALUE + 1).plus(null));
+    }
+}
+
+
+[12] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/Years.java"
+--- output ---
+/*
+ * Copyright (c) 2007-present, Stephen Colebourne & Michael Nascimento Santos
+ *
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *  * Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ *  * Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ *  * Neither the name of JSR-310 nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package org.threeten.extra;
+
+import static java.time.temporal.ChronoUnit.YEARS;
+
+import java.io.Serializable;
+import java.time.DateTimeException;
+import java.time.Period;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
+import java.time.temporal.TemporalAmount;
+import java.time.temporal.TemporalUnit;
+import java.time.temporal.UnsupportedTemporalTypeException;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.joda.convert.FromString;
+import org.joda.convert.ToString;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * A year-based amount of time, such as '12 years'.
+ * <p>
+ * This class models a quantity or amount of time in terms of years.
+ * It is a type-safe way of representing a number of years in an application.
+ * <p>
+ * The model is of a directed amount, meaning that the amount may be negative.
+ *
+ * <h3>Implementation Requirements:</h3>
+ * This class is immutable and thread-safe.
+ * <p>
+ * This class must be treated as a value type. Do not synchronize, rely on the
+ * identity hash code or use the distinction between equals() and ==.
+ */
+public final class Years
+        implements TemporalAmount, Comparable<Years>, Serializable {
+
+    /**
+     * A constant for zero years.
+     */
+    public static final Years ZERO = new Years(0);
+    /**
+     * A constant for one year.
+     */
+    public static final Years ONE = new Years(1);
+
+    /**
+     * A serialization identifier for this class.
+     */
+    private static final long serialVersionUID = -8903767091325669093L;
+    /**
+     * The pattern for parsing.
+     */
+    private static final Pattern PATTERN =
+            Pattern.compile("([-+]?)P([-+]?[0-9]+)Y", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * The number of years.
+     */
+    private final int years;
+
+    /**
+     * Obtains a {@code Years} representing a number of years.
+     * <p>
+     * The resulting amount will have the specified years.
+     *
+     * @param years  the number of years, positive or negative
+     * @return the number of years, not null
+     */
+    public static Years of(int years) {
+        if (years == 0) {
+            return ZERO;
+        } else if (years == 1) {
+            return ONE;
+        }
+        return new Years(years);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Obtains an instance of {@code Years} from a temporal amount.
+     * <p>
+     * This obtains an instance based on the specified amount.
+     * A {@code TemporalAmount} represents an amount of time, which may be
+     * date-based or time-based, which this factory extracts to a {@code Years}.
+     * <p>
+     * The result is calculated by looping around each unit in the specified amount.
+     * Each amount is converted to years using {@link Temporals#convertAmount}.
+     * If the conversion yields a remainder, an exception is thrown.
+     * If the amount is zero, the unit is ignored.
+     * For example, "12 months" can be converted to years but "11 months" cannot.
+     *
+     * @param amount  the temporal amount to convert, not null
+     * @return the equivalent amount, not null
+     * @throws DateTimeException if unable to convert to a {@code Years}
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public static Years from(TemporalAmount amount) {
+        if (amount instanceof Years) {
+            return (Years) amount;
+        }
+        Objects.requireNonNull(amount, "amount");
+        int years = 0;
+        for (TemporalUnit unit : amount.getUnits()) {
+            long value = amount.get(unit);
+            if (value != 0) {
+                long[] converted = Temporals.convertAmount(value, unit, YEARS);
+                if (converted[1] != 0) {
+                    throw new DateTimeException(
+                            "Amount could not be converted to a whole number of years: " + value + " " + unit);
+                }
+                years = Math.addExact(years, Math.toIntExact(converted[0]));
+            }
+        }
+        return of(years);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Obtains a {@code Years} from a text string such as {@code PnY}.
+     * <p>
+     * This will parse the string produced by {@code toString()} which is
+     * based on the ISO-8601 period formats {@code PnY}.
+     * <p>
+     * The string starts with an optional sign, denoted by the ASCII negative
+     * or positive symbol. If negative, the whole amount is negated.
+     * The ASCII letter "P" is next in upper or lower case.
+     * The ASCII integer amount is next, which may be negative.
+     * The ASCII letter "Y" is next in upper or lower case.
+     * <p>
+     * The leading plus/minus sign, and negative values for years are
+     * not part of the ISO-8601 standard.
+     * <p>
+     * For example, the following are valid inputs:
+     * <pre>
+     *   "P2Y"             -- Years.of(2)
+     *   "P-2Y"            -- Years.of(-2)
+     *   "-P2Y"            -- Years.of(-2)
+     *   "-P-2Y"           -- Years.of(2)
+     * </pre>
+     *
+     * @param text  the text to parse, not null
+     * @return the parsed period, not null
+     * @throws DateTimeParseException if the text cannot be parsed to a period
+     */
+    @FromString
+    public static Years parse(CharSequence text) {
+        Objects.requireNonNull(text, "text");
+        Matcher matcher = PATTERN.matcher(text);
+        if (matcher.matches()) {
+            int negate = "-".equals(matcher.group(1)) ? -1 : 1;
+            String str = matcher.group(2);
+            try {
+                int val = Integer.parseInt(str);
+                return of(Math.multiplyExact(val, negate));
+            } catch (NumberFormatException ex) {
+                throw new DateTimeParseException("Text cannot be parsed to a Years", text, 0, ex);
+            }
+        }
+        throw new DateTimeParseException("Text cannot be parsed to a Years", text, 0);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Obtains a {@code Years} consisting of the number of years between two dates.
+     * <p>
+     * The start date is included, but the end date is not.
+     * The result of this method can be negative if the end is before the start.
+     *
+     * @param startDateInclusive  the start date, inclusive, not null
+     * @param endDateExclusive  the end date, exclusive, not null
+     * @return the number of years between this date and the end date, not null
+     */
+    public static Years between(Temporal startDateInclusive, Temporal endDateExclusive) {
+        return of(Math.toIntExact(YEARS.between(startDateInclusive, endDateExclusive)));
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Constructs an instance using a specific number of years.
+     *
+     * @param years  the years to use
+     */
+    private Years(int years) {
+        super();
+        this.years = years;
+    }
+
+    /**
+     * Resolves singletons.
+     *
+     * @return the singleton instance
+     */
+    private Object readResolve() {
+        return Years.of(years);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Gets the value of the requested unit.
+     * <p>
+     * This returns a value for the supported unit - {@link ChronoUnit#YEARS YEARS}.
+     * All other units throw an exception.
+     *
+     * @param unit  the {@code TemporalUnit} for which to return the value
+     * @return the long value of the unit
+     * @throws UnsupportedTemporalTypeException if the unit is not supported
+     */
+    @Override
+    public long get(TemporalUnit unit) {
+        if (unit == YEARS) {
+            return years;
+        }
+        throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
+    }
+
+    /**
+     * Gets the set of units supported by this amount.
+     * <p>
+     * The single supported unit is {@link ChronoUnit#YEARS YEARS}.
+     * <p>
+     * This set can be used in conjunction with {@link #get(TemporalUnit)}
+     * to access the entire state of the amount.
+     *
+     * @return a list containing the years unit, not null
+     */
+
+
+[13] COMMAND in_progress
+/bin/zsh -lc 'find . -maxdepth 2 -type f -print'
+
+[14] COMMAND completed
+/bin/zsh -lc 'find . -maxdepth 2 -type f -print'
+--- output ---
+./compile.sh
+
+
+[15] AGENT
+The original test is a single null-argument assertion, but it carries a large import block and an unrelated data provider. I’m trimming that down while keeping the exact call under test: `Years.of(Integer.MIN_VALUE + 1).plus(null)` expecting `NullPointerException`.
+
+[16] COMMAND in_progress
+/bin/zsh -lc "sed -n '260,560p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/Years.java"
+
+[17] COMMAND completed
+/bin/zsh -lc "sed -n '260,560p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/Years.java"
+--- output ---
+     */
+    @Override
+    public List<TemporalUnit> getUnits() {
+        return Collections.singletonList(YEARS);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Gets the number of years in this amount.
+     *
+     * @return the number of years
+     */
+    public int getAmount() {
+        return years;
+    }
+
+    /**
+     * Checks if the amount is negative.
+     *
+     * @return true if the amount is negative, false if the amount is zero or positive
+     */
+    public boolean isNegative() {
+        return getAmount() < 0;
+    }
+
+    /**
+     * Checks if the amount is zero.
+     *
+     * @return true if the amount is zero, false if not
+     */
+    public boolean isZero() {
+        return getAmount() == 0;
+    }
+
+    /**
+     * Checks if the amount is positive.
+     *
+     * @return true if the amount is positive, false if the amount is zero or negative
+     */
+    public boolean isPositive() {
+        return getAmount() > 0;
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Returns a copy of this amount with the specified amount added.
+     * <p>
+     * The parameter is converted using {@link Years#from(TemporalAmount)}.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param amountToAdd  the amount to add, not null
+     * @return a {@code Years} based on this instance with the requested amount added, not null
+     * @throws DateTimeException if the specified amount contains an invalid unit
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public Years plus(TemporalAmount amountToAdd) {
+        return plus(Years.from(amountToAdd).getAmount());
+    }
+
+    /**
+     * Returns a copy of this amount with the specified number of years added.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param years  the amount of years to add, may be negative
+     * @return a {@code Years} based on this instance with the requested amount added, not null
+     * @throws ArithmeticException if the result overflows an int
+     */
+    public Years plus(int years) {
+        if (years == 0) {
+            return this;
+        }
+        return of(Math.addExact(this.years, years));
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Returns a copy of this amount with the specified amount subtracted.
+     * <p>
+     * The parameter is converted using {@link Years#from(TemporalAmount)}.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param amountToSubtract  the amount to subtract, not null
+     * @return a {@code Years} based on this instance with the requested amount subtracted, not null
+     * @throws DateTimeException if the specified amount contains an invalid unit
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public Years minus(TemporalAmount amountToSubtract) {
+        return minus(Years.from(amountToSubtract).getAmount());
+    }
+
+    /**
+     * Returns a copy of this amount with the specified number of years subtracted.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param years  the amount of years to add, may be negative
+     * @return a {@code Years} based on this instance with the requested amount subtracted, not null
+     * @throws ArithmeticException if the result overflows an int
+     */
+    public Years minus(int years) {
+        if (years == 0) {
+            return this;
+        }
+        return of(Math.subtractExact(this.years, years));
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Returns an instance with the amount multiplied by the specified scalar.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param scalar  the scalar to multiply by, not null
+     * @return the amount multiplied by the specified scalar, not null
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public Years multipliedBy(int scalar) {
+        if (scalar == 1) {
+            return this;
+        }
+        return of(Math.multiplyExact(years, scalar));
+    }
+
+    /**
+     * Returns an instance with the amount divided by the specified divisor.
+     * <p>
+     * The calculation uses integer division, thus 3 divided by 2 is 1.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param divisor  the amount to divide by, may be negative
+     * @return the amount divided by the specified divisor, not null
+     * @throws ArithmeticException if the divisor is zero
+     */
+    public Years dividedBy(int divisor) {
+        if (divisor == 1) {
+            return this;
+        }
+        return of(years / divisor);
+    }
+
+    /**
+     * Returns an instance with the amount negated.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @return the negated amount, not null
+     * @throws ArithmeticException if numeric overflow occurs, which only happens if
+     *  the amount is {@code Long.MIN_VALUE}
+     */
+    public Years negated() {
+        return multipliedBy(-1);
+    }
+
+    /**
+     * Returns a copy of this duration with a positive length.
+     * <p>
+     * This method returns a positive duration by effectively removing the sign from any negative total length.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @return the absolute amount, not null
+     * @throws ArithmeticException if numeric overflow occurs, which only happens if
+     *  the amount is {@code Long.MIN_VALUE}
+     */
+    public Years abs() {
+        return years < 0 ? negated() : this;
+    }
+
+    //-------------------------------------------------------------------------
+    /**
+     * Gets the number of years as a {@code Period}.
+     * <p>
+     * This returns a period with the same number of years.
+     *
+     * @return the equivalent period, not null
+     */
+    public Period toPeriod() {
+        return Period.ofYears(years);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Adds this amount to the specified temporal object.
+     * <p>
+     * This returns a temporal object of the same observable type as the input
+     * with this amount added.
+     * <p>
+     * In most cases, it is clearer to reverse the calling pattern by using
+     * {@link Temporal#plus(TemporalAmount)}.
+     * <pre>
+     *   // these two lines are equivalent, but the second approach is recommended
+     *   dateTime = thisAmount.addTo(dateTime);
+     *   dateTime = dateTime.plus(thisAmount);
+     * </pre>
+     * <p>
+     * Only non-zero amounts will be added.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param temporal  the temporal object to adjust, not null
+     * @return an object of the same type with the adjustment made, not null
+     * @throws DateTimeException if unable to add
+     * @throws UnsupportedTemporalTypeException if the YEARS unit is not supported
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    @Override
+    public Temporal addTo(Temporal temporal) {
+        if (years != 0) {
+            temporal = temporal.plus(years, YEARS);
+        }
+        return temporal;
+    }
+
+    /**
+     * Subtracts this amount from the specified temporal object.
+     * <p>
+     * This returns a temporal object of the same observable type as the input
+     * with this amount subtracted.
+     * <p>
+     * In most cases, it is clearer to reverse the calling pattern by using
+     * {@link Temporal#minus(TemporalAmount)}.
+     * <pre>
+     *   // these two lines are equivalent, but the second approach is recommended
+     *   dateTime = thisAmount.subtractFrom(dateTime);
+     *   dateTime = dateTime.minus(thisAmount);
+     * </pre>
+     * <p>
+     * Only non-zero amounts will be subtracted.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param temporal  the temporal object to adjust, not null
+     * @return an object of the same type with the adjustment made, not null
+     * @throws DateTimeException if unable to subtract
+     * @throws UnsupportedTemporalTypeException if the YEARS unit is not supported
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    @Override
+    public Temporal subtractFrom(Temporal temporal) {
+        if (years != 0) {
+            temporal = temporal.minus(years, YEARS);
+        }
+        return temporal;
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Compares this amount to the specified {@code Years}.
+     * <p>
+     * The comparison is based on the total length of the amounts.
+     * It is "consistent with equals", as defined by {@link Comparable}.
+     *
+     * @param otherAmount  the other amount, not null
+     * @return the comparator value, negative if less, positive if greater
+     */
+    @Override
+    public int compareTo(Years otherAmount) {
+        return Integer.compare(this.years, otherAmount.years);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Checks if this amount is equal to the specified {@code Years}.
+     * <p>
+     * The comparison is based on the total length of the durations.
+     *
+     * @param otherAmount  the other amount, null returns false
+     * @return true if the other amount is equal to this one
+     */
+    @Override
+    public boolean equals(@Nullable Object otherAmount) {
+        if (this == otherAmount) {
+            return true;
+        }
+        if (otherAmount instanceof Years) {
+            Years other = (Years) otherAmount;
+            return this.years == other.years;
+        }
+        return false;
+    }
+
+    /**
+     * A hash code for this amount.
+     *
+     * @return a suitable hash code
+     */
+    @Override
+    public int hashCode() {
+        return years;
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Returns a string representation of the number of years.
+     * This will be in the format 'PnY' where n is the number of years.
+     *
+     * @return the number of years in ISO-8601 string format
+
+
+[18] AGENT
+The CUT confirms `plus(TemporalAmount)` delegates through `Years.from(amountToAdd)`, so the null check path is the behavior being asserted. I’m now writing a focused version with only the necessary imports and a named local for the receiver.
+
+[19] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' compile.sh"
+
+[20] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' compile.sh"
+--- output ---
+#!/usr/bin/env bash
+set -u
+JAVAC="/Library/Java/JavaVirtualMachines/temurin-11.jdk/Contents/Home/bin/javac"
+CP="/Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestYears/test_plus_TemporalAmount_null/test-classes:/Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/target/classes:/Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/target/test-classes:/Users/tenghaha/.m2/repository/org/jspecify/jspecify/1.0.0/jspecify-1.0.0.jar:/Users/tenghaha/.m2/repository/org/joda/joda-convert/2.2.4/joda-convert-2.2.4.jar:/Users/tenghaha/.m2/repository/com/google/guava/guava/33.6.0-jre/guava-33.6.0-jre.jar:/Users/tenghaha/.m2/repository/com/google/guava/failureaccess/1.0.3/failureaccess-1.0.3.jar:/Users/tenghaha/.m2/repository/com/google/guava/listenablefuture/9999.0-empty-to-avoid-conflict-with-guava/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar:/Users/tenghaha/.m2/repository/com/google/guava/guava-testlib/33.6.0-jre/guava-testlib-33.6.0-jre.jar:/Users/tenghaha/.m2/repository/com/google/errorprone/error_prone_annotations/2.47.0/error_prone_annotations-2.47.0.jar:/Users/tenghaha/.m2/repository/com/google/j2objc/j2objc-annotations/3.1/j2objc-annotations-3.1.jar:/Users/tenghaha/.m2/repository/junit/junit/4.13.2/junit-4.13.2.jar:/Users/tenghaha/.m2/repository/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter/5.14.4/junit-jupiter-5.14.4.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.14.4/junit-jupiter-api-5.14.4.jar:/Users/tenghaha/.m2/repository/org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.jar:/Users/tenghaha/.m2/repository/org/junit/platform/junit-platform-commons/1.14.4/junit-platform-commons-1.14.4.jar:/Users/tenghaha/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-params/5.14.4/junit-jupiter-params-5.14.4.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-engine/5.14.4/junit-jupiter-engine-5.14.4.jar:/Users/tenghaha/.m2/repository/org/junit/platform/junit-platform-engine/1.14.4/junit-platform-engine-1.14.4.jar:/Users/tenghaha/.m2/repository/org/junit-pioneer/junit-pioneer/1.9.1/junit-pioneer-1.9.1.jar:/Users/tenghaha/.m2/repository/org/junit/platform/junit-platform-launcher/1.14.4/junit-platform-launcher-1.14.4.jar:/Users/tenghaha/.m2/repository/org/assertj/assertj-core/3.27.7/assertj-core-3.27.7.jar:/Users/tenghaha/.m2/repository/net/bytebuddy/byte-buddy/1.18.3/byte-buddy-1.18.3.jar:/Users/tenghaha/Projects/Codex_Improvement/tools/junit/junit-4.13.2.jar:/Users/tenghaha/Projects/Codex_Improvement/tools/junit/hamcrest-core-1.3.jar"
+OUT="/Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestYears/test_plus_TemporalAmount_null/test-classes"
+"$JAVAC" -encoding UTF-8 -cp "$CP" -d "$OUT" "TestYears_test_plus_TemporalAmount_null.java"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "COMPILE_OK"
+else
+  echo "COMPILE_FAIL (exit=$rc)"
+fi
+exit $rc
+
+
+[21] AGENT
+I’m keeping `Years.of(Integer.MIN_VALUE + 1)` inside the `assertThrows` lambda so the evaluated code remains in the same asserted execution block. The cleanup is limited to naming the receiver and deleting unrelated fixtures/imports.
+
+[22] FILE_CHANGE in_progress
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestYears/test_plus_TemporalAmount_null/TestYears_test_plus_TemporalAmount_null.java
+
+[23] FILE_CHANGE completed
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestYears/test_plus_TemporalAmount_null/TestYears_test_plus_TemporalAmount_null.java
+
+[24] AGENT
+The refactored test file has been created in the working directory. I’m running the required compile check now, using exactly `bash compile.sh`.
+
+[25] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[26] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[27] AGENT
+Refactored `TestYears_test_plus_TemporalAmount_null.java` for clarity and removed unrelated imports/fixtures. `bash compile.sh` completed with `COMPILE_OK`.

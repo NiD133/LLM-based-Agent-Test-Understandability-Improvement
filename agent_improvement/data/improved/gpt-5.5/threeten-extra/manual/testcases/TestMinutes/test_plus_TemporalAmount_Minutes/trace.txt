@@ -1,0 +1,905 @@
+[3] AGENT
+I’ll use the required compile-check workflow for this Java test task. First I’m reading the skill instructions, then I’ll inspect only the original test and CUT before writing the improved test in the workspace.
+
+[4] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[5] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[6] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[7] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[8] AGENT
+I’ve got the compile and repair rules. Next I’m checking the existing test’s exact calls and the `Minutes` API shape so the refactor preserves behavior rather than simplifying the scenario.
+
+[9] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/Minutes.java"
+
+[10] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,240p' /Users/tenghaha/Projects/Codex_Improvement/data/original/threeten-extra/manual/testcases/TestMinutes/TestMinutes_test_plus_TemporalAmount_Minutes.java"
+
+[11] COMMAND completed
+/bin/zsh -lc "sed -n '1,240p' /Users/tenghaha/Projects/Codex_Improvement/data/original/threeten-extra/manual/testcases/TestMinutes/TestMinutes_test_plus_TemporalAmount_Minutes.java"
+--- output ---
+package org.threeten.extra;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
+import java.time.Duration;
+import java.time.LocalTime;
+import java.time.format.DateTimeParseException;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import com.google.common.testing.EqualsTester;
+
+public class TestMinutes_test_plus_TemporalAmount_Minutes {
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_valid() {
+        return new Object[][] { { "PT0M", 0 }, { "PT1M", 1 }, { "PT2M", 2 }, { "PT123456789M", 123456789 }, { "PT+0M", 0 }, { "PT+2M", 2 }, { "PT-0M", 0 }, { "PT-2M", -2 }, { "PT0H", 0 }, { "PT1H", 60 }, { "PT2H", 120 }, { "PT1234H", 1234 * 60 }, { "PT+0H", 0 }, { "PT+2H", 120 }, { "PT-0H", 0 }, { "PT-2H", -120 }, { "P0D", 0 }, { "P1D", 1 * 24 * 60 }, { "P2D", 2 * 24 * 60 }, { "P1234D", 1234 * 24 * 60 }, { "P+0D", 0 }, { "P+2D", 2 * 24 * 60 }, { "P-0D", 0 }, { "P-2D", -2 * 24 * 60 }, { "PT0H0M", 0 }, { "PT2H3M", 123 }, { "PT+2H3M", 123 }, { "PT2H+3M", 123 }, { "PT-2H3M", -117 }, { "PT2H-3M", 117 }, { "PT-2H-3M", -123 }, { "P0DT0H0M", 0 }, { "P5DT2H4M", 5 * 24 * 60 + 2 * 60 + 4 } };
+    }
+
+    public static Object[][] data_invalid() {
+        return new Object[][] { { "P3W" }, { "P3Q" }, { "P1M2Y" }, { "3" }, { "-3" }, { "3M" }, { "-3M" }, { "P3M" }, { "P3" }, { "P-3" }, { "PM" }, { "T3" }, { "P3M" }, { "PT3S" }, { "PT3" } };
+    }
+
+    //-----------------------------------------------------------------------
+    @Test
+    public void test_plus_TemporalAmount_Minutes() {
+        Minutes test5 = Minutes.of(5);
+        assertEquals(Minutes.of(5), test5.plus(Minutes.of(0)));
+        assertEquals(Minutes.of(7), test5.plus(Minutes.of(2)));
+        assertEquals(Minutes.of(3), test5.plus(Minutes.of(-2)));
+        assertEquals(Minutes.of(Integer.MAX_VALUE), Minutes.of(Integer.MAX_VALUE - 1).plus(Minutes.of(1)));
+        assertEquals(Minutes.of(Integer.MIN_VALUE), Minutes.of(Integer.MIN_VALUE + 1).plus(Minutes.of(-1)));
+    }
+}
+
+
+[12] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/Minutes.java"
+--- output ---
+/*
+ * Copyright (c) 2007-present, Stephen Colebourne & Michael Nascimento Santos
+ *
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *  * Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ *  * Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ *  * Neither the name of JSR-310 nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package org.threeten.extra;
+
+import static java.time.temporal.ChronoUnit.MINUTES;
+
+import java.io.Serializable;
+import java.time.DateTimeException;
+import java.time.Duration;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
+import java.time.temporal.TemporalAmount;
+import java.time.temporal.TemporalUnit;
+import java.time.temporal.UnsupportedTemporalTypeException;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.joda.convert.FromString;
+import org.joda.convert.ToString;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * A minute-based amount of time, such as '8 minutes'.
+ * <p>
+ * This class models a quantity or amount of time in terms of minutes.
+ * It is a type-safe way of representing a number of minutes in an application.
+ * <p>
+ * The model is of a directed amount, meaning that the amount may be negative.
+ *
+ * <h3>Implementation Requirements:</h3>
+ * This class is immutable and thread-safe.
+ * <p>
+ * This class must be treated as a value type. Do not synchronize, rely on the
+ * identity hash code or use the distinction between equals() and ==.
+ */
+public final class Minutes
+        implements TemporalAmount, Comparable<Minutes>, Serializable {
+
+    /**
+     * A constant for zero minutes.
+     */
+    public static final Minutes ZERO = new Minutes(0);
+
+    /**
+     * A serialization identifier for this class.
+     */
+    private static final long serialVersionUID = 2602801843170589407L;
+
+    /**
+     * The number of minutes per day.
+     */
+    private static final int MINUTES_PER_DAY = 24 * 60;
+    /**
+     * The number of minutes per hour.
+     */
+    private static final int MINUTES_PER_HOUR = 60;
+
+    /**
+     * The pattern for parsing.
+     */
+    private static final Pattern PATTERN =
+            Pattern.compile("([-+]?)P"
+                    + "(?:([-+]?[0-9]+)D)?"
+                    + "(?:T"
+                    + "(?:([-+]?[0-9]+)H)?"
+                    + "(?:([-+]?[0-9]+)M)?)?", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * The number of minutes.
+     */
+    private final int minutes;
+
+    /**
+     * Obtains a {@code Minutes} representing a number of minutes.
+     * <p>
+     * The resulting amount will have the specified minutes.
+     *
+     * @param minutes  the number of minutes, positive or negative
+     * @return the number of minutes, not null
+     */
+    public static Minutes of(int minutes) {
+        if (minutes == 0) {
+            return ZERO;
+        }
+        return new Minutes(minutes);
+    }
+
+    /**
+     * Obtains a {@code Minutes} representing the number of minutes
+     * equivalent to a number of hours.
+     * <p>
+     * The resulting amount will be minute-based, with the number of minutes
+     * equal to the number of hours multiplied by 60.
+     *
+     * @param hours  the number of hours, positive or negative
+     * @return the amount with the input hours converted to minutes, not null
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public static Minutes ofHours(int hours) {
+        if (hours == 0) {
+            return ZERO;
+        }
+        return new Minutes(Math.multiplyExact(hours, MINUTES_PER_HOUR));
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Obtains an instance of {@code Minutes} from a temporal amount.
+     * <p>
+     * This obtains an instance based on the specified amount.
+     * A {@code TemporalAmount} represents an amount of time, which may be
+     * date-based or time-based, which this factory extracts to a {@code Minutes}.
+     * <p>
+     * The result is calculated by looping around each unit in the specified amount.
+     * Each amount is converted to minutes using {@link Temporals#convertAmount}.
+     * If the conversion yields a remainder, an exception is thrown.
+     * If the amount is zero, the unit is ignored.
+     *
+     * @param amount  the temporal amount to convert, not null
+     * @return the equivalent amount, not null
+     * @throws DateTimeException if unable to convert to a {@code Minutes}
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public static Minutes from(TemporalAmount amount) {
+        if (amount instanceof Minutes) {
+            return (Minutes) amount;
+        }
+        Objects.requireNonNull(amount, "amount");
+        int minutes = 0;
+        for (TemporalUnit unit : amount.getUnits()) {
+            long value = amount.get(unit);
+            if (value != 0) {
+                long[] converted = Temporals.convertAmount(value, unit, MINUTES);
+                if (converted[1] != 0) {
+                    throw new DateTimeException(
+                            "Amount could not be converted to a whole number of minutes: " + value + " " + unit);
+                }
+                minutes = Math.addExact(minutes, Math.toIntExact(converted[0]));
+            }
+        }
+        return of(minutes);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Obtains a {@code Minutes} from a text string such as {@code PTnM}.
+     * <p>
+     * This will parse the string produced by {@code toString()} and other
+     * related formats based on ISO-8601 {@code PnDTnHnM}.
+     * <p>
+     * The string starts with an optional sign, denoted by the ASCII negative
+     * or positive symbol. If negative, the whole amount is negated.
+     * The ASCII letter "P" is next in upper or lower case.
+     * There are three sections consisting of a number and a suffix.
+     * There is one section for days suffixed by "D",
+     * followed by one section for hours suffixed by "H",
+     * followed by one section for minutes suffixed by "M".
+     * At least one section must be present.
+     * If the hours or minutes section is present it must be prefixed by "T".
+     * If the hours or minutes section is omitted the "T" must be omitted.
+     * Letters must be in ASCII upper or lower case.
+     * The number part of each section must consist of ASCII digits.
+     * The number may be prefixed by the ASCII negative or positive symbol.
+     * The number must parse to an {@code int}.
+     * <p>
+     * The leading plus/minus sign, and negative values for days, hours and
+     * minutes are not part of the ISO-8601 standard.
+     * <p>
+     * For example, the following are valid inputs:
+     * <pre>
+     *   "PT2M"            -- Minutes.of(2)
+     *   "PT-2M"           -- Minutes.of(-2)
+     *   "-PT2M"           -- Minutes.of(-2)
+     *   "-PT-2M"          -- Minutes.of(2)
+     *   "PT3H"            -- Minutes.of(3 * 60)
+     *   "PT3H-2M"         -- Minutes.of(3 * 60 - 2)
+     *   "P3D"             -- Minutes.of(3 * 24 * 60)
+     *   "P3DT2M"          -- Minutes.of(3 * 24 * 60 + 2)
+     * </pre>
+     *
+     * @param text  the text to parse, not null
+     * @return the parsed period, not null
+     * @throws DateTimeParseException if the text cannot be parsed to a period
+     */
+    @FromString
+    public static Minutes parse(CharSequence text) {
+        Objects.requireNonNull(text, "text");
+        Matcher matcher = PATTERN.matcher(text);
+        if (matcher.matches()) {
+            int negate = "-".equals(matcher.group(1)) ? -1 : 1;
+            String daysStr = matcher.group(2);
+            String hoursStr = matcher.group(3);
+            String minutesStr = matcher.group(4);
+            if (daysStr != null || hoursStr != null || minutesStr != null) {
+                int minutes = 0;
+                if (minutesStr != null) {
+                    try {
+                        minutes = Integer.parseInt(minutesStr);
+                    } catch (NumberFormatException ex) {
+                        throw new DateTimeParseException("Text cannot be parsed to Minutes, non-numeric minutes", text, 0, ex);
+                    }
+                }
+                if (hoursStr != null) {
+                    try {
+                        int hoursAsMins = Math.multiplyExact(Integer.parseInt(hoursStr), MINUTES_PER_HOUR);
+                        minutes = Math.addExact(minutes, hoursAsMins);
+                    } catch (NumberFormatException ex) {
+                        throw new DateTimeParseException("Text cannot be parsed to Minutes, non-numeric hours", text, 0, ex);
+                    }
+                }
+                if (daysStr != null) {
+                    try {
+                        int daysAsMins = Math.multiplyExact(Integer.parseInt(daysStr), MINUTES_PER_DAY);
+                        minutes = Math.addExact(minutes, daysAsMins);
+                    } catch (NumberFormatException ex) {
+                        throw new DateTimeParseException("Text cannot be parsed to Minutes, non-numeric days", text, 0, ex);
+                    }
+                }
+                return of(Math.multiplyExact(minutes, negate));
+            }
+        }
+        throw new DateTimeParseException("Text cannot be parsed to Minutes", text, 0);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Obtains a {@code Minutes} consisting of the number of minutes between two temporals.
+
+
+[13] AGENT
+The original target test is a single `@Test` method, with a lot of unrelated imports and data-provider code around it. I’m going to keep the same five `plus(Minutes.of(...))` assertions and make the setup/expectations easier to scan, while dropping unrelated scaffolding from this focused output test.
+
+[14] COMMAND in_progress
+/bin/zsh -lc "sed -n '260,620p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/Minutes.java"
+
+[15] COMMAND completed
+/bin/zsh -lc "sed -n '260,620p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/Minutes.java"
+--- output ---
+     * Obtains a {@code Minutes} consisting of the number of minutes between two temporals.
+     * <p>
+     * The start temporal is included, but the end temporal is not.
+     * The result of this method can be negative if the end is before the start.
+     *
+     * @param startInclusive  the start temporal, inclusive, not null
+     * @param endExclusive  the end temporal, exclusive, not null
+     * @return the number of minutes between the start and end temporals, not null
+     */
+    public static Minutes between(Temporal startInclusive, Temporal endExclusive) {
+        return of(Math.toIntExact(MINUTES.between(startInclusive, endExclusive)));
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Constructs an instance using a specific number of minutes.
+     *
+     * @param minutes  the amount of minutes
+     */
+    private Minutes(int minutes) {
+        this.minutes = minutes;
+    }
+
+    /**
+     * Resolves singletons.
+     *
+     * @return the singleton instance
+     */
+    private Object readResolve() {
+        return Minutes.of(minutes);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Gets the value of the requested unit.
+     * <p>
+     * This returns a value for the supported unit - {@link ChronoUnit#MINUTES MINUTES}.
+     * All other units throw an exception.
+     *
+     * @param unit  the {@code TemporalUnit} for which to return the value
+     * @return the long value of the unit
+     * @throws UnsupportedTemporalTypeException if the unit is not supported
+     */
+    @Override
+    public long get(TemporalUnit unit) {
+        if (unit == MINUTES) {
+            return minutes;
+        }
+        throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
+    }
+
+    /**
+     * Gets the set of units supported by this amount.
+     * <p>
+     * The single supported unit is {@link ChronoUnit#MINUTES MINUTES}.
+     * <p>
+     * This set can be used in conjunction with {@link #get(TemporalUnit)} to
+     * access the entire state of the amount.
+     *
+     * @return a list containing the minutes unit, not null
+     */
+    @Override
+    public List<TemporalUnit> getUnits() {
+        return Collections.singletonList(MINUTES);
+    }
+    
+    //-----------------------------------------------------------------------
+    /**
+     * Gets the number of minutes in this amount.
+     *
+     * @return the number of minutes
+     */
+    public int getAmount() {
+        return minutes;
+    }
+
+    /**
+     * Checks if the amount is negative.
+     *
+     * @return true if the amount is negative, false if the amount is zero or positive
+     */
+    public boolean isNegative() {
+        return getAmount() < 0;
+    }
+
+    /**
+     * Checks if the amount is zero.
+     *
+     * @return true if the amount is zero, false if not
+     */
+    public boolean isZero() {
+        return getAmount() == 0;
+    }
+
+    /**
+     * Checks if the amount is positive.
+     *
+     * @return true if the amount is positive, false if the amount is zero or negative
+     */
+    public boolean isPositive() {
+        return getAmount() > 0;
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Returns a copy of this amount with the specified amount added.
+     * <p>
+     * The parameter is converted using {@link Minutes#from(TemporalAmount)}.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param amountToAdd  the amount to add, not null
+     * @return a {@code Minutes} based on this instance with the requested amount added, not null
+     * @throws DateTimeException if the specified amount contains an invalid unit
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public Minutes plus(TemporalAmount amountToAdd) {
+        return plus(Minutes.from(amountToAdd).getAmount());
+    }
+
+    /**
+     * Returns a copy of this amount with the specified number of minutes added.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param minutes  the amount of minutes to add, may be negative
+     * @return a {@code Minutes} based on this instance with the requested amount added, not null
+     * @throws ArithmeticException if the result overflows an int
+     */
+    public Minutes plus(int minutes) {
+        if (minutes == 0) {
+            return this;
+        }
+        return of(Math.addExact(this.minutes, minutes));
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Returns a copy of this amount with the specified amount subtracted.
+     * <p>
+     * The parameter is converted using {@link Minutes#from(TemporalAmount)}.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param amountToSubtract  the amount to subtract, not null
+     * @return a {@code Minutes} based on this instance with the requested amount subtracted, not null
+     * @throws DateTimeException if the specified amount contains an invalid unit
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public Minutes minus(TemporalAmount amountToSubtract) {
+        return minus(Minutes.from(amountToSubtract).getAmount());
+    }
+
+    /**
+     * Returns a copy of this amount with the specified number of minutes subtracted.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param minutes  the amount of minutes to add, may be negative
+     * @return a {@code Minutes} based on this instance with the requested amount subtracted, not null
+     * @throws ArithmeticException if the result overflows an int
+     */
+    public Minutes minus(int minutes) {
+        if (minutes == 0) {
+            return this;
+        }
+        return of(Math.subtractExact(this.minutes, minutes));
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Returns an instance with the amount multiplied by the specified scalar.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param scalar  the scalar to multiply by, not null
+     * @return the amount multiplied by the specified scalar, not null
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public Minutes multipliedBy(int scalar) {
+        if (scalar == 1) {
+            return this;
+        }
+        return of(Math.multiplyExact(minutes, scalar));
+    }
+
+    /**
+     * Returns an instance with the amount divided by the specified divisor.
+     * <p>
+     * The calculation uses integer division, thus 3 divided by 2 is 1.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param divisor  the amount to divide by, may be negative
+     * @return the amount divided by the specified divisor, not null
+     * @throws ArithmeticException if the divisor is zero
+     */
+    public Minutes dividedBy(int divisor) {
+        if (divisor == 1) {
+            return this;
+        }
+        return of(minutes / divisor);
+    }
+
+    /**
+     * Returns an instance with the amount negated.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @return the negated amount, not null
+     * @throws ArithmeticException if numeric overflow occurs, which only happens if
+     *  the amount is {@code Long.MIN_VALUE}
+     */
+    public Minutes negated() {
+        return multipliedBy(-1);
+    }
+
+    /**
+     * Returns a copy of this duration with a positive length.
+     * <p>
+     * This method returns a positive duration by effectively removing the sign from any negative total length.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @return the absolute amount, not null
+     * @throws ArithmeticException if numeric overflow occurs, which only happens if
+     *  the amount is {@code Long.MIN_VALUE}
+     */
+    public Minutes abs() {
+        return minutes < 0 ? negated() : this;
+    }
+
+    //-------------------------------------------------------------------------
+    /**
+     * Gets the number of minutes as a {@code Duration}.
+     * <p>
+     * This returns a duration with the same number of minutes.
+     *
+     * @return the equivalent duration, not null
+     */
+    public Duration toDuration() {
+        return Duration.ofMinutes(minutes);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Adds this amount to the specified temporal object.
+     * <p>
+     * This returns a temporal object of the same observable type as the input
+     * with this amount added.
+     * <p>
+     * In most cases, it is clearer to reverse the calling pattern by using
+     * {@link Temporal#plus(TemporalAmount)}.
+     * <pre>
+     *   // these two lines are equivalent, but the second approach is recommended
+     *   dateTime = thisAmount.addTo(dateTime);
+     *   dateTime = dateTime.plus(thisAmount);
+     * </pre>
+     * <p>
+     * Only non-zero amounts will be added.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param temporal  the temporal object to adjust, not null
+     * @return an object of the same type with the adjustment made, not null
+     * @throws DateTimeException if unable to add
+     * @throws UnsupportedTemporalTypeException if the MINUTES unit is not supported
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    @Override
+    public Temporal addTo(Temporal temporal) {
+        if (minutes != 0) {
+            temporal = temporal.plus(minutes, MINUTES);
+        }
+        return temporal;
+    }
+
+    /**
+     * Subtracts this amount from the specified temporal object.
+     * <p>
+     * This returns a temporal object of the same observable type as the input
+     * with this amount subtracted.
+     * <p>
+     * In most cases, it is clearer to reverse the calling pattern by using
+     * {@link Temporal#minus(TemporalAmount)}.
+     * <pre>
+     *   // these two lines are equivalent, but the second approach is recommended
+     *   dateTime = thisAmount.subtractFrom(dateTime);
+     *   dateTime = dateTime.minus(thisAmount);
+     * </pre>
+     * <p>
+     * Only non-zero amounts will be subtracted.
+     * <p>
+     * This instance is immutable and unaffected by this method call.
+     *
+     * @param temporal  the temporal object to adjust, not null
+     * @return an object of the same type with the adjustment made, not null
+     * @throws DateTimeException if unable to subtract
+     * @throws UnsupportedTemporalTypeException if the MINUTES unit is not supported
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    @Override
+    public Temporal subtractFrom(Temporal temporal) {
+        if (minutes != 0) {
+            temporal = temporal.minus(minutes, MINUTES);
+        }
+        return temporal;
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Compares this amount to the specified {@code Minutes}.
+     * <p>
+     * The comparison is based on the total length of the amounts.
+     * It is "consistent with equals", as defined by {@link Comparable}.
+     *
+     * @param otherAmount  the other amount, not null
+     * @return the comparator value, negative if less, positive if greater
+     */
+    @Override
+    public int compareTo(Minutes otherAmount) {
+        return Integer.compare(this.minutes, otherAmount.minutes);
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Checks if this amount is equal to the specified {@code Minutes}.
+     * <p>
+     * The comparison is based on the total length of the durations.
+     *
+     * @param otherAmount  the other amount, null returns false
+     * @return true if the other amount is equal to this one
+     */
+    @Override
+    public boolean equals(@Nullable Object otherAmount) {
+        if (this == otherAmount) {
+            return true;
+        }
+        if (otherAmount instanceof Minutes) {
+            Minutes other = (Minutes) otherAmount;
+            return this.minutes == other.minutes;
+        }
+        return false;
+    }
+
+    /**
+     * A hash code for this amount.
+     *
+     * @return a suitable hash code
+     */
+    @Override
+    public int hashCode() {
+        return minutes;
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Returns a string representation of the number of minutes.
+     * This will be in the format 'PTnM' where n is the number of minutes.
+     *
+     * @return the number of minutes in ISO-8601 string format
+
+
+[16] AGENT
+I’m writing the focused replacement test now. The helper keeps each assertion in the same shape: expected `Minutes`, base `Minutes`, and the `Minutes` temporal amount passed to `plus`.
+
+[17] FILE_CHANGE in_progress
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestMinutes/test_plus_TemporalAmount_Minutes/TestMinutes_test_plus_TemporalAmount_Minutes.java
+
+[18] FILE_CHANGE completed
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestMinutes/test_plus_TemporalAmount_Minutes/TestMinutes_test_plus_TemporalAmount_Minutes.java
+
+[19] AGENT
+The output test file is in place. I’m running the mandated compile check exactly as specified; if it fails, I’ll make only the smallest repair tied to the javac diagnostic.
+
+[20] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[21] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[22] AGENT
+Refactored `TestMinutes_test_plus_TemporalAmount_Minutes.java` for clarity and verified it with `bash compile.sh`: `COMPILE_OK`.

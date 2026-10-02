@@ -1,0 +1,19 @@
+package org.apache.commons.lang3.text;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class StrMatcher_ESTest_test00 extends StrMatcher_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test_stringMatcher_withNonEmptyString_returnsNonNullMatcher() throws Throwable {
+        // stringMatcher wraps a non-empty string in a StringMatcher; result must never be null
+        StrMatcher strMatcher = StrMatcher.stringMatcher("Zp_");
+        assertNotNull(strMatcher);
+    }
+}

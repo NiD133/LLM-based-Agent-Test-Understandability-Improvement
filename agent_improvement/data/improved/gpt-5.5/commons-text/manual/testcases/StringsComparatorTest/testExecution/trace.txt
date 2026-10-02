@@ -1,0 +1,617 @@
+[3] AGENT
+I’ll use the required compile-check workflow for this Java test change. First I need the skill instructions and the existing test/CUT signatures so the refactor preserves behavior exactly.
+
+[4] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md'
+
+[5] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md'
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[6] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md'
+
+[7] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-text/manual/testcases/StringsComparatorTest/StringsComparatorTest_testExecution.java'
+
+[8] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-text/manual/testcases/StringsComparatorTest/StringsComparatorTest_testExecution.java'
+--- output ---
+package org.apache.commons.text.diff;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import java.util.Arrays;
+import java.util.List;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+public class StringsComparatorTest_testExecution {
+
+    private List<String> before;
+
+    private List<String> after;
+
+    private int[] length;
+
+    private int[] lcs;
+
+    @BeforeEach
+    public void setUp() {
+        before = Arrays.asList("bottle", "nematode knowledge", "", "aa", "prefixed string", "ABCABBA", "glop glop", "coq", "spider-man");
+        after = Arrays.asList("noodle", "empty bottle", "", "C", "prefix", "CBABAC", "pas glop pas glop", "ane", "klingon");
+        length = new int[] { 6, 16, 0, 3, 9, 5, 8, 6, 13 };
+        lcs = new int[] { 3, 7, 0, 0, 6, 4, 9, 0, 2 };
+    }
+
+    @AfterEach
+    public void tearDown() {
+        before = null;
+        after = null;
+        length = null;
+    }
+
+    @Test
+    void testExecution() {
+        for (int i = 0; i < before.size(); ++i) {
+            final ExecutionVisitor<Character> ev = new ExecutionVisitor<>();
+            new StringsComparator(before.get(i), after.get(i)).getScript().visit(ev);
+            assertEquals(after.get(i), ev.getString());
+        }
+    }
+}
+
+
+[9] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md'
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[10] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-text/src/main/java/org/apache/commons/text/diff/StringsComparator.java'
+
+[11] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-text/src/main/java/org/apache/commons/text/diff/StringsComparator.java'
+--- output ---
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.commons.text.diff;
+
+/**
+ * <p>
+ * It is guaranteed that the comparisons will always be done as
+ * {@code o1.equals(o2)} where {@code o1} belongs to the first
+ * sequence and {@code o2} belongs to the second sequence. This can
+ * be important if subclassing is used for some elements in the first
+ * sequence and the {@code equals} method is specialized.
+ * </p>
+ * <p>
+ * Comparison can be seen from two points of view: either as giving the smallest
+ * modification allowing to transform the first sequence into the second one, or
+ * as giving the longest sequence which is a subsequence of both initial
+ * sequences. The {@code equals} method is used to compare objects, so any
+ * object can be put into sequences. Modifications include deleting, inserting
+ * or keeping one object, starting from the beginning of the first sequence.
+ * </p>
+ * <p>
+ * This class implements the comparison algorithm, which is the very efficient
+ * algorithm from Eugene W. Myers
+ * <a href="https://www.cis.upenn.edu/~bcpierce/courses/dd/papers/diff.ps">
+ * An O(ND) Difference Algorithm and Its Variations</a>. This algorithm produces
+ * the shortest possible {@link EditScript edit script} containing all the
+ * {@link EditCommand commands} needed to transform the first sequence into
+ * the second one.
+ *
+ * <p>
+ * This code has been adapted from Apache Commons Collections 4.0.
+ * </p>
+ *
+ * @see EditScript
+ * @see EditCommand
+ * @see CommandVisitor
+ * @since 1.0
+ */
+public class StringsComparator {
+
+    /**
+     * Holds the end part of a path under construction in a {@link StringsComparator StringsComparator}.
+     */
+    private static final class Snake {
+
+        /** Start index. */
+        private final int start;
+
+        /** End index. */
+        private final int end;
+
+        /** Diagonal number. */
+        private final int diag;
+
+        /**
+         * Constructs a new instance of Snake with specified indices.
+         *
+         * @param start  start index of the snake.
+         * @param end  end index of the snake.
+         * @param diag  diagonal number.
+         */
+        Snake(final int start, final int end, final int diag) {
+            this.start = start;
+            this.end   = end;
+            this.diag  = diag;
+        }
+
+        /**
+         * Gets the diagonal number of the snake.
+         *
+         * @return diagonal number of the snake.
+         */
+        public int getDiag() {
+            return diag;
+        }
+
+        /**
+         * Gets the end index of the snake.
+         *
+         * @return end index of the snake.
+         */
+        public int getEnd() {
+            return end;
+        }
+
+        /**
+         * Gets the start index of the snake.
+         *
+         * @return start index of the snake.
+         */
+        public int getStart() {
+            return start;
+        }
+    }
+
+    /**
+     * First character sequence.
+     */
+    private final String left;
+
+    /**
+     * Second character sequence.
+     */
+    private final String right;
+
+    /**
+     * Temporary array.
+     */
+    private final int[] vDown;
+
+    /**
+     * Temporary array.
+     */
+    private final int[] vUp;
+
+    /**
+     * Constructs a new instance of StringsComparator.
+     * <p>
+     * It is <em>guaranteed</em> that the comparisons will always be done as {@code o1.equals(o2)} where {@code o1} belongs to the first sequence and {@code o2}
+     * belongs to the second sequence. This can be important if subclassing is used for some elements in the first sequence and the {@code equals} method is
+     * specialized.
+     * </p>
+     *
+     * @param left  first character sequence to be compared.
+     * @param right second character sequence to be compared.
+     */
+    public StringsComparator(final String left, final String right) {
+        this.left = left;
+        this.right = right;
+
+        final int size = left.length() + right.length() + 2;
+        vDown = new int[size];
+        vUp   = new int[size];
+    }
+
+    /**
+     * Builds an edit script.
+     *
+     * @param start1 the begin of the first sequence to be compared.
+     * @param end1   the end of the first sequence to be compared.
+     * @param start2 the begin of the second sequence to be compared.
+     * @param end2   the end of the second sequence to be compared.
+     * @param script the edited script.
+     */
+    private void buildScript(final int start1, final int end1, final int start2, final int end2,
+            final EditScript<Character> script) {
+        final Snake middle = getMiddleSnake(start1, end1, start2, end2);
+
+        if (middle == null
+                || middle.getStart() == end1 && middle.getDiag() == end1 - end2
+                || middle.getEnd() == start1 && middle.getDiag() == start1 - start2) {
+
+            int i = start1;
+            int j = start2;
+            while (i < end1 || j < end2) {
+                if (i < end1 && j < end2 && left.charAt(i) == right.charAt(j)) {
+                    script.append(new KeepCommand<>(left.charAt(i)));
+                    ++i;
+                    ++j;
+                } else if (end1 - start1 > end2 - start2) {
+                    script.append(new DeleteCommand<>(left.charAt(i)));
+                    ++i;
+                } else {
+                    script.append(new InsertCommand<>(right.charAt(j)));
+                    ++j;
+                }
+            }
+
+        } else {
+
+            buildScript(start1, middle.getStart(),
+                        start2, middle.getStart() - middle.getDiag(),
+                        script);
+            for (int i = middle.getStart(); i < middle.getEnd(); ++i) {
+                script.append(new KeepCommand<>(left.charAt(i)));
+            }
+            buildScript(middle.getEnd(), end1,
+                        middle.getEnd() - middle.getDiag(), end2,
+                        script);
+        }
+    }
+
+    /**
+     * Builds a snake.
+     *
+     * @param start the value of the start of the snake.
+     * @param diag  the value of the diagonal of the snake.
+     * @param end1  the value of the end of the first sequence to be compared.
+     * @param end2  the value of the end of the second sequence to be compared.
+     * @return The snake built.
+     */
+    private Snake buildSnake(final int start, final int diag, final int end1, final int end2) {
+        int end = start;
+        while (end - diag < end2
+                && end < end1
+                && left.charAt(end) == right.charAt(end - diag)) {
+            ++end;
+        }
+        return new Snake(start, end, diag);
+    }
+
+    /**
+     * Gets the middle snake corresponding to two subsequences of the main sequences.
+     * <p>
+     * The snake is found using the MYERS Algorithm (this algorithms has also been implemented in the GNU diff program). This algorithm is explained in Eugene
+     * Myers article: <a href="https://www.cs.arizona.edu/people/gene/PAPERS/diff.ps"> An O(ND) Difference Algorithm and Its Variations</a>.
+     * </p>
+     *
+     * @param start1 the begin of the first sequence to be compared.
+     * @param end1   the end of the first sequence to be compared.
+     * @param start2 the begin of the second sequence to be compared.
+     * @param end2   the end of the second sequence to be compared.
+     * @return The middle snake.
+     */
+    private Snake getMiddleSnake(final int start1, final int end1, final int start2, final int end2) {
+        // Myers Algorithm
+        // Initializations
+        final int m = end1 - start1;
+        final int n = end2 - start2;
+        if (m == 0 || n == 0) {
+            return null;
+        }
+
+        final int delta  = m - n;
+        final int sum    = n + m;
+        final int offset = (sum % 2 == 0 ? sum : sum + 1) / 2;
+        vDown[1 + offset] = start1;
+        vUp[1 + offset]   = end1 + 1;
+
+        for (int d = 0; d <= offset; ++d) {
+            // Down
+            for (int k = -d; k <= d; k += 2) {
+                // First step
+
+                final int i = k + offset;
+                if (k == -d || k != d && vDown[i - 1] < vDown[i + 1]) {
+                    vDown[i] = vDown[i + 1];
+                } else {
+                    vDown[i] = vDown[i - 1] + 1;
+                }
+
+                int x = vDown[i];
+                int y = x - start1 + start2 - k;
+
+                while (x < end1 && y < end2 && left.charAt(x) == right.charAt(y)) {
+                    vDown[i] = ++x;
+                    ++y;
+                }
+                // Second step
+                if (delta % 2 != 0 && delta - d <= k && k <= delta + d && vUp[i - delta] <= vDown[i]) { // NOPMD
+                    return buildSnake(vUp[i - delta], k + start1 - start2, end1, end2);
+                }
+            }
+
+            // Up
+            for (int k = delta - d; k <= delta + d; k += 2) {
+                // First step
+                final int i = k + offset - delta;
+                if (k == delta - d
+                        || k != delta + d && vUp[i + 1] <= vUp[i - 1]) {
+                    vUp[i] = vUp[i + 1] - 1;
+                } else {
+                    vUp[i] = vUp[i - 1];
+                }
+
+                int x = vUp[i] - 1;
+                int y = x - start1 + start2 - k;
+                while (x >= start1 && y >= start2
+                        && left.charAt(x) == right.charAt(y)) {
+                    vUp[i] = x--;
+                    y--;
+                }
+                // Second step
+                if (delta % 2 == 0 && -d <= k && k <= d && vUp[i] <= vDown[i + delta]) { // NOPMD
+                    return buildSnake(vUp[i], k + start1 - start2, end1, end2);
+                }
+            }
+        }
+
+        // this should not happen
+        throw new IllegalStateException("Internal Error");
+    }
+
+    /**
+     * Gets the {@link EditScript} object.
+     * <p>
+     * It is guaranteed that the objects embedded in the {@link InsertCommand insert commands} come from the second sequence and that the objects embedded in
+     * either the {@link DeleteCommand delete commands} or {@link KeepCommand keep commands} come from the first sequence. This can be important if subclassing
+     * is used for some elements in the first sequence and the {@code equals} method is specialized.
+     * </p>
+     *
+     * @return The edit script resulting from the comparison of the two sequences.
+     */
+    public EditScript<Character> getScript() {
+        final EditScript<Character> script = new EditScript<>();
+        buildScript(0, left.length(), 0, right.length(), script);
+        return script;
+    }
+
+}
+
+
+[12] AGENT
+The original test is a simple fixture-driven loop; the unused `length` and `lcs` fields do not affect the assertion. I’m going to keep the exercised comparator calls and expected strings identical, but name the scenarios explicitly so the loop reads as data-driven test cases rather than parallel arrays.
+
+[13] FILE_CHANGE in_progress
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/manual/testcases/StringsComparatorTest/testExecution/StringsComparatorTest_testExecution.java
+
+[14] FILE_CHANGE completed
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/manual/testcases/StringsComparatorTest/testExecution/StringsComparatorTest_testExecution.java
+
+[15] AGENT
+The refactored test file is in place. I’m running the required compile check now; if javac reports a symbol or syntax issue, I’ll apply the repair-loop instructions with a focused edit.
+
+[16] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[17] COMMAND failed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+StringsComparatorTest_testExecution.java:38: error: cannot find symbol
+            final ExecutionVisitor<Character> visitor = new ExecutionVisitor<>();
+                  ^
+  symbol:   class ExecutionVisitor
+  location: class StringsComparatorTest_testExecution
+StringsComparatorTest_testExecution.java:38: error: cannot find symbol
+            final ExecutionVisitor<Character> visitor = new ExecutionVisitor<>();
+                                                            ^
+  symbol:   class ExecutionVisitor
+  location: class StringsComparatorTest_testExecution
+2 errors
+COMPILE_FAIL (exit=1)
+
+
+[18] AGENT
+The compile check failed because this isolated test file does not have the original suite’s `ExecutionVisitor` helper on the classpath. I’m adding the minimal local visitor with the same role: keep and insert commands build the resulting string, delete commands are ignored.
+
+[19] FILE_CHANGE in_progress
+update: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/manual/testcases/StringsComparatorTest/testExecution/StringsComparatorTest_testExecution.java
+
+[20] FILE_CHANGE completed
+update: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/manual/testcases/StringsComparatorTest/testExecution/StringsComparatorTest_testExecution.java
+
+[21] AGENT
+That helper is now local to the test and only supports the existing assertion path. I’m rerunning the required compile step.
+
+[22] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[23] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[24] AGENT
+Refactored `StringsComparatorTest_testExecution.java` for clearer scenario data and added the local visitor needed by the isolated test. Compile check passed: `COMPILE_OK`.

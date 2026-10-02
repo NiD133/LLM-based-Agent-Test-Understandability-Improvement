@@ -1,0 +1,1916 @@
+{
+  "status": "COMPILE_SUCCESS",
+  "attempts_used": 1,
+  "model": "claude-opus-4-8",
+  "prompt_version": "understandability_improvement_constraints",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `SeekableInMemoryByteChannelTest.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-compress/src/test/java/org/apache/commons/compress/utils/SeekableInMemoryByteChannelTest.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n"
+    },
+    {
+      "role": "assistant",
+      "content": "I'll write an improved version with clearer structure, named constants for magic values, descriptive variable names, and explanatory comments — while preserving every method call, argument, and assertion.Now let me compile-check.Compilation succeeded (`COMPILE_OK`). The refactored `SeekableInMemoryByteChannelTest.java` preserves every method call, argument, and assertion while improving understandability: tests are grouped into clearly-labeled sections (reading, writing, positioning, truncating, closed-channel contract), the `c` variable is renamed to `channel`, the `8_192` literal is a named `DEFAULT_BUFFER_SIZE` constant, and explanatory comments plus assertion messages clarify the non-obvious behaviors."
+    }
+  ],
+  "last_code": "/*\n * Licensed to the Apache Software Foundation (ASF) under one\n * or more contributor license agreements.  See the NOTICE file\n * distributed with this work for additional information\n * regarding copyright ownership.  The ASF licenses this file\n * to you under the Apache License, Version 2.0 (the\n * \"License\"); you may not use this file except in compliance\n * with the License.  You may obtain a copy of the License at\n *\n *   https://www.apache.org/licenses/LICENSE-2.0\n *\n * Unless required by applicable law or agreed to in writing,\n * software distributed under the License is distributed on an\n * \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY\n * KIND, either express or implied.  See the License for the\n * specific language governing permissions and limitations\n * under the License.\n */\n\npackage org.apache.commons.compress.utils;\n\nimport static org.junit.jupiter.api.Assertions.assertArrayEquals;\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nimport static org.junit.jupiter.api.Assertions.assertFalse;\nimport static org.junit.jupiter.api.Assertions.assertThrows;\n\nimport java.io.IOException;\nimport java.nio.ByteBuffer;\nimport java.nio.channels.ClosedChannelException;\nimport java.nio.channels.SeekableByteChannel;\nimport java.nio.charset.StandardCharsets;\nimport java.util.Arrays;\n\nimport org.junit.jupiter.api.Test;\nimport org.junit.jupiter.params.ParameterizedTest;\nimport org.junit.jupiter.params.provider.ValueSource;\n\n/**\n * Tests {@link SeekableInMemoryByteChannel}.\n * <p>\n * The tests are grouped by behaviour:\n * </p>\n * <ul>\n *   <li>reading existing content,</li>\n *   <li>writing content,</li>\n *   <li>moving the position,</li>\n *   <li>truncating the channel,</li>\n *   <li>and the contract obligations of a closed channel.</li>\n * </ul>\n */\nclass SeekableInMemoryByteChannelTest {\n\n    /** Sample payload shared by most tests; nine bytes of ASCII text. */\n    private final byte[] testData = \"Some data\".getBytes(StandardCharsets.UTF_8);\n\n    /**\n     * Capacity allocated by the no-argument constructor (see {@code IOUtils.DEFAULT_BUFFER_SIZE}); an empty channel grows to this size on the first write.\n     */\n    private static final int DEFAULT_BUFFER_SIZE = 8_192;\n\n    // -----------------------------------------------------------------------\n    // Reading\n    // -----------------------------------------------------------------------\n\n    @Test\n    void testReadContentsProperly() throws IOException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            final ByteBuffer readBuffer = ByteBuffer.allocate(testData.length);\n\n            final int readCount = channel.read(readBuffer);\n\n            assertEquals(testData.length, readCount, \"the whole payload should be read\");\n            assertArrayEquals(testData, readBuffer.array());\n            assertEquals(testData.length, channel.position(), \"the position should advance past the data\");\n        }\n    }\n\n    @Test\n    void testReadContentsWhenBiggerBufferSupplied() throws IOException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            // The buffer is one byte larger than the data, so only the data is read.\n            final ByteBuffer readBuffer = ByteBuffer.allocate(testData.length + 1);\n\n            final int readCount = channel.read(readBuffer);\n\n            assertEquals(testData.length, readCount, \"only as many bytes as exist should be read\");\n            assertArrayEquals(testData, Arrays.copyOf(readBuffer.array(), testData.length));\n            assertEquals(testData.length, channel.position());\n        }\n    }\n\n    @Test\n    void testReadDataFromSetPosition() throws IOException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            final ByteBuffer readBuffer = ByteBuffer.allocate(4);\n\n            // \"Some data\" -> reading 4 bytes starting at index 5 yields \"data\".\n            channel.position(5L);\n            final int readCount = channel.read(readBuffer);\n\n            assertEquals(4L, readCount);\n            assertEquals(\"data\", new String(readBuffer.array(), StandardCharsets.UTF_8));\n            assertEquals(testData.length, channel.position());\n        }\n    }\n\n    /*\n     * <q>Setting the position to a value that is greater than the current size is legal but does not change the size of the entity. A later attempt to read\n     * bytes at such a position will immediately return an end-of-file indication</q>\n     */\n    @ParameterizedTest\n    @ValueSource(ints = { 0, 1, 2, 3, 4, 5, 6 })\n    void testReadingFromAPositionAfterEndReturnsEOF(final int size) throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel(size)) {\n            final int position = 2;\n            channel.position(position);\n            assertEquals(position, channel.position());\n\n            final ByteBuffer readBuffer = ByteBuffer.allocate(5);\n            // Reading past the end yields EOF (-1); otherwise the remaining bytes are returned.\n            final int expectedReadCount = position >= size ? -1 : size - position;\n            assertEquals(expectedReadCount, channel.read(readBuffer));\n        }\n    }\n\n    @Test\n    void testSignalEOFWhenPositionAtTheEnd() throws IOException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            final ByteBuffer readBuffer = ByteBuffer.allocate(testData.length);\n\n            // Place the position one byte beyond the end of the data.\n            channel.position(testData.length + 1);\n            final int readCount = channel.read(readBuffer);\n\n            assertEquals(0L, readBuffer.position(), \"no bytes should be transferred into the buffer\");\n            assertEquals(-1, readCount, \"reading past the end signals EOF\");\n            assertEquals(-1, channel.read(readBuffer), \"a repeated read still signals EOF\");\n        }\n    }\n\n    // -----------------------------------------------------------------------\n    // Writing\n    // -----------------------------------------------------------------------\n\n    @Test\n    void testWriteDataProperly() throws IOException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel()) {\n            final ByteBuffer inData = ByteBuffer.wrap(testData);\n\n            final int writeCount = channel.write(inData);\n\n            assertEquals(testData.length, writeCount);\n            assertEquals(testData.length, channel.position());\n            assertArrayEquals(testData, Arrays.copyOf(channel.array(), (int) channel.position()));\n        }\n    }\n\n    @Test\n    void testWriteDataProperlyAfterPositionSet() throws IOException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            final ByteBuffer inData = ByteBuffer.wrap(testData);\n            // Writing the payload at position 5 leaves the first 5 bytes intact, then appends the full payload.\n            final ByteBuffer expectedData = ByteBuffer.allocate(testData.length + 5).put(testData, 0, 5).put(testData);\n\n            channel.position(5L);\n            final int writeCount = channel.write(inData);\n\n            assertEquals(testData.length, writeCount);\n            assertArrayEquals(expectedData.array(), Arrays.copyOf(channel.array(), (int) channel.size()));\n            assertEquals(testData.length + 5, channel.position());\n        }\n    }\n\n    /*\n     * <q>Setting the position to a value that is greater than the current size is legal but does not change the size of the entity. A later attempt to write\n     * bytes at such a position will cause the entity to grow to accommodate the new bytes; the values of any bytes between the previous end-of-file and the\n     * newly-written bytes are unspecified.</q>\n     */\n    @Test\n    void testWritingToAPositionAfterEndGrowsChannel() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel()) {\n            channel.position(2);\n            assertEquals(2, channel.position());\n\n            final ByteBuffer inData = ByteBuffer.wrap(testData);\n            assertEquals(testData.length, channel.write(inData));\n            // The empty channel's backing buffer grows to its default capacity.\n            assertEquals(DEFAULT_BUFFER_SIZE, channel.size());\n\n            // The bytes written at position 2 can be read back unchanged.\n            channel.position(2);\n            final ByteBuffer readBuffer = ByteBuffer.allocate(testData.length);\n            channel.read(readBuffer);\n            assertArrayEquals(testData, Arrays.copyOf(readBuffer.array(), testData.length));\n        }\n    }\n\n    @Test\n    void testThrowWhenSettingIncorrectPosition() throws IOException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel()) {\n            final ByteBuffer buffer = ByteBuffer.allocate(1);\n\n            // Write a single byte so the channel has a size of 1.\n            channel.write(buffer);\n            assertEquals(1, channel.position());\n\n            // A position one past the size is legal; reading there returns EOF.\n            channel.position(channel.size() + 1);\n            assertEquals(channel.size() + 1, channel.position());\n            assertEquals(-1, channel.read(buffer));\n\n            // A position beyond Integer.MAX_VALUE is also legal; reading returns EOF but writing fails.\n            channel.position(Integer.MAX_VALUE + 1L);\n            assertEquals(Integer.MAX_VALUE + 1L, channel.position());\n            assertEquals(-1, channel.read(buffer));\n            assertThrows(IOException.class, () -> channel.write(buffer));\n\n            // Only negative positions are rejected.\n            assertThrows(IllegalArgumentException.class, () -> channel.position(-1));\n            assertThrows(IllegalArgumentException.class, () -> channel.position(Integer.MIN_VALUE));\n            assertThrows(IllegalArgumentException.class, () -> channel.position(Long.MIN_VALUE));\n        }\n    }\n\n    // -----------------------------------------------------------------------\n    // Positioning\n    // -----------------------------------------------------------------------\n\n    @Test\n    void testSetProperPosition() throws IOException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            // position(long) is fluent and returns the channel, so position() reads back the value just set.\n            final long posAtFour = channel.position(4L).position();\n            final long posAtTheEnd = channel.position(testData.length).position();\n            final long posPastTheEnd = channel.position(testData.length + 1L).position();\n\n            assertEquals(4L, posAtFour);\n            assertEquals(channel.size(), posAtTheEnd);\n            assertEquals(testData.length + 1L, posPastTheEnd);\n        }\n    }\n\n    /*\n     * <q>IOException - If the new position is negative</q>\n     */\n    @Test\n    void testThrowsIOExceptionWhenPositionIsSetToANegativeValue() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel()) {\n            assertThrows(IllegalArgumentException.class, () -> channel.position(-1));\n        }\n    }\n\n    // -----------------------------------------------------------------------\n    // Truncating\n    // -----------------------------------------------------------------------\n\n    @Test\n    void testTruncateContentsProperly() throws ClosedChannelException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            channel.truncate(4);\n\n            final byte[] remaining = Arrays.copyOf(channel.array(), (int) channel.size());\n            assertEquals(\"Some\", new String(remaining, StandardCharsets.UTF_8));\n        }\n    }\n\n    @Test\n    void testSetProperPositionOnTruncate() throws IOException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            channel.position(testData.length);\n            channel.truncate(4L);\n\n            // Truncating below the current position pulls the position down to the new size.\n            assertEquals(4L, channel.position());\n            assertEquals(4L, channel.size());\n        }\n    }\n\n    /*\n     * <q> In either case, if the current position is greater than the given size then it is set to that size.</q>\n     */\n    @Test\n    void testTruncateDoesntChangeSmallPosition() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            channel.position(1);\n            channel.truncate(testData.length - 1);\n\n            assertEquals(testData.length - 1, channel.size());\n            // The position (1) is below the new size, so it is left unchanged.\n            assertEquals(1, channel.position());\n        }\n    }\n\n    /*\n     * <q> In either case, if the current position is greater than the given size then it is set to that size.</q>\n     */\n    @Test\n    void testTruncateMovesPositionWhenNewSizeIsBiggerThanSizeAndPositionIsEvenBigger() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            channel.position(2 * testData.length);\n            // The requested size exceeds the current size, so the size stays put...\n            channel.truncate(testData.length + 1);\n\n            assertEquals(testData.length, channel.size());\n            // ...but the position is clamped down to the requested (larger-than-size) value.\n            assertEquals(testData.length + 1, channel.position());\n        }\n    }\n\n    /*\n     * <q> In either case, if the current position is greater than the given size then it is set to that size.</q>\n     */\n    @Test\n    void testTruncateMovesPositionWhenNotResizingButPositionBiggerThanSize() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            channel.position(2 * testData.length);\n            // Requested size equals the current size, so the size is unchanged...\n            channel.truncate(testData.length);\n\n            assertEquals(testData.length, channel.size());\n            // ...while the out-of-range position is clamped down to that size.\n            assertEquals(testData.length, channel.position());\n        }\n    }\n\n    /*\n     * <q> In either case, if the current position is greater than the given size then it is set to that size.</q>\n     */\n    @Test\n    void testTruncateMovesPositionWhenShrinkingBeyondPosition() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            channel.position(4);\n            channel.truncate(3);\n\n            assertEquals(3, channel.size());\n            // Shrinking below the position pulls the position down with the size.\n            assertEquals(3, channel.position());\n        }\n    }\n\n    /*\n     * <q>If the given size is greater than or equal to the current size then the entity is not modified.</q>\n     */\n    @Test\n    void testTruncateToBiggerSizeDoesntChangeAnything() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            assertEquals(testData.length, channel.size());\n\n            channel.truncate(testData.length + 1);\n\n            assertEquals(testData.length, channel.size(), \"growing via truncate is a no-op\");\n            final ByteBuffer readBuffer = ByteBuffer.allocate(testData.length);\n            assertEquals(testData.length, channel.read(readBuffer));\n            assertArrayEquals(testData, Arrays.copyOf(readBuffer.array(), testData.length));\n        }\n    }\n\n    /*\n     * <q>If the given size is greater than or equal to the current size then the entity is not modified.</q>\n     */\n    @Test\n    void testTruncateToCurrentSizeDoesntChangeAnything() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel(testData)) {\n            assertEquals(testData.length, channel.size());\n\n            channel.truncate(testData.length);\n\n            assertEquals(testData.length, channel.size(), \"truncating to the current size is a no-op\");\n            final ByteBuffer readBuffer = ByteBuffer.allocate(testData.length);\n            assertEquals(testData.length, channel.read(readBuffer));\n            assertArrayEquals(testData, Arrays.copyOf(readBuffer.array(), testData.length));\n        }\n    }\n\n    @Test\n    void testThrowWhenTruncatingToIncorrectSize() throws IOException {\n        try (SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel()) {\n            final ByteBuffer buffer = ByteBuffer.allocate(1);\n\n            // Truncating to a size at or above the current size never shrinks the data.\n            channel.truncate(channel.size() + 1);\n            assertEquals(1, channel.read(buffer));\n            channel.truncate(Integer.MAX_VALUE + 1L);\n            assertEquals(0, channel.read(buffer));\n\n            // Only negative sizes are rejected.\n            assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1));\n            assertThrows(IllegalArgumentException.class, () -> channel.truncate(Integer.MIN_VALUE));\n            assertThrows(IllegalArgumentException.class, () -> channel.truncate(Long.MIN_VALUE));\n        }\n    }\n\n    /*\n     * <q>IllegalArgumentException - If the new position is negative</q>\n     */\n    @Test\n    void testThrowsIllegalArgumentExceptionWhenTruncatingToANegativeSize() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel()) {\n            assertThrows(IllegalArgumentException.class, () -> channel.truncate(-1));\n        }\n    }\n\n    // -----------------------------------------------------------------------\n    // Closing and closed-channel contract\n    //\n    // Contract Tests added in response to https://issues.apache.org/jira/browse/COMPRESS-499\n    // https://docs.oracle.com/javase/8/docs/api/java/io/Closeable.html#close()\n    // -----------------------------------------------------------------------\n\n    /*\n     * <q>If the stream is already closed then invoking this method has no effect.</q>\n     */\n    @Test\n    void testCloseIsIdempotent() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel()) {\n            channel.close();\n            assertFalse(channel.isOpen());\n            // Closing a second time has no effect and does not reopen the channel.\n            channel.close();\n            assertFalse(channel.isOpen());\n        }\n    }\n\n    @Test\n    void testThrowExceptionOnReadingClosedChannel() {\n        final SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel();\n        channel.close();\n        assertThrows(ClosedChannelException.class, () -> channel.read(ByteBuffer.allocate(1)));\n    }\n\n    @Test\n    void testThrowExceptionOnWritingToClosedChannel() {\n        final SeekableInMemoryByteChannel channel = new SeekableInMemoryByteChannel();\n        channel.close();\n        assertThrows(ClosedChannelException.class, () -> channel.write(ByteBuffer.allocate(1)));\n    }\n\n    /*\n     * <q>ClosedChannelException - If this channel is closed</q>\n     * https://docs.oracle.com/javase/8/docs/api/java/nio/channels/SeekableByteChannel.html#position(long)\n     */\n    @Test\n    void testThrowsClosedChannelExceptionWhenPositionIsReadOnClosedChannel() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel()) {\n            channel.close();\n            assertThrows(ClosedChannelException.class, channel::position);\n        }\n    }\n\n    /*\n     * <q>ClosedChannelException - If this channel is closed</q>\n     */\n    @Test\n    void testThrowsClosedChannelExceptionWhenPositionIsSetOnClosedChannel() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel()) {\n            channel.close();\n            assertThrows(ClosedChannelException.class, () -> channel.position(0));\n        }\n    }\n\n    /*\n     * <q>ClosedChannelException - If this channel is closed</q>\n     */\n    @Test\n    void testThrowsClosedChannelExceptionWhenSizeIsReadOnClosedChannel() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel()) {\n            channel.close();\n            assertThrows(ClosedChannelException.class, channel::size);\n        }\n    }\n\n    /*\n     * <q>ClosedChannelException - If this channel is closed</q>\n     */\n    @Test\n    void testThrowsClosedChannelExceptionWhenTruncateIsCalledOnClosedChannel() throws Exception {\n        try (SeekableByteChannel channel = new SeekableInMemoryByteChannel()) {\n            channel.close();\n            assertThrows(ClosedChannelException.class, () -> channel.truncate(0));\n        }\n    }\n}\n",
+  "last_error": "",
+  "last_java_path": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/commons-compress/manual/testsuites/SeekableInMemoryByteChannelTest/SeekableInMemoryByteChannelTest.java",
+  "initial_prompt": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `SeekableInMemoryByteChannelTest.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-compress/src/test/java/org/apache/commons/compress/utils/SeekableInMemoryByteChannelTest.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n",
+  "improvement_mode": "agent_improve_and_repair",
+  "file_prefix": "",
+  "project_id": "commons-compress",
+  "target_class": "org.apache.commons.compress.utils.SeekableInMemoryByteChannel",
+  "test_category": "manual_suite",
+  "test_id": "SeekableInMemoryByteChannelTest",
+  "suite_class": "SeekableInMemoryByteChannelTest",
+  "is_evosuite": false,
+  "scaffolding_java": null,
+  "original_java": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-compress/src/test/java/org/apache/commons/compress/utils/SeekableInMemoryByteChannelTest.java",
+  "agent_sandbox": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/commons-compress/manual/testsuites/SeekableInMemoryByteChannelTest",
+  "agent_compile_attempts": 1,
+  "skill_names": [
+    "compile-check",
+    "repair-loop"
+  ],
+  "skill_paths": [
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/compile-check/SKILL.md",
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/repair-loop/SKILL.md"
+  ],
+  "provider_model": "claude-opus-4-8",
+  "requested_provider_model": "claude-opus-4-8",
+  "actual_provider_model": "claude-opus-4-8",
+  "runtime_observability": {
+    "rate_limit_events": [],
+    "rate_limit_hit": false,
+    "rate_limit_warned": false,
+    "token_usage": {
+      "usage": {
+        "input_tokens": 2169,
+        "cache_creation_input_tokens": 24653,
+        "cache_read_input_tokens": 151821,
+        "output_tokens": 8896,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 24653
+        },
+        "inference_geo": "global",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 183,
+            "cache_read_input_tokens": 41829,
+            "cache_creation_input_tokens": 151,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 151,
+              "ephemeral_1h_input_tokens": 0
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 593,
+          "outputTokens": 26,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000723,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 2169,
+          "outputTokens": 8896,
+          "cacheReadInputTokens": 151821,
+          "cacheCreationInputTokens": 24653,
+          "webSearchRequests": 0,
+          "costUSD": 0.46323675,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000
+        }
+      },
+      "total_cost_usd": 0.46395975,
+      "num_turns": 7,
+      "duration_ms": 84668,
+      "duration_api_ms": 84611
+    },
+    "context_usage": {
+      "categories": [
+        {
+          "name": "System prompt",
+          "tokens": 2319,
+          "color": "promptBorder"
+        },
+        {
+          "name": "System tools",
+          "tokens": 15164,
+          "color": "inactive"
+        },
+        {
+          "name": "System tools (deferred)",
+          "tokens": 14258,
+          "color": "inactive",
+          "isDeferred": true
+        },
+        {
+          "name": "Skills",
+          "tokens": 1822,
+          "color": "warning"
+        },
+        {
+          "name": "Messages",
+          "tokens": 22825,
+          "color": "purple_FOR_SUBAGENTS_ONLY"
+        },
+        {
+          "name": "Free space",
+          "tokens": 957870,
+          "color": "promptBorder"
+        }
+      ],
+      "totalTokens": 41982,
+      "maxTokens": 1000000,
+      "rawMaxTokens": 1000000,
+      "autocompactSource": "auto",
+      "percentage": 4,
+      "gridRows": [
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "System prompt",
+            "tokens": 2319,
+            "percentage": 0,
+            "squareFullness": 0.4638
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 15164,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 15164,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 15164,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "warning",
+            "isFilled": true,
+            "categoryName": "Skills",
+            "tokens": 1822,
+            "percentage": 0,
+            "squareFullness": 0.3644
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 22825,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 22825,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 22825,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 22825,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 22825,
+            "percentage": 2,
+            "squareFullness": 0.5650000000000004
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 957870,
+            "percentage": 96,
+            "squareFullness": 1
+          }
+        ]
+      ],
+      "model": "claude-opus-4-8",
+      "memoryFiles": [],
+      "mcpTools": [],
+      "agents": [],
+      "slashCommands": {
+        "totalCommands": 15,
+        "includedCommands": 15,
+        "tokens": 915
+      },
+      "skills": {
+        "totalSkills": 15,
+        "includedSkills": 15,
+        "tokens": 1822,
+        "skillFrontmatter": [
+          {
+            "name": "compile-check",
+            "source": "projectSettings",
+            "tokens": 194
+          },
+          {
+            "name": "repair-loop",
+            "source": "projectSettings",
+            "tokens": 274
+          },
+          {
+            "name": "deep-research",
+            "source": "built-in",
+            "tokens": 161
+          },
+          {
+            "name": "update-config",
+            "source": "built-in",
+            "tokens": 235
+          },
+          {
+            "name": "keybindings-help",
+            "source": "built-in",
+            "tokens": 82
+          },
+          {
+            "name": "verify",
+            "source": "built-in",
+            "tokens": 86
+          },
+          {
+            "name": "code-review",
+            "source": "built-in",
+            "tokens": 119
+          },
+          {
+            "name": "simplify",
+            "source": "built-in",
+            "tokens": 62
+          },
+          {
+            "name": "fewer-permission-prompts",
+            "source": "built-in",
+            "tokens": 63
+          },
+          {
+            "name": "loop",
+            "source": "built-in",
+            "tokens": 113
+          },
+          {
+            "name": "claude-api",
+            "source": "built-in",
+            "tokens": 252
+          },
+          {
+            "name": "run",
+            "source": "built-in",
+            "tokens": 122
+          },
+          {
+            "name": "init",
+            "source": "built-in",
+            "tokens": 21
+          },
+          {
+            "name": "review",
+            "source": "built-in",
+            "tokens": 9
+          },
+          {
+            "name": "security-review",
+            "source": "built-in",
+            "tokens": 29
+          }
+        ]
+      },
+      "autoCompactThreshold": 967000,
+      "isAutoCompactEnabled": true,
+      "messageBreakdown": {
+        "toolCallTokens": 5663,
+        "toolResultTokens": 6880,
+        "attachmentTokens": 1633,
+        "assistantMessageTokens": 786,
+        "userMessageTokens": 849,
+        "redirectedContextTokens": 0,
+        "unattributedTokens": 7014,
+        "toolCallsByType": [
+          {
+            "name": "Read",
+            "callTokens": 151,
+            "resultTokens": 6687
+          },
+          {
+            "name": "Write",
+            "callTokens": 5433,
+            "resultTokens": 104
+          },
+          {
+            "name": "Bash",
+            "callTokens": 46,
+            "resultTokens": 61
+          },
+          {
+            "name": "Skill",
+            "callTokens": 33,
+            "resultTokens": 28
+          }
+        ],
+        "attachmentsByType": [
+          {
+            "name": "skill_listing",
+            "tokens": 1466
+          },
+          {
+            "name": "deferred_tools_delta",
+            "tokens": 155
+          },
+          {
+            "name": "command_permissions",
+            "tokens": 12
+          }
+        ]
+      },
+      "apiUsage": {
+        "input_tokens": 2,
+        "output_tokens": 183,
+        "cache_creation_input_tokens": 151,
+        "cache_read_input_tokens": 41829
+      }
+    },
+    "auth_used": "api_key",
+    "auth_attempts_available": [
+      "api_key"
+    ]
+  }
+}

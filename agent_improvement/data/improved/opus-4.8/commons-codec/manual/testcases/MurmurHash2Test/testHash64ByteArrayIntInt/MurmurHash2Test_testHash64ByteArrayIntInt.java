@@ -1,0 +1,59 @@
+package org.apache.commons.codec.digest;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import org.junit.jupiter.api.Test;
+
+/**
+ * Verifies {@link MurmurHash2#hash64(byte[], int, int)} against a fixed set of
+ * reference vectors: for each input byte array, hashing the whole array with a
+ * known seed must reproduce the pre-computed 64-bit hash.
+ */
+public class MurmurHash2Test_testHash64ByteArrayIntInt {
+
+    /** Non-default seed paired with {@link #EXPECTED_HASHES_64} below. */
+    private static final int SEED = 0x344d1f5c;
+
+    /**
+     * Reference inputs of decreasing length (16 bytes down to 0), exercising
+     * every "remaining bytes" branch of the 64-bit hash's tail handling.
+     */
+    private static final byte[][] INPUTS = {
+        { (byte) 0xed, (byte) 0x53, (byte) 0xc4, (byte) 0xa5, (byte) 0x3b, (byte) 0x1b, (byte) 0xbd, (byte) 0xc2, (byte) 0x52, (byte) 0x7d, (byte) 0xc3, (byte) 0xef, (byte) 0x53, (byte) 0x5f, (byte) 0xae, (byte) 0x3b },
+        { (byte) 0x21, (byte) 0x65, (byte) 0x59, (byte) 0x4e, (byte) 0xd8, (byte) 0x12, (byte) 0xf9, (byte) 0x05, (byte) 0x80, (byte) 0xe9, (byte) 0x1e, (byte) 0xed, (byte) 0xe4, (byte) 0x56, (byte) 0xbb },
+        { (byte) 0x2b, (byte) 0x02, (byte) 0xb1, (byte) 0xd0, (byte) 0x3d, (byte) 0xce, (byte) 0x31, (byte) 0x3d, (byte) 0x97, (byte) 0xc4, (byte) 0x91, (byte) 0x0d, (byte) 0xf7, (byte) 0x17 },
+        { (byte) 0x8e, (byte) 0xa7, (byte) 0x9a, (byte) 0x02, (byte) 0xe8, (byte) 0xb9, (byte) 0x6a, (byte) 0xda, (byte) 0x92, (byte) 0xad, (byte) 0xe9, (byte) 0x2d, (byte) 0x21 },
+        { (byte) 0xa9, (byte) 0x6d, (byte) 0xea, (byte) 0x77, (byte) 0x06, (byte) 0xce, (byte) 0x1b, (byte) 0x85, (byte) 0x48, (byte) 0x27, (byte) 0x4c, (byte) 0xfe },
+        { (byte) 0xec, (byte) 0x93, (byte) 0xa0, (byte) 0x12, (byte) 0x60, (byte) 0xee, (byte) 0xc8, (byte) 0x0a, (byte) 0xc5, (byte) 0x90, (byte) 0x62 },
+        { (byte) 0x55, (byte) 0x6d, (byte) 0x93, (byte) 0x66, (byte) 0x14, (byte) 0x6d, (byte) 0xdf, (byte) 0x00, (byte) 0x58, (byte) 0x99 },
+        { (byte) 0x3c, (byte) 0x72, (byte) 0x20, (byte) 0x1f, (byte) 0xd2, (byte) 0x59, (byte) 0x19, (byte) 0xdb, (byte) 0xa1 },
+        { (byte) 0x23, (byte) 0xa8, (byte) 0xb1, (byte) 0x87, (byte) 0x55, (byte) 0xf7, (byte) 0x8a, (byte) 0x4b },
+        { (byte) 0xe2, (byte) 0x42, (byte) 0x1c, (byte) 0x2d, (byte) 0xc1, (byte) 0xe4, (byte) 0x3e },
+        { (byte) 0x66, (byte) 0xa6, (byte) 0xb5, (byte) 0x5a, (byte) 0x74, (byte) 0xd9 },
+        { (byte) 0xe8, (byte) 0x76, (byte) 0xa8, (byte) 0x90, (byte) 0x76 },
+        { (byte) 0xeb, (byte) 0x25, (byte) 0x3f, (byte) 0x87 },
+        { (byte) 0x37, (byte) 0xa0, (byte) 0xa9 },
+        { (byte) 0x5b, (byte) 0x5d },
+        { (byte) 0x7e },
+        {},
+    };
+
+    /** Expected 64-bit hash of {@code INPUTS[i]} when hashed with {@link #SEED}. */
+    private static final long[] EXPECTED_HASHES_64 = {
+        0x0822b1481a92e97bL, 0xf8a9223fef0822ddL, 0x4b49e56affae3a89L, 0xc970296e32e1d1c1L,
+        0xe2f9f88789f1b08fL, 0x2b0459d9b4c10c61L, 0x377e97ea9197ee89L, 0xd2ccad460751e0e7L,
+        0xff162ca8d6da8c47L, 0xf12e051405769857L, 0xdabba41293d5b035L, 0xacf326b0bb690d0eL,
+        0x0617f431bc1a8e04L, 0x15b81f28d576e1b2L, 0x28c1fe59e4f8e5baL, 0x694dd315c9354ca9L,
+        0xa97052a8f088ae6cL,
+    };
+
+    @Test
+    void testHash64ByteArrayIntInt() {
+        for (int i = 0; i < INPUTS.length; i++) {
+            final byte[] data = INPUTS[i];
+            final long actual = MurmurHash2.hash64(data, data.length, SEED);
+            assertEquals(EXPECTED_HASHES_64[i], actual,
+                () -> String.format("Unexpected hash64 for input of length %d", data.length));
+        }
+    }
+}

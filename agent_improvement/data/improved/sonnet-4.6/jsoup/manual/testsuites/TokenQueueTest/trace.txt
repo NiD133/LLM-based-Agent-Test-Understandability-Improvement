@@ -1,0 +1,634 @@
+SESSION: claude-sonnet-4-6 | agent_improve_and_repair | understandability_improvement_constraints | TokenQueueTest
+════════════════════════════════════════════════════════════════════
+
+[Turn 1] ASSISTANT
+  [THINKING] I'll read both the original test file and the CUT to understand the code before improving it.
+  [TOOL] Read
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/jsoup/src/test/java/org/jsoup/parser/TokenQueueTest.java
+
+[Turn 1] TOOL RESULT (Read)
+  1	package org.jsoup.parser;
+  2	
+  3	import org.jsoup.Jsoup;
+  4	import org.jsoup.nodes.Document;
+  5	import org.junit.jupiter.api.Test;
+  6	import org.junit.jupiter.params.ParameterizedTest;
+  7	import org.junit.jupiter.params.provider.Arguments;
+  8	import org.junit.jupiter.params.provider.MethodSource;
+  9	
+  10	import java.util.regex.Pattern;
+  11	import java.util.stream.Stream;
+  12	
+  13	import static org.junit.jupiter.api.Assertions.*;
+  14	
+  15	/**
+  16	 * Token queue tests.
+  17	 */
+  18	public class TokenQueueTest {
+  19	    @Test public void chompBalanced() {
+  20	        TokenQueue tq = new TokenQueue(":contains(one (two) three) four");
+  21	        String pre = tq.consumeTo("(");
+  22	        String guts = tq.chompBalanced('(', ')');
+  23	        String remainder = tq.remainder();
+  24	
+  25	        assertEquals(":contains", pre);
+  26	        assertEquals("one (two) three", guts);
+  27	        assertEquals(" four", remainder);
+  28	    }
+  29	
+  30	    @Test public void chompEscapedBalanced() {
+  31	        TokenQueue tq = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+  32	        String pre = tq.consumeTo("(");
+  33	        String guts = tq.chompBalanced('(', ')');
+  34	        String remainder = tq.remainder();
+  35	
+  36	        assertEquals(":contains", pre);
+  37	        assertEquals("one (two) \\( \\) \\) three", guts);
+  38	        assertEquals("one (two) ( ) ) three", TokenQueue.unescape(guts));
+  39	        assertEquals(" four", remainder);
+  40	    }
+  41	
+  42	    @Test public void chompBalancedMatchesAsMuchAsPossible() {
+  43	        TokenQueue tq = new TokenQueue("unbalanced(something(or another)) else");
+  44	        tq.consumeTo("(");
+  45	        String match = tq.chompBalanced('(', ')');
+  46	        assertEquals("something(or another)", match);
+  47	    }
+  48	
+  49	    @Test public void unescape() {
+  50	        assertEquals("one ( ) \\", TokenQueue.unescape("one \\( \\) \\\\"));
+  51	    }
+  52	
+  53	    @Test public void unescape_2() {
+  54	        assertEquals("\\&", TokenQueue.unescape("\\\\\\&"));
+  55	    }
+  56	
+  57	    @ParameterizedTest
+  58	    @MethodSource("escapeCssIdentifier_WebPlatformTestParameters")
+  59	    @MethodSource("escapeCssIdentifier_additionalParameters")
+  60	    public void escapeCssIdentifier(String expected, String input) {
+  61	        assertEquals(expected, TokenQueue.escapeCssIdentifier(input));
+  62	    }
+  63	
+  64	    // https://github.com/web-platform-tests/wpt/blob/328fa1c67bf5dfa6f24571d4c41dd10224b6d247/css/cssom/escape.html
+  65	    private static Stream<Arguments> escapeCssIdentifier_WebPlatformTestParameters() {
+  66	        return Stream.of(
+  67	            Arguments.of("", ""),
+  68	
+  69	            // Null bytes
+  70	            Arguments.of("\uFFFD", "\0"),
+  71	            Arguments.of("a\uFFFD", "a\0"),
+  72	            Arguments.of("\uFFFDb", "\0b"),
+  73	            Arguments.of("a\uFFFDb", "a\0b"),
+  74	
+  75	            // Replacement character
+  76	            Arguments.of("\uFFFD", "\uFFFD"),
+  77	            Arguments.of("a\uFFFD", "a\uFFFD"),
+  78	            Arguments.of("\uFFFDb", "\uF
+    ... (truncated, 15893 chars total)
+
+[Turn 2] ASSISTANT
+  [TOOL] Read
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/jsoup/src/main/java/org/jsoup/parser/TokenQueue.java
+
+[Turn 2] TOOL RESULT (Read)
+  1	package org.jsoup.parser;
+  2	
+  3	import org.jsoup.internal.StringUtil;
+  4	import org.jsoup.helper.Validate;
+  5	
+  6	/**
+  7	 A character reader with helpers focusing on parsing CSS selectors. Used internally by jsoup. API subject to changes.
+  8	 */
+  9	
+  10	public class TokenQueue implements AutoCloseable {
+  11	    private static final char Esc = '\\'; // escape char for chomp balanced.
+  12	    private static final char Hyphen_Minus = '-';
+  13	    private static final char Unicode_Null = '\u0000';
+  14	    private static final char Replacement = '\uFFFD';
+  15	
+  16	    private final CharacterReader reader;
+  17	
+  18	    /**
+  19	     Create a new TokenQueue.
+  20	     @param data string of data to back queue.
+  21	     */
+  22	    public TokenQueue(String data) {
+  23	        reader = new CharacterReader(data);
+  24	    }
+  25	
+  26	    /**
+  27	     Is the queue empty?
+  28	     @return true if no data left in queue.
+  29	     */
+  30	    public boolean isEmpty() {
+  31	        return reader.isEmpty();
+  32	    }
+  33	
+  34	    /**
+  35	     Consume one character off queue.
+  36	     @return first character on queue.
+  37	     */
+  38	    public char consume() {
+  39	        return reader.consume();
+  40	    }
+  41	
+  42	    /**
+  43	     Drops the next character off the queue.
+  44	     */
+  45	    public void advance() {
+  46	        if (!isEmpty()) reader.advance();
+  47	    }
+  48	
+  49	    char current() {
+  50	        return reader.current();
+  51	    }
+  52	
+  53	    /**
+  54	     Tests if the next characters on the queue match the sequence, case-insensitively.
+  55	     @param seq String to check queue for.
+  56	     @return true if the next characters match.
+  57	     */
+  58	    public boolean matches(String seq) {
+  59	        return reader.matchesIgnoreCase(seq);
+  60	    }
+  61	
+  62	    /** Tests if the next character on the queue matches the character, case-sensitively. */
+  63	    public boolean matches(char c) {
+  64	        return reader.matches(c);
+  65	    }
+  66	
+  67	    /**
+  68	     Tests if the next characters match any of the sequences, case-<b>sensitively</b>.
+  69	     @param seq list of chars to case-sensitively check for
+  70	     @return true of any matched, false if none did
+  71	     */
+  72	    public boolean matchesAny(char... seq) {
+  73	        return reader.matchesAny(seq);
+  74	    }
+  75	
+  76	    /**
+  77	     If the queue case-insensitively matches the supplied string, consume it off the queue.
+  78	     @param seq String to search for, and if found, remove from queue.
+  79	     @return true if found and removed, false if not found.
+  80	     */
+  81	    public boolean matchChomp(String seq) {
+  82	        return reader.matchConsumeIgnoreCase(seq);
+  83	    }
+  84	
+  85	    /** If the queue matches the supplied (case-sensitive) character, consume it off the queue. */
+  86	    public boolean matchChomp(char c) {
+  87	        if (reader.matches(c)) {
+  88	            consume();
+  89	            return true;
+  90	        }
+  91	        return false;
+  92	    }
+  93	
+  94	    /**
+  95	     Tests if queue starts with a whitespace character.
+  96	     @return if starts with whitespac
+    ... (truncated, 18887 chars total)
+
+[Turn 3] ASSISTANT
+  [THINKING] Now I'll check the working directory to understand the compile setup before writing the improved test.
+  [TOOL] Glob
+    pattern: *
+    path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest
+
+[Turn 3] TOOL RESULT (Glob)
+  compile.sh
+
+[Turn 4] ASSISTANT
+  [TOOL] Read
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/compile.sh
+
+[Turn 4] TOOL RESULT (Read)
+  1	#!/usr/bin/env bash
+  2	# Compile-check the improved test in this working directory.
+  3	set -u
+  4	JAVAC="/Library/Java/JavaVirtualMachines/temurin-11.jdk/Contents/Home/bin/javac"
+  5	CP="/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/test-classes:/Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/jsoup/target/classes:/Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/jsoup/target/test-classes:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter/5.14.4/junit-jupiter-5.14.4.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.14.4/junit-jupiter-api-5.14.4.jar:/Users/tenghaha/.m2/repository/org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.jar:/Users/tenghaha/.m2/repository/org/junit/platform/junit-platform-commons/1.14.4/junit-platform-commons-1.14.4.jar:/Users/tenghaha/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-params/5.14.4/junit-jupiter-params-5.14.4.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-engine/5.14.4/junit-jupiter-engine-5.14.4.jar:/Users/tenghaha/.m2/repository/org/junit/platform/junit-platform-engine/1.14.4/junit-platform-engine-1.14.4.jar:/Users/tenghaha/.m2/repository/com/google/code/gson/gson/2.14.0/gson-2.14.0.jar:/Users/tenghaha/.m2/repository/com/google/errorprone/error_prone_annotations/2.48.0/error_prone_annotations-2.48.0.jar:/Users/tenghaha/.m2/repository/io/netty/netty-codec-http/4.2.14.Final/netty-codec-http-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-common/4.2.14.Final/netty-common-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-buffer/4.2.14.Final/netty-buffer-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-transport/4.2.14.Final/netty-transport-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-codec-base/4.2.14.Final/netty-codec-base-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-codec-compression/4.2.14.Final/netty-codec-compression-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-handler/4.2.14.Final/netty-handler-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-resolver/4.2.14.Final/netty-resolver-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-transport-native-unix-common/4.2.14.Final/netty-transport-native-unix-common-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/org/jspecify/jspecify/1.0.0/jspecify-1.0.0.jar:/Users/tenghaha/.m2/repository/com/google/re2j/re2j/1.8/re2j-1.8.jar:/Users/tenghaha/Projects/New_Agent_understandability_improvement/tools/junit/junit-4.13.2.jar:/Users/tenghaha/Projects/New_Agent_understandability_improvement/tools/junit/hamcrest-core-1.3.jar"
+  6	OUT="/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonne
+    ... (truncated, 3305 chars total)
+
+[Turn 5] ASSISTANT
+  [THINKING] Now I have all the context I need. I'll write the improved test with these understandability improvements:
+
+1. Rename `unescape_2` → descriptive name
+2. Rename `testNestedQuotes` / `testQuotedPattern` → remove redundant `test` prefix, more specific names
+3. Rename `chompBalancedThrowIllegalArgumentException` → shorter, convert try-catch to `assertThrows`
+4. Rename short variable names (`tq`, `q`, `s`) → `tokenQueue`, `result`
+5. Add section comments grouping tests by feature
+6. Consistent `@Test` annotation formatting
+  [TOOL] Write
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    content: package org.jsoup.parser;
+             
+             import org.jsoup.Jsoup;
+             import org.jsoup.nodes.Document;
+             import org.junit.jupiter.api.Test;
+             import org.junit.jupiter.params.ParameterizedTest;
+             import org.junit.jupiter.params.provider.Arguments;
+             import org.junit.jupiter.params.provider.MethodSource;
+             
+             import java.util.regex.Pattern;
+             import java.util.stream.Stream;
+             
+             import static org.junit.jupiter.api.Assertions.*;
+             
+             /**
+              * Tests for TokenQueue, covering CSS selector parsing, balanced bracket extraction,
+              * CSS identifier escaping/unescaping, and CSS identifier consumption.
+              */
+             public class TokenQueueTest {
+             
+                 // ---- chompBalanced ----
+             
+                 @Test
+                 public void chompBalanced() {
+                     TokenQueue tokenQueue = new TokenQueue(":contains(one (two) three) four");
+                     String pre = tokenQueue.consumeTo("(");
+                     String guts = tokenQueue.chompBalanced('(', ')');
+                     String remainder = tokenQueue.remainder();
+             
+                     assertEquals(":contains", pre);
+                     assertEquals("one (two) three", guts);
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test
+                 public void chompEscapedBalanced() {
+                     TokenQueue tokenQueue = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+                     String pre = tokenQueue.consumeTo("(");
+                     String guts = tokenQueue.chompBalanced('(', ')');
+                     String remainder = tokenQueue.remainder();
+             
+                     assertEquals(":contains", pre);
+                     assertEquals("one (two) \\( \\) \\) three", guts);
+                     assertEquals("one (two) ( ) ) three", TokenQueue.unescape(guts));
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test
+                 public void chompBalancedMatchesAsMuchAsPossible() {
+                     TokenQueue tokenQueue = new TokenQueue("unbalanced(something(or another)) else");
+                     tokenQueue.consumeTo("(");
+                     String match = tokenQueue.chompBalanced('(', ')');
+                     assertEquals("something(or another)", match);
+                 }
+             
+                 @Test
+                 public void chompBalancedThrowsWhenMismatched() {
+                     TokenQueue tokenQueue = new TokenQueue("unbalanced(something(or another)) else");
+                     tokenQueue.consumeTo("(");
+                     IllegalArgumentException exception = assertThrows(
+                         IllegalArgumentException.class,
+                         () -> tokenQueue.chompBalanced('(', '+')
+                     );
+                     assertEquals("Did not find balanced marker at 'something(or another)) else'", exception.getMessage());
+                 }
+             
+                 // ---- unescape ----
+             
+                 @Test
+                 public void unescape() {
+                     assertEquals("one ( ) \\", TokenQueue.unescape("one \\( \\) \\\\"));
+                 }
+             
+                 @Test
+                 public void unescape_doubleEscapedBackslashBeforeAmpersand() {
+                     assertEquals("\\&", TokenQueue.unescape("\\\\\\&"));
+                 }
+             
+                 // ---- escapeCssIdentifier ----
+             
+                 @ParameterizedTest
+                 @MethodSource("escapeCssIdentifier_WebPlatformTestParameters")
+                 @MethodSource("escapeCssIdentifier_additionalParameters")
+                 public void escapeCssIdentifier(String expected, String input) {
+                     assertEquals(expected, TokenQueue.escapeCssIdentifier(input));
+                 }
+             
+                 // https:/
+               ... (truncated, 14673 chars total)
+
+[Turn 5] TOOL RESULT (Write)
+  File created successfully at: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java (file state is current in your context — no need to Read it back)
+
+[Turn 6] ASSISTANT
+  [THINKING] I need to rewrite this — I replaced Unicode escape sequences with raw characters which corrupted the control characters and invisible code points. Let me restore the file with all original string literals intact, making only structural improvements.
+  [TOOL] Write
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    content: package org.jsoup.parser;
+             
+             import org.jsoup.Jsoup;
+             import org.jsoup.nodes.Document;
+             import org.junit.jupiter.api.Test;
+             import org.junit.jupiter.params.ParameterizedTest;
+             import org.junit.jupiter.params.provider.Arguments;
+             import org.junit.jupiter.params.provider.MethodSource;
+             
+             import java.util.regex.Pattern;
+             import java.util.stream.Stream;
+             
+             import static org.junit.jupiter.api.Assertions.*;
+             
+             /**
+              * Tests for TokenQueue, covering CSS selector parsing, balanced bracket extraction,
+              * CSS identifier escaping/unescaping, and CSS identifier consumption.
+              */
+             public class TokenQueueTest {
+             
+                 // ---- chompBalanced ----
+             
+                 @Test
+                 public void chompBalanced() {
+                     TokenQueue tokenQueue = new TokenQueue(":contains(one (two) three) four");
+                     String pre = tokenQueue.consumeTo("(");
+                     String guts = tokenQueue.chompBalanced('(', ')');
+                     String remainder = tokenQueue.remainder();
+             
+                     assertEquals(":contains", pre);
+                     assertEquals("one (two) three", guts);
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test
+                 public void chompEscapedBalanced() {
+                     TokenQueue tokenQueue = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+                     String pre = tokenQueue.consumeTo("(");
+                     String guts = tokenQueue.chompBalanced('(', ')');
+                     String remainder = tokenQueue.remainder();
+             
+                     assertEquals(":contains", pre);
+                     assertEquals("one (two) \\( \\) \\) three", guts);
+                     assertEquals("one (two) ( ) ) three", TokenQueue.unescape(guts));
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test
+                 public void chompBalancedMatchesAsMuchAsPossible() {
+                     TokenQueue tokenQueue = new TokenQueue("unbalanced(something(or another)) else");
+                     tokenQueue.consumeTo("(");
+                     String match = tokenQueue.chompBalanced('(', ')');
+                     assertEquals("something(or another)", match);
+                 }
+             
+                 @Test
+                 public void chompBalancedThrowsWhenMismatched() {
+                     TokenQueue tokenQueue = new TokenQueue("unbalanced(something(or another)) else");
+                     tokenQueue.consumeTo("(");
+                     IllegalArgumentException exception = assertThrows(
+                         IllegalArgumentException.class,
+                         () -> tokenQueue.chompBalanced('(', '+')
+                     );
+                     assertEquals("Did not find balanced marker at 'something(or another)) else'", exception.getMessage());
+                 }
+             
+                 // ---- unescape ----
+             
+                 @Test
+                 public void unescape() {
+                     assertEquals("one ( ) \\", TokenQueue.unescape("one \\( \\) \\\\"));
+                 }
+             
+                 @Test
+                 public void unescape_doubleEscapedBackslashBeforeAmpersand() {
+                     assertEquals("\\&", TokenQueue.unescape("\\\\\\&"));
+                 }
+             
+                 // ---- escapeCssIdentifier ----
+             
+                 @ParameterizedTest
+                 @MethodSource("escapeCssIdentifier_WebPlatformTestParameters")
+                 @MethodSource("escapeCssIdentifier_additionalParameters")
+                 public void escapeCssIdentifier(String expected, String input) {
+                     assertEquals(expected, TokenQueue.escapeCssIdentifier(input));
+                 }
+             
+                 // https:/
+               ... (truncated, 14673 chars total)
+
+[Turn 6] TOOL RESULT (Write)
+  The file /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java has been updated successfully. (file state is current in your context — no need to Read it back)
+
+[Turn 7] ASSISTANT
+  [THINKING] I'm still using literal Unicode characters which may corrupt control characters. Let me rewrite with the exact original escape sequences preserved.
+  [TOOL] Write
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    content: package org.jsoup.parser;
+             
+             import org.jsoup.Jsoup;
+             import org.jsoup.nodes.Document;
+             import org.junit.jupiter.api.Test;
+             import org.junit.jupiter.params.ParameterizedTest;
+             import org.junit.jupiter.params.provider.Arguments;
+             import org.junit.jupiter.params.provider.MethodSource;
+             
+             import java.util.regex.Pattern;
+             import java.util.stream.Stream;
+             
+             import static org.junit.jupiter.api.Assertions.*;
+             
+             /**
+              * Tests for TokenQueue, covering CSS selector parsing, balanced bracket extraction,
+              * CSS identifier escaping/unescaping, and CSS identifier consumption.
+              */
+             public class TokenQueueTest {
+             
+                 // ---- chompBalanced ----
+             
+                 @Test
+                 public void chompBalanced() {
+                     TokenQueue tokenQueue = new TokenQueue(":contains(one (two) three) four");
+                     String pre = tokenQueue.consumeTo("(");
+                     String guts = tokenQueue.chompBalanced('(', ')');
+                     String remainder = tokenQueue.remainder();
+             
+                     assertEquals(":contains", pre);
+                     assertEquals("one (two) three", guts);
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test
+                 public void chompEscapedBalanced() {
+                     TokenQueue tokenQueue = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+                     String pre = tokenQueue.consumeTo("(");
+                     String guts = tokenQueue.chompBalanced('(', ')');
+                     String remainder = tokenQueue.remainder();
+             
+                     assertEquals(":contains", pre);
+                     assertEquals("one (two) \\( \\) \\) three", guts);
+                     assertEquals("one (two) ( ) ) three", TokenQueue.unescape(guts));
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test
+                 public void chompBalancedMatchesAsMuchAsPossible() {
+                     TokenQueue tokenQueue = new TokenQueue("unbalanced(something(or another)) else");
+                     tokenQueue.consumeTo("(");
+                     String match = tokenQueue.chompBalanced('(', ')');
+                     assertEquals("something(or another)", match);
+                 }
+             
+                 @Test
+                 public void chompBalancedThrowsWhenMismatched() {
+                     TokenQueue tokenQueue = new TokenQueue("unbalanced(something(or another)) else");
+                     tokenQueue.consumeTo("(");
+                     IllegalArgumentException exception = assertThrows(
+                         IllegalArgumentException.class,
+                         () -> tokenQueue.chompBalanced('(', '+')
+                     );
+                     assertEquals("Did not find balanced marker at 'something(or another)) else'", exception.getMessage());
+                 }
+             
+                 // ---- unescape ----
+             
+                 @Test
+                 public void unescape() {
+                     assertEquals("one ( ) \\", TokenQueue.unescape("one \\( \\) \\\\"));
+                 }
+             
+                 @Test
+                 public void unescape_doubleEscapedBackslashBeforeAmpersand() {
+                     assertEquals("\\&", TokenQueue.unescape("\\\\\\&"));
+                 }
+             
+                 // ---- escapeCssIdentifier ----
+             
+                 @ParameterizedTest
+                 @MethodSource("escapeCssIdentifier_WebPlatformTestParameters")
+                 @MethodSource("escapeCssIdentifier_additionalParameters")
+                 public void escapeCssIdentifier(String expected, String input) {
+                     assertEquals(expected, TokenQueue.escapeCssIdentifier(input));
+                 }
+             
+                 // https:/
+               ... (truncated, 14673 chars total)
+
+[Turn 7] TOOL RESULT (Write)
+  The file /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java has been updated successfully. (file state is current in your context — no need to Read it back)
+
+[Turn 8] ASSISTANT
+  [THINKING] I still have Unicode encoding issues with control characters and lone surrogates. Let me write the file correctly, using Java Unicode escape sequences (with double backslash) for lone surrogates and control characters.
+  [TOOL] Write
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    content: package org.jsoup.parser;
+             
+             import org.jsoup.Jsoup;
+             import org.jsoup.nodes.Document;
+             import org.junit.jupiter.api.Test;
+             import org.junit.jupiter.params.ParameterizedTest;
+             import org.junit.jupiter.params.provider.Arguments;
+             import org.junit.jupiter.params.provider.MethodSource;
+             
+             import java.util.regex.Pattern;
+             import java.util.stream.Stream;
+             
+             import static org.junit.jupiter.api.Assertions.*;
+             
+             /**
+              * Tests for TokenQueue, covering CSS selector parsing, balanced bracket extraction,
+              * CSS identifier escaping/unescaping, and CSS identifier consumption.
+              */
+             public class TokenQueueTest {
+             
+                 // ---- chompBalanced ----
+             
+                 @Test
+                 public void chompBalanced() {
+                     TokenQueue tokenQueue = new TokenQueue(":contains(one (two) three) four");
+                     String pre = tokenQueue.consumeTo("(");
+                     String guts = tokenQueue.chompBalanced('(', ')');
+                     String remainder = tokenQueue.remainder();
+             
+                     assertEquals(":contains", pre);
+                     assertEquals("one (two) three", guts);
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test
+                 public void chompEscapedBalanced() {
+                     TokenQueue tokenQueue = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+                     String pre = tokenQueue.consumeTo("(");
+                     String guts = tokenQueue.chompBalanced('(', ')');
+                     String remainder = tokenQueue.remainder();
+             
+                     assertEquals(":contains", pre);
+                     assertEquals("one (two) \\( \\) \\) three", guts);
+                     assertEquals("one (two) ( ) ) three", TokenQueue.unescape(guts));
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test
+                 public void chompBalancedMatchesAsMuchAsPossible() {
+                     TokenQueue tokenQueue = new TokenQueue("unbalanced(something(or another)) else");
+                     tokenQueue.consumeTo("(");
+                     String match = tokenQueue.chompBalanced('(', ')');
+                     assertEquals("something(or another)", match);
+                 }
+             
+                 @Test
+                 public void chompBalancedThrowsWhenMismatched() {
+                     TokenQueue tokenQueue = new TokenQueue("unbalanced(something(or another)) else");
+                     tokenQueue.consumeTo("(");
+                     IllegalArgumentException exception = assertThrows(
+                         IllegalArgumentException.class,
+                         () -> tokenQueue.chompBalanced('(', '+')
+                     );
+                     assertEquals("Did not find balanced marker at 'something(or another)) else'", exception.getMessage());
+                 }
+             
+                 // ---- unescape ----
+             
+                 @Test
+                 public void unescape() {
+                     assertEquals("one ( ) \\", TokenQueue.unescape("one \\( \\) \\\\"));
+                 }
+             
+                 @Test
+                 public void unescape_doubleEscapedBackslashBeforeAmpersand() {
+                     assertEquals("\\&", TokenQueue.unescape("\\\\\\&"));
+                 }
+             
+                 // ---- escapeCssIdentifier ----
+             
+                 @ParameterizedTest
+                 @MethodSource("escapeCssIdentifier_WebPlatformTestParameters")
+                 @MethodSource("escapeCssIdentifier_additionalParameters")
+                 public void escapeCssIdentifier(String expected, String input) {
+                     assertEquals(expected, TokenQueue.escapeCssIdentifier(input));
+                 }
+             
+                 // https:/
+               ... (truncated, 14673 chars total)
+
+[Turn 8] TOOL RESULT (Write)
+  The file /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java has been updated successfully. (file state is current in your context — no need to Read it back)
+
+[Turn 9] ASSISTANT
+  [THINKING] Let me try compiling now to see what issues arise.
+  [TOOL] Skill
+    skill: compile-check
+
+[Turn 9] TOOL RESULT (Skill)
+  Launching skill: compile-check
+
+[Turn 10] ASSISTANT
+  [TOOL] Bash
+    command: bash compile.sh
+    description: Compile the improved test file
+
+[Turn 10] TOOL RESULT (Bash)
+  COMPILE_OK
+
+[Turn 11] ASSISTANT
+  [THINKING] The file compiled successfully. 
+
+`COMPILE_OK` — the improved `TokenQueueTest.java` compiles cleanly with all structural improvements: method renames (`unescape_2` → `unescape_doubleEscapedBackslashBeforeAmpersand`, `testNestedQuotes` → `nestedQuotesInSelector`, `testQuotedPattern` → `quotedPatternInSelector`, `chompBalancedThrowIllegalArgumentException` → `chompBalancedThrowsWhenMismatched`), local variable names (`tq`/`q` → `tokenQueue`, `s` → `result`), conversion of try-catch to `assertThrows`, section comments, and consistent `@Test` formatting.
+
+════════════════════════════════════════════════════════════════════
+SESSION END: model_turns=11 | num_turns=12 | cost=$1.1701 | is_error=False | result=The file compiled successfully. 
+
+`COMPILE_OK` — the improved `TokenQueueTest.java` compiles cleanly with all structural improvements: method renames (`unescape_2` → `unescape_doubleEscapedBackslashBeforeAmpersand`, `testNestedQuotes` → `nestedQuotesInSelector`, `testQuotedPattern` → `quotedPatternInSelector`, `chompBalancedThrowIllegalArgumentException` → `chompBalancedThrowsWhenMismatched`), local variable names (`tq`/`q` → `tokenQueue`, `s` → `result`), conversion of try-catch to `assertThrows`, section comments, and consistent `@Test` formatting.

@@ -1,0 +1,95 @@
+package org.threeten.extra.chrono;
+
+import static java.time.temporal.ChronoUnit.DAYS;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import java.time.LocalDate;
+
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+
+/**
+ * Tests that {@link Symmetry010Date#until} correctly counts the number of DAYS
+ * between a Symmetry010Date and an ISO LocalDate representing the same moment.
+ *
+ * Each entry in {@code data_samples} is a (sym010Date, isoEquivalent) pair:
+ * two date objects that represent the same historical day in their respective calendars.
+ * The test offsets the ISO date by a fixed amount and verifies that {@code until(DAYS)}
+ * returns exactly that offset.
+ */
+@SuppressWarnings({ "static-method" })
+public class TestSymmetry010Chronology_test_until_DAYS {
+
+    /**
+     * Pairs of (Symmetry010Date, ISO LocalDate) representing the same historical moment.
+     * The Symmetry010 calendar and the ISO calendar use different day-numbering,
+     * so date values differ even though the underlying moment is the same.
+     */
+    public static Object[][] data_samples() {
+        return new Object[][] {
+            // Constantine the Great, Roman emperor (d. 337)
+            { Symmetry010Date.of(1, 1, 1),       LocalDate.of(1, 1, 1) },
+            { Symmetry010Date.of(272, 2, 28),     LocalDate.of(272, 2, 27) },
+            { Symmetry010Date.of(272, 2, 27),     LocalDate.of(272, 2, 26) },
+            // Charlemagne, Frankish king (d. 814)
+            { Symmetry010Date.of(742, 3, 27),     LocalDate.of(742, 4, 2) },
+            { Symmetry010Date.of(742, 4, 2),      LocalDate.of(742, 4, 7) },
+            // Norman Conquest: Battle of Hastings
+            { Symmetry010Date.of(1066, 10, 14),   LocalDate.of(1066, 10, 14) },
+            // Francesco Petrarca – Italian scholar, "Father of Humanism" (d. 1374)
+            { Symmetry010Date.of(1304, 7, 21),    LocalDate.of(1304, 7, 20) },
+            { Symmetry010Date.of(1304, 7, 20),    LocalDate.of(1304, 7, 19) },
+            // Charles the Bold, Duke of Burgundy (d. 1477)
+            { Symmetry010Date.of(1433, 11, 12),   LocalDate.of(1433, 11, 10) },
+            { Symmetry010Date.of(1433, 11, 10),   LocalDate.of(1433, 11, 8) },
+            // Leonardo da Vinci, Italian painter and polymath (d. 1519)
+            { Symmetry010Date.of(1452, 4, 11),    LocalDate.of(1452, 4, 15) },
+            { Symmetry010Date.of(1452, 4, 15),    LocalDate.of(1452, 4, 19) },
+            // Christopher Columbus's expedition makes landfall in the Caribbean
+            { Symmetry010Date.of(1492, 10, 10),   LocalDate.of(1492, 10, 12) },
+            { Symmetry010Date.of(1492, 10, 12),   LocalDate.of(1492, 10, 14) },
+            // Galileo Galilei, Italian astronomer and physicist (d. 1642)
+            { Symmetry010Date.of(1564, 2, 18),    LocalDate.of(1564, 2, 15) },
+            { Symmetry010Date.of(1564, 2, 15),    LocalDate.of(1564, 2, 12) },
+            // William Shakespeare baptized in Stratford-upon-Avon (d. 1616)
+            { Symmetry010Date.of(1564, 4, 28),    LocalDate.of(1564, 4, 26) },
+            { Symmetry010Date.of(1564, 4, 26),    LocalDate.of(1564, 4, 24) },
+            // Sir Isaac Newton, English physicist and mathematician (d. 1727)
+            { Symmetry010Date.of(1643, 1, 7),     LocalDate.of(1643, 1, 4) },
+            { Symmetry010Date.of(1643, 1, 4),     LocalDate.of(1643, 1, 1) },
+            // Leonhard Euler, Swiss mathematician and physicist (d. 1783)
+            { Symmetry010Date.of(1707, 4, 12),    LocalDate.of(1707, 4, 15) },
+            { Symmetry010Date.of(1707, 4, 15),    LocalDate.of(1707, 4, 18) },
+            // French Revolution: Citizens of Paris storm the Bastille
+            { Symmetry010Date.of(1789, 7, 16),    LocalDate.of(1789, 7, 14) },
+            { Symmetry010Date.of(1789, 7, 14),    LocalDate.of(1789, 7, 12) },
+            // Albert Einstein, German theoretical physicist (d. 1955)
+            { Symmetry010Date.of(1879, 3, 14),    LocalDate.of(1879, 3, 14) },
+            // Dennis MacAlistair Ritchie, American computer scientist (d. 2011)
+            { Symmetry010Date.of(1941, 9, 11),    LocalDate.of(1941, 9, 9) },
+            { Symmetry010Date.of(1941, 9, 9),     LocalDate.of(1941, 9, 7) },
+            // Unix time begins at 00:00:00 UTC
+            { Symmetry010Date.of(1970, 1, 4),     LocalDate.of(1970, 1, 1) },
+            { Symmetry010Date.of(1970, 1, 1),     LocalDate.of(1969, 12, 29) },
+            // Start of the 21st century / 3rd millennium
+            { Symmetry010Date.of(1999, 12, 29),   LocalDate.of(2000, 1, 1) },
+            { Symmetry010Date.of(2000, 1, 1),     LocalDate.of(2000, 1, 3) },
+        };
+    }
+
+    /**
+     * Verifies that {@code sym010Date.until(isoDate, DAYS)} returns the correct
+     * number of days for offsets of 0, +1, +35, and -40 days from the ISO equivalent.
+     *
+     * <p>Because both dates represent the same moment, shifting the ISO date by N days
+     * and asking how many days {@code sym010Date} is behind must return exactly N.
+     */
+    @ParameterizedTest
+    @MethodSource("data_samples")
+    public void test_until_DAYS(Symmetry010Date sym010Date, LocalDate isoEquivalent) {
+        assertEquals(0,   sym010Date.until(isoEquivalent.plusDays(0),  DAYS));
+        assertEquals(1,   sym010Date.until(isoEquivalent.plusDays(1),  DAYS));
+        assertEquals(35,  sym010Date.until(isoEquivalent.plusDays(35), DAYS));
+        assertEquals(-40, sym010Date.until(isoEquivalent.minusDays(40), DAYS));
+    }
+}

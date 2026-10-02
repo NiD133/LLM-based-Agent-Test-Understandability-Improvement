@@ -1,0 +1,30 @@
+package org.jsoup.internal;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+public class StringUtilTest_isDigit {
+
+    @Test
+    void isDigit() {
+        assertTrue(StringUtil.isDigit('0'));
+        assertTrue(StringUtil.isDigit('1'));
+        assertTrue(StringUtil.isDigit('2'));
+        assertTrue(StringUtil.isDigit('3'));
+        assertTrue(StringUtil.isDigit('4'));
+        assertTrue(StringUtil.isDigit('5'));
+        assertTrue(StringUtil.isDigit('6'));
+        assertTrue(StringUtil.isDigit('7'));
+        assertTrue(StringUtil.isDigit('8'));
+        assertTrue(StringUtil.isDigit('9'));
+
+        assertFalse(StringUtil.isDigit('a'));
+        assertFalse(StringUtil.isDigit('A'));
+        assertFalse(StringUtil.isDigit('ä'));
+        assertFalse(StringUtil.isDigit('Ä'));
+        assertFalse(StringUtil.isDigit('١'));
+        assertFalse(StringUtil.isDigit('୳'));
+    }
+}

@@ -1,0 +1,608 @@
+[3] AGENT
+I’ll use the required compile-check workflow after editing the generated test, and I’ll restrict reads to the CUT, the original test, and this working directory. First I’m loading the skill instructions and the two Java files so the refactor stays behavior-preserving.
+
+[4] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[5] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[6] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[7] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[8] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,240p' /Users/tenghaha/Projects/Codex_Improvement/data/original/threeten-extra/manual/testcases/TestPaxChronology/TestPaxChronology_test_Chronology_range.java"
+
+[9] COMMAND completed
+/bin/zsh -lc "sed -n '1,240p' /Users/tenghaha/Projects/Codex_Improvement/data/original/threeten-extra/manual/testcases/TestPaxChronology/TestPaxChronology_test_Chronology_range.java"
+--- output ---
+package org.threeten.extra.chrono;
+
+import static java.time.temporal.ChronoField.ALIGNED_DAY_OF_WEEK_IN_MONTH;
+import static java.time.temporal.ChronoField.ALIGNED_DAY_OF_WEEK_IN_YEAR;
+import static java.time.temporal.ChronoField.ALIGNED_WEEK_OF_MONTH;
+import static java.time.temporal.ChronoField.ALIGNED_WEEK_OF_YEAR;
+import static java.time.temporal.ChronoField.DAY_OF_MONTH;
+import static java.time.temporal.ChronoField.DAY_OF_WEEK;
+import static java.time.temporal.ChronoField.DAY_OF_YEAR;
+import static java.time.temporal.ChronoField.ERA;
+import static java.time.temporal.ChronoField.MINUTE_OF_DAY;
+import static java.time.temporal.ChronoField.MONTH_OF_YEAR;
+import static java.time.temporal.ChronoField.PROLEPTIC_MONTH;
+import static java.time.temporal.ChronoField.YEAR;
+import static java.time.temporal.ChronoField.YEAR_OF_ERA;
+import static java.time.temporal.ChronoUnit.CENTURIES;
+import static java.time.temporal.ChronoUnit.DAYS;
+import static java.time.temporal.ChronoUnit.DECADES;
+import static java.time.temporal.ChronoUnit.ERAS;
+import static java.time.temporal.ChronoUnit.MILLENNIA;
+import static java.time.temporal.ChronoUnit.MINUTES;
+import static java.time.temporal.ChronoUnit.MONTHS;
+import static java.time.temporal.ChronoUnit.WEEKS;
+import static java.time.temporal.ChronoUnit.YEARS;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.time.DateTimeException;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.Month;
+import java.time.Period;
+import java.time.chrono.ChronoPeriod;
+import java.time.chrono.Chronology;
+import java.time.chrono.Era;
+import java.time.chrono.IsoEra;
+import java.time.temporal.TemporalAdjusters;
+import java.time.temporal.TemporalField;
+import java.time.temporal.TemporalUnit;
+import java.time.temporal.UnsupportedTemporalTypeException;
+import java.time.temporal.ValueRange;
+import java.time.temporal.WeekFields;
+import java.util.List;
+import java.util.function.IntPredicate;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import com.google.common.testing.EqualsTester;
+
+@SuppressWarnings({ "static-method" })
+public class TestPaxChronology_test_Chronology_range {
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_samples() {
+        return new Object[][] { { PaxDate.of(1, 1, 1), LocalDate.of(0, 12, 31) }, { PaxDate.of(1, 1, 2), LocalDate.of(1, 1, 1) }, { PaxDate.of(1, 1, 3), LocalDate.of(1, 1, 2) }, { PaxDate.of(1, 1, 28), LocalDate.of(1, 1, 27) }, { PaxDate.of(1, 2, 1), LocalDate.of(1, 1, 28) }, { PaxDate.of(1, 2, 2), LocalDate.of(1, 1, 29) }, { PaxDate.of(1, 2, 3), LocalDate.of(1, 1, 30) }, { PaxDate.of(6, 13, 6), LocalDate.of(6, 12, 1) }, { PaxDate.of(6, 13, 7), LocalDate.of(6, 12, 2) }, { PaxDate.of(6, 14, 1), LocalDate.of(6, 12, 3) }, { PaxDate.of(6, 14, 2), LocalDate.of(6, 12, 4) }, { PaxDate.of(6, 14, 3), LocalDate.of(6, 12, 5) }, { PaxDate.of(6, 14, 27), LocalDate.of(6, 12, 29) }, { PaxDate.of(6, 14, 28), LocalDate.of(6, 12, 30) }, { PaxDate.of(7, 1, 1), LocalDate.of(6, 12, 31) }, { PaxDate.of(7, 1, 2), LocalDate.of(7, 1, 1) }, { PaxDate.of(399, 13, 6), LocalDate.of(399, 12, 3) }, { PaxDate.of(399, 13, 7), LocalDate.of(399, 12, 4) }, { PaxDate.of(399, 14, 1), LocalDate.of(399, 12, 5) }, { PaxDate.of(399, 14, 2), LocalDate.of(399, 12, 6) }, { PaxDate.of(399, 14, 3), LocalDate.of(399, 12, 7) }, { PaxDate.of(400, 13, 27), LocalDate.of(400, 12, 29) }, { PaxDate.of(400, 13, 28), LocalDate.of(400, 12, 30) }, { PaxDate.of(401, 1, 1), LocalDate.of(400, 12, 31) }, { PaxDate.of(401, 1, 2), LocalDate.of(401, 1, 1) }, { PaxDate.of(401, 1, 3), LocalDate.of(401, 1, 2) }, { PaxDate.of(0, 13, 28), LocalDate.of(0, 12, 30) }, { PaxDate.of(0, 13, 27), LocalDate.of(0, 12, 29) }, { PaxDate.of(1582, 10, 5), LocalDate.of(1582, 9, 9) }, { PaxDate.of(1582, 10, 6), LocalDate.of(1582, 9, 10) }, { PaxDate.of(1945, 10, 28), LocalDate.of(1945, 10, 6) }, { PaxDate.of(2012, 6, 23), LocalDate.of(2012, 6, 4) }, { PaxDate.of(2012, 6, 24), LocalDate.of(2012, 6, 5) }, { PaxDate.of(-6, 1, 1), LocalDate.of(-6, 1, 2) }, { PaxDate.of(-6, 13, 6), LocalDate.of(-6, 12, 9) }, { PaxDate.of(-6, 13, 7), LocalDate.of(-6, 12, 10) }, { PaxDate.of(-6, 14, 1), LocalDate.of(-6, 12, 11) }, { PaxDate.of(-6, 14, 2), LocalDate.of(-6, 12, 12) }, { PaxDate.of(-6, 14, 27), LocalDate.of(-5, 1, 6) }, { PaxDate.of(-6, 14, 28), LocalDate.of(-5, 1, 7) }, { PaxDate.of(-5, 1, 1), LocalDate.of(-5, 1, 8) }, { PaxDate.of(-5, 1, 2), LocalDate.of(-5, 1, 9) }, { PaxDate.of(-99, 1, 1), LocalDate.of(-99, 1, 6) }, { PaxDate.of(-99, 13, 6), LocalDate.of(-99, 12, 13) }, { PaxDate.of(-99, 13, 7), LocalDate.of(-99, 12, 14) }, { PaxDate.of(-99, 14, 1), LocalDate.of(-99, 12, 15) }, { PaxDate.of(-99, 14, 2), LocalDate.of(-99, 12, 16) }, { PaxDate.of(-100, 1, 1), LocalDate.of(-101, 12, 31) }, { PaxDate.of(-100, 13, 6), LocalDate.of(-100, 12, 7) }, { PaxDate.of(-100, 13, 7), LocalDate.of(-100, 12, 8) }, { PaxDate.of(-100, 14, 1), LocalDate.of(-100, 12, 9) }, { PaxDate.of(-100, 14, 2), LocalDate.of(-100, 12, 10) } };
+    }
+
+    public static Object[][] data_badDates() {
+        return new Object[][] { { 1900, 0, 0 }, { 1900, -1, 1 }, { 1900, 0, 1 }, { 1900, 15, 1 }, { 1900, 16, 1 }, { 1900, 1, -1 }, { 1900, 1, 0 }, { 1900, 1, 29 }, { 1900, 13, -1 }, { 1900, 13, 0 }, { 1900, 13, 8 }, { 1900, 14, -1 }, { 1900, 14, 0 }, { 1900, 14, 29 }, { 1900, 14, 30 }, { 1898, 13, -1 }, { 1898, 13, 0 }, { 1898, 14, 29 }, { 1898, 14, 30 }, { 1898, 14, 1 }, { 1898, 14, 2 }, { 1900, 14, -1 }, { 1900, 14, 0 }, { 1900, 14, 29 }, { 1900, 2, 29 }, { 1900, 3, 29 }, { 1900, 4, 29 }, { 1900, 5, 29 }, { 1900, 6, 29 }, { 1900, 7, 29 }, { 1900, 8, 29 }, { 1900, 9, 29 }, { 1900, 10, 29 }, { 1900, 11, 29 }, { 1900, 12, 29 } };
+    }
+
+    public static Object[][] data_lengthOfMonth() {
+        return new Object[][] { { 1900, 1, 28 }, { 1900, 2, 28 }, { 1900, 3, 28 }, { 1900, 4, 28 }, { 1900, 5, 28 }, { 1900, 6, 28 }, { 1900, 7, 28 }, { 1900, 8, 28 }, { 1900, 9, 28 }, { 1900, 10, 28 }, { 1900, 11, 28 }, { 1900, 12, 28 }, { 1900, 13, 7 }, { 1900, 14, 28 }, { 1901, 13, 28 }, { 1902, 13, 28 }, { 1903, 13, 28 }, { 1904, 13, 28 }, { 1905, 13, 28 }, { 1906, 13, 7 }, { 2000, 13, 28 }, { 2100, 13, 7 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_ranges() {
+        return new Object[][] { { 2012, 1, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 2, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 3, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 4, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 5, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 6, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 7, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 8, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 9, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 10, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 11, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 12, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 13, 3, DAY_OF_MONTH, 1, 7 }, { 2012, 14, 23, DAY_OF_MONTH, 1, 28 }, { 2012, 1, 23, MONTH_OF_YEAR, 1, 14 }, { 2012, 1, 23, DAY_OF_YEAR, 1, 371 }, { 2012, 1, 23, ALIGNED_WEEK_OF_MONTH, 1, 4 }, { 2012, 13, 3, ALIGNED_WEEK_OF_MONTH, 1, 1 }, { 2012, 14, 23, ALIGNED_WEEK_OF_MONTH, 1, 4 }, { 2011, 13, 23, DAY_OF_MONTH, 1, 28 }, { 2011, 1, 23, MONTH_OF_YEAR, 1, 13 }, { 2011, 13, 23, DAY_OF_YEAR, 1, 364 }, { 2011, 13, 23, ALIGNED_WEEK_OF_MONTH, 1, 4 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_getLong() {
+        return new Object[][] { { 2014, 5, 26, DAY_OF_WEEK, 4 }, { 2014, 5, 26, DAY_OF_MONTH, 26 }, { 2014, 5, 26, DAY_OF_YEAR, 28 + 28 + 28 + 28 + 26 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_MONTH, 5 }, { 2014, 5, 26, ALIGNED_WEEK_OF_MONTH, 4 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_YEAR, 5 }, { 2014, 5, 26, ALIGNED_WEEK_OF_YEAR, 20 }, { 2014, 5, 26, MONTH_OF_YEAR, 5 }, { 2014, 5, 26, PROLEPTIC_MONTH, 2014 * 13 + 20 * 18 - 5 + 2 + 5 - 1 }, { 2014, 5, 26, YEAR, 2014 }, { 2014, 5, 26, ERA, 1 }, { 1, 6, 8, ERA, 1 }, { 0, 6, 8, ERA, 0 }, { 2014, 5, 26, WeekFields.ISO.dayOfWeek(), 4 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_with() {
+        return new Object[][] { { 2014, 5, 26, DAY_OF_WEEK, 3, 2014, 5, 25 }, { 2014, 5, 26, DAY_OF_WEEK, 4, 2014, 5, 26 }, { 2014, 5, 26, DAY_OF_MONTH, 28, 2014, 5, 28 }, { 2014, 5, 26, DAY_OF_MONTH, 26, 2014, 5, 26 }, { 2014, 5, 26, DAY_OF_YEAR, 364, 2014, 13, 28 }, { 2014, 5, 26, DAY_OF_YEAR, 138, 2014, 5, 26 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_MONTH, 3, 2014, 5, 24 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_MONTH, 5, 2014, 5, 26 }, { 2014, 5, 26, ALIGNED_WEEK_OF_MONTH, 1, 2014, 5, 5 }, { 2014, 5, 26, ALIGNED_WEEK_OF_MONTH, 4, 2014, 5, 26 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_YEAR, 3, 2014, 5, 24 }, { 2014, 5, 26, ALIGNED_DAY_OF_WEEK_IN_YEAR, 5, 2014, 5, 26 }, { 2014, 5, 26, ALIGNED_WEEK_OF_YEAR, 23, 2014, 6, 19 }, { 2014, 5, 26, ALIGNED_WEEK_OF_YEAR, 20, 2014, 5, 26 }, { 2014, 5, 26, MONTH_OF_YEAR, 7, 2014, 7, 26 }, { 2014, 5, 26, MONTH_OF_YEAR, 5, 2014, 5, 26 }, { 2014, 5, 26, PROLEPTIC_MONTH, 2013 * 13 + 20 * 18 - 5 + 2 + 3 - 1, 2013, 3, 26 }, { 2014, 5, 26, PROLEPTIC_MONTH, 2013 * 13 + 20 * 18 - 5 + 2 + 5 - 1, 2013, 5, 26 }, { 2014, 5, 26, YEAR, 2012, 2012, 5, 26 }, { 2014, 5, 26, YEAR, 2014, 2014, 5, 26 }, { 2014, 5, 26, YEAR_OF_ERA, 2012, 2012, 5, 26 }, { 2014, 5, 26, YEAR_OF_ERA, 2014, 2014, 5, 26 }, { 2014, 5, 26, ERA, 0, -2013, 5, 26 }, { 2014, 5, 26, ERA, 1, 2014, 5, 26 }, { 2011, 3, 28, MONTH_OF_YEAR, 13, 2011, 13, 28 }, { 2012, 3, 28, MONTH_OF_YEAR, 13, 2012, 13, 7 }, { 2012, 3, 28, MONTH_OF_YEAR, 6, 2012, 6, 28 }, { 2012, 13, 7, YEAR, 2011, 2011, 13, 7 }, { -2013, 6, 8, YEAR_OF_ERA, 2012, -2011, 6, 8 }, { 2014, 5, 26, WeekFields.ISO.dayOfWeek(), 3, 2014, 5, 25 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_plus() {
+        return new Object[][] { { 2014, 5, 26, 0, DAYS, 2014, 5, 26 }, { 2014, 5, 26, 8, DAYS, 2014, 6, 6 }, { 2014, 5, 26, -3, DAYS, 2014, 5, 23 }, { 2014, 5, 26, 0, WEEKS, 2014, 5, 26 }, { 2014, 5, 26, 3, WEEKS, 2014, 6, 19 }, { 2014, 5, 26, -5, WEEKS, 2014, 4, 19 }, { 2014, 5, 26, 0, MONTHS, 2014, 5, 26 }, { 2014, 5, 26, 3, MONTHS, 2014, 8, 26 }, { 2014, 5, 26, -5, MONTHS, 2013, 13, 26 }, { 2014, 5, 26, 0, YEARS, 2014, 5, 26 }, { 2014, 5, 26, 3, YEARS, 2017, 5, 26 }, { 2014, 5, 26, -5, YEARS, 2009, 5, 26 }, { 2014, 5, 26, 0, DECADES, 2014, 5, 26 }, { 2014, 5, 26, 3, DECADES, 2044, 5, 26 }, { 2014, 5, 26, -5, DECADES, 1964, 5, 26 }, { 2014, 5, 26, 0, CENTURIES, 2014, 5, 26 }, { 2014, 5, 26, 3, CENTURIES, 2314, 5, 26 }, { 2014, 5, 26, -5, CENTURIES, 1514, 5, 26 }, { 2014, 5, 26, 0, MILLENNIA, 2014, 5, 26 }, { 2014, 5, 26, 3, MILLENNIA, 5014, 5, 26 }, { 2014, 5, 26, -5, MILLENNIA, 2014 - 5000, 5, 26 }, { 2014, 5, 26, -1, ERAS, -2013, 5, 26 }, { 2012, 13, 6, 3, MONTHS, 2013, 2, 6 }, { 2011, 13, 26, 1, YEARS, 2012, 14, 26 }, { 2014, 13, 26, -2, YEARS, 2012, 14, 26 }, { 2012, 14, 26, -6, YEARS, 2006, 14, 26 }, { 2012, 13, 6, -6, YEARS, 2006, 13, 6 }, { -2014, 5, 26, 0, MONTHS, -2014, 5, 26 }, { -2014, 5, 26, 3, MONTHS, -2014, 8, 26 }, { -2014, 5, 26, -5, MONTHS, -2015, 13, 26 } };
+    }
+
+    public static Object[][] data_plus_leap() {
+        return new Object[][] { { 2012, 12, 26, 1, MONTHS, 2012, 13, 7 }, { 2012, 14, 26, -1, MONTHS, 2012, 13, 7 }, { 2012, 13, 6, 3, YEARS, 2015, 13, 6 } };
+    }
+
+    public static Object[][] data_minus_leap() {
+        return new Object[][] { { 2012, 13, 7, -1, MONTHS, 2012, 12, 26 }, { 2012, 13, 7, 1, MONTHS, 2012, 14, 26 }, { 2012, 14, 6, 3, YEARS, 2015, 13, 6 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_until() {
+        return new Object[][] { { 2014, 5, 26, 2014, 5, 26, DAYS, 0 }, { 2014, 5, 26, 2014, 6, 4, DAYS, 6 }, { 2014, 5, 26, 2014, 5, 20, DAYS, -6 }, { 2014, 5, 26, 2014, 5, 26, WEEKS, 0 }, { 2014, 5, 26, 2014, 6, 4, WEEKS, 0 }, { 2014, 5, 26, 2014, 6, 5, WEEKS, 1 }, { 2014, 5, 26, 2014, 5, 26, MONTHS, 0 }, { 2014, 5, 26, 2014, 6, 25, MONTHS, 0 }, { 2014, 5, 26, 2014, 6, 26, MONTHS, 1 }, { 2014, 5, 26, 2014, 5, 26, YEARS, 0 }, { 2014, 5, 26, 2015, 5, 25, YEARS, 0 }, { 2014, 5, 26, 2015, 5, 26, YEARS, 1 }, { 2014, 5, 26, 2014, 5, 26, DECADES, 0 }, { 2014, 5, 26, 2024, 5, 25, DECADES, 0 }, { 2014, 5, 26, 2024, 5, 26, DECADES, 1 }, { 2014, 5, 26, 2014, 5, 26, CENTURIES, 0 }, { 2014, 5, 26, 2114, 5, 25, CENTURIES, 0 }, { 2014, 5, 26, 2114, 5, 26, CENTURIES, 1 }, { 2014, 5, 26, 2014, 5, 26, MILLENNIA, 0 }, { 2014, 5, 26, 3014, 5, 25, MILLENNIA, 0 }, { 2014, 5, 26, 3014, 5, 26, MILLENNIA, 1 }, { -2013, 5, 26, 0, 5, 26, ERAS, 0 }, { -2013, 5, 26, 2014, 5, 26, ERAS, 1 }, { 2011, 13, 26, 2013, 13, 26, YEARS, 2 }, { 2011, 13, 26, 2012, 14, 26, YEARS, 1 }, { 2012, 14, 26, 2011, 13, 26, YEARS, -1 }, { 2012, 14, 26, 2013, 13, 26, YEARS, 1 }, { 2011, 13, 6, 2012, 13, 6, YEARS, 0 }, { 2012, 13, 6, 2011, 13, 6, YEARS, 0 }, { 2011, 13, 1, 2012, 13, 7, YEARS, 0 }, { 2012, 13, 7, 2011, 13, 1, YEARS, 0 }, { 2011, 12, 28, 2012, 13, 1, YEARS, 1 }, { 2012, 13, 1, 2011, 12, 28, YEARS, -1 }, { 2013, 13, 6, 2012, 13, 6, YEARS, -1 }, { 2012, 13, 6, 2013, 13, 6, YEARS, 1 } };
+    }
+
+    public static Object[][] data_until_period() {
+        return new Object[][] { { 2014, 5, 26, 2014, 5, 26, 0, 0, 0 }, { 2014, 5, 26, 2014, 6, 4, 0, 0, 6 }, { 2014, 5, 26, 2014, 5, 20, 0, 0, -6 }, { 2014, 5, 26, 2014, 6, 5, 0, 0, 7 }, { 2014, 5, 26, 2014, 6, 25, 0, 0, 27 }, { 2014, 5, 26, 2014, 6, 26, 0, 1, 0 }, { 2014, 5, 26, 2015, 5, 25, 0, 12, 27 }, { 2014, 5, 26, 2015, 5, 26, 1, 0, 0 }, { 2014, 5, 26, 2024, 5, 25, 9, 12, 27 }, { 2011, 13, 26, 2013, 13, 26, 2, 0, 0 }, { 2011, 13, 26, 2012, 14, 26, 1, 0, 0 }, { 2012, 14, 26, 2011, 13, 26, -1, 0, 0 }, { 2012, 14, 26, 2013, 13, 26, 1, 0, 0 }, { 2011, 13, 6, 2012, 13, 6, 0, 13, 0 }, { 2012, 13, 6, 2011, 13, 6, 0, -13, 0 }, { 2011, 13, 1, 2012, 13, 7, 0, 13, 6 }, { 2012, 13, 7, 2011, 13, 1, 0, -13, -6 }, { 2011, 12, 28, 2012, 13, 1, 1, 0, 1 }, { 2012, 13, 1, 2011, 12, 28, -1, 0, -1 }, { 2013, 13, 6, 2012, 13, 6, -1, -1, 0 }, { 2012, 13, 6, 2013, 13, 6, 1, 0, 0 } };
+    }
+
+    //-----------------------------------------------------------------------
+    public static Object[][] data_toString() {
+        return new Object[][] { { PaxDate.of(1, 1, 1), "Pax CE 1-01-01" }, { PaxDate.of(2012, 6, 23), "Pax CE 2012-06-23" } };
+    }
+
+    //-----------------------------------------------------------------------
+    @Test
+    public void test_Chronology_range() {
+        assertEquals(ValueRange.of(1, 7), PaxChronology.INSTANCE.range(DAY_OF_WEEK));
+        assertEquals(ValueRange.of(1, 7, 28), PaxChronology.INSTANCE.range(DAY_OF_MONTH));
+        assertEquals(ValueRange.of(1, 364, 371), PaxChronology.INSTANCE.range(DAY_OF_YEAR));
+        assertEquals(ValueRange.of(1, 13, 14), PaxChronology.INSTANCE.range(MONTH_OF_YEAR));
+    }
+}
+
+
+[10] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/chrono/PaxChronology.java"
+
+[11] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Projects/Codex_Improvement/local_workplace/threeten-extra/src/main/java/org/threeten/extra/chrono/PaxChronology.java"
+--- output ---
+/*
+ * Copyright (c) 2007-present, Stephen Colebourne & Michael Nascimento Santos
+ *
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ *  * Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ *  * Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ *  * Neither the name of JSR-310 nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+package org.threeten.extra.chrono;
+
+import java.io.Serializable;
+import java.time.Clock;
+import java.time.DateTimeException;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.chrono.AbstractChronology;
+import java.time.chrono.ChronoLocalDateTime;
+import java.time.chrono.ChronoZonedDateTime;
+import java.time.chrono.Chronology;
+import java.time.chrono.Era;
+import java.time.format.ResolverStyle;
+import java.time.temporal.ChronoField;
+import java.time.temporal.TemporalAccessor;
+import java.time.temporal.TemporalField;
+import java.time.temporal.ValueRange;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * The Pax calendar system.
+ * <p>
+ * This chronology defines the rules of the proleptic Pax calendar system.
+ * This calendar system is a proposed reform calendar system, and is not in common use.
+ * The Pax differs from the Gregorian in terms of month count and length, and the leap year rule.
+ * Dates are aligned such that {@code 0001-01-01 (Pax)} is {@code 0000-12-31 (ISO)}.
+ * <p>
+ * This class is proleptic. It implements Pax rules to the entire time-line.
+ * <p>
+ * The fields are defined as follows:
+ * <ul>
+ * <li>era - There are two eras, the current 'Current Era' (CE) and the previous era 'Before Current Era' (BCE).
+ * <li>year-of-era - The year-of-era for the current era increases uniformly from the epoch at year one.
+ *  For the previous era the year increases from one as time goes backwards.
+ * <li>proleptic-year - The proleptic year is the same as the year-of-era for the
+ *  current era. For the previous era, years have zero, then negative values.
+ * <li>month-of-year - There are 13 or 14 months in a Pax year, numbered from 1 to 13 (or 14).
+ * <li>day-of-month - There are 28 days in each Pax month, numbered from 1 to 28.
+ * In a leap year a one-week month ('Pax') is inserted between months 12 and 13, shifting 13 to 14.
+ * <li>day-of-year - There are 364 days in a standard Pax year and 371 in a leap year.
+ * The days are numbered from 1 to 364 or 1 to 371.
+ * <li>leap-year - Leap years occur in every year whose last two digits are divisible by {@code 6}, are {@code 99}, or are {@code 00} and the year is <b>not</b> divisible by 400.
+ * </ul>
+ * <p>
+ * For more information, please read the <a href="https://en.wikipedia.org/wiki/Pax_Calendar">Pax Calendar</a> Wikipedia article.
+ *
+ * <h3>Implementation Requirements</h3>
+ * This class is immutable and thread-safe.
+ */
+public final class PaxChronology extends AbstractChronology implements Serializable {
+
+    /**
+     * Singleton instance for the Pax chronology.
+     */
+    public static final PaxChronology INSTANCE = new PaxChronology();
+
+    /**
+     * Serialization version.
+     */
+    private static final long serialVersionUID = -7021464635577802085L;
+
+    /**
+     * The leap-month of Pax is only one week long.
+     */
+    static final int WEEKS_IN_LEAP_MONTH = 1;
+    /**
+     * Standard 7-day week.
+     */
+    static final int DAYS_IN_WEEK = 7;
+    /**
+     * In all months (except Pax), there are 4 complete weeks.
+     */
+    static final int WEEKS_IN_MONTH = 4;
+    /**
+     * There are 13 months in a (non-leap) year.
+     */
+    static final int MONTHS_IN_YEAR = 13;
+    /**
+     * There are 4 weeks of 7 days, or 28 total days in a month.
+     */
+    static final int DAYS_IN_MONTH = WEEKS_IN_MONTH * DAYS_IN_WEEK;
+    /**
+     * There are 13 months of 28 days, or 364 days in a (non-leap) year.
+     */
+    static final int DAYS_IN_YEAR = MONTHS_IN_YEAR * DAYS_IN_MONTH;
+    /**
+     * There are 52 weeks in a (non-leap) year.
+     */
+    static final int WEEKS_IN_YEAR = DAYS_IN_YEAR / DAYS_IN_WEEK;
+
+    /**
+     * Range of aligned week of month.
+     */
+    static final ValueRange ALIGNED_WEEK_OF_MONTH_RANGE = ValueRange.of(1, WEEKS_IN_LEAP_MONTH, WEEKS_IN_MONTH);
+    /**
+     * Range of aligned week of year.
+     */
+    static final ValueRange ALIGNED_WEEK_OF_YEAR_RANGE = ValueRange.of(1, WEEKS_IN_YEAR, WEEKS_IN_YEAR + 1);
+    /**
+     * Range of day of month.
+     */
+    static final ValueRange DAY_OF_MONTH_RANGE = ValueRange.of(1, DAYS_IN_WEEK, DAYS_IN_MONTH);
+    /**
+     * Range of day of year.
+     */
+    static final ValueRange DAY_OF_YEAR_RANGE = ValueRange.of(1, DAYS_IN_YEAR, DAYS_IN_YEAR + DAYS_IN_WEEK);
+    /**
+     * Range of month of year.
+     */
+    static final ValueRange MONTH_OF_YEAR_RANGE = ValueRange.of(1, MONTHS_IN_YEAR, MONTHS_IN_YEAR + 1);
+
+    /**
+     * Private constructor, that is public to satisfy the {@code ServiceLoader}.
+     * @deprecated Use the singleton {@link #INSTANCE} instead.
+     */
+    @Deprecated
+    public PaxChronology() {
+    }
+
+    /**
+     * Resolve singleton.
+     *
+     * @return the singleton instance, not null
+     */
+    @SuppressWarnings("static-method")
+    private Object readResolve() {
+        return INSTANCE;
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Gets the ID of the chronology - 'Pax'.
+     * <p>
+     * The ID uniquely identifies the {@code Chronology}.
+     * It can be used to lookup the {@code Chronology} using {@link Chronology#of(String)}.
+     *
+     * @return the chronology ID - 'Pax'
+     * @see #getCalendarType()
+     */
+    @Override
+    public String getId() {
+        return "Pax";
+    }
+
+    /**
+     * Gets the calendar type of the underlying calendar system - 'pax'.
+     * <p>
+     * The <em>Unicode Locale Data Markup Language (LDML)</em> specification
+     * does not define an identifier for the Pax calendar, but were it to
+     * do so, 'pax' is highly likely to be chosen.
+     *
+     * @return the calendar system type - 'pax'
+     * @see #getId()
+     */
+    @Override
+    public String getCalendarType() {
+        return "pax";
+    }
+
+    //-----------------------------------------------------------------------
+    /**
+     * Obtains a local date in Pax calendar system from the
+     * era, year-of-era, month-of-year and day-of-month fields.
+     *
+     * @param era  the Pax era, not null
+     * @param yearOfEra  the year-of-era
+     * @param month  the month-of-year
+     * @param dayOfMonth  the day-of-month
+     * @return the Pax local date, not null
+     * @throws DateTimeException if unable to create the date
+     * @throws ClassCastException if the {@code era} is not a {@code PaxEra}
+     */
+    @Override
+    public PaxDate date(Era era, int yearOfEra, int month, int dayOfMonth) {
+        return date(prolepticYear(era, yearOfEra), month, dayOfMonth);
+    }
+
+    /**
+     * Obtains a local date in Pax calendar system from the
+     * proleptic-year, month-of-year and day-of-month fields.
+     *
+     * @param prolepticYear  the proleptic-year
+     * @param month  the month-of-year
+     * @param dayOfMonth  the day-of-month
+     * @return the Pax local date, not null
+     * @throws DateTimeException if unable to create the date
+     */
+    @Override
+    public PaxDate date(int prolepticYear, int month, int dayOfMonth) {
+        return PaxDate.of(prolepticYear, month, dayOfMonth);
+    }
+
+    /**
+     * Obtains a local date in Pax calendar system from the
+     * era, year-of-era and day-of-year fields.
+     *
+     * @param era  the Pax era, not null
+     * @param yearOfEra  the year-of-era
+     * @param dayOfYear  the day-of-year
+     * @return the Pax local date, not null
+     * @throws DateTimeException if unable to create the date
+     * @throws ClassCastException if the {@code era} is not a {@code PaxEra}
+     */
+    @Override
+    public PaxDate dateYearDay(Era era, int yearOfEra, int dayOfYear) {
+        return dateYearDay(prolepticYear(era, yearOfEra), dayOfYear);
+    }
+
+    /**
+     * Obtains a local date in Pax calendar system from the
+     * proleptic-year and day-of-year fields.
+     *
+     * @param prolepticYear  the proleptic-year
+     * @param dayOfYear  the day-of-year
+     * @return the Pax local date, not null
+     * @throws DateTimeException if unable to create the date
+     */
+    @Override
+    public PaxDate dateYearDay(int prolepticYear, int dayOfYear) {
+        return PaxDate.ofYearDay(prolepticYear, dayOfYear);
+    }
+
+    /**
+     * Obtains a local date in the Pax calendar system from the epoch-day.
+     *
+     * @param epochDay  the epoch day
+
+
+[12] AGENT
+The original file is a broad extracted test class, but the only executable test here is `test_Chronology_range`. I’m going to replace the noisy unused fixtures/imports in the generated copy with a focused test that keeps the same four `PaxChronology.INSTANCE.range(...)` calls and the same expected `ValueRange` assertions.
+
+[13] FILE_CHANGE in_progress
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestPaxChronology/test_Chronology_range/TestPaxChronology_test_Chronology_range.java
+
+[14] FILE_CHANGE completed
+add: /Users/tenghaha/Projects/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/threeten-extra/manual/testcases/TestPaxChronology/test_Chronology_range/TestPaxChronology_test_Chronology_range.java
+
+[15] AGENT
+The generated test file is now scoped to the behavior under test. I’m running the required compile check exactly as specified.
+
+[16] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[17] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[18] AGENT
+Implemented the focused refactor in `TestPaxChronology_test_Chronology_range.java` and verified it with `bash compile.sh`.
+
+`COMPILE_OK`

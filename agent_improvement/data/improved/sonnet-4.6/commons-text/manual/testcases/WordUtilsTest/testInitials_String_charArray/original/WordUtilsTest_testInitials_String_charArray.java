@@ -1,0 +1,100 @@
+package org.apache.commons.text;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeout;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Modifier;
+import java.time.Duration;
+import java.util.stream.IntStream;
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.junit.jupiter.api.Test;
+
+public class WordUtilsTest_testInitials_String_charArray {
+
+    private static final String WHITESPACE = IntStream.rangeClosed(Character.MIN_CODE_POINT, Character.MAX_CODE_POINT).filter(Character::isWhitespace).collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append).toString();
+
+    @Test
+    void testInitials_String_charArray() {
+        char[] array = null;
+        assertNull(WordUtils.initials(null, array));
+        assertEquals("", WordUtils.initials("", array));
+        assertEquals("", WordUtils.initials("  ", array));
+        assertEquals("I", WordUtils.initials("I", array));
+        assertEquals("i", WordUtils.initials("i", array));
+        assertEquals("S", WordUtils.initials("SJC", array));
+        assertEquals("BJL", WordUtils.initials("Ben John Lee", array));
+        assertEquals("BJL", WordUtils.initials("   Ben \n   John\tLee\t", array));
+        assertEquals("BJ", WordUtils.initials("Ben J.Lee", array));
+        assertEquals("BJ.L", WordUtils.initials(" Ben   John  . Lee", array));
+        assertEquals("KO", WordUtils.initials("Kay O'Murphy", array));
+        assertEquals("iah1", WordUtils.initials("i am here 123", array));
+        array = ArrayUtils.EMPTY_CHAR_ARRAY;
+        assertNull(WordUtils.initials(null, array));
+        assertEquals("", WordUtils.initials("", array));
+        assertEquals("", WordUtils.initials("  ", array));
+        assertEquals("", WordUtils.initials("I", array));
+        assertEquals("", WordUtils.initials("i", array));
+        assertEquals("", WordUtils.initials("SJC", array));
+        assertEquals("", WordUtils.initials("Ben John Lee", array));
+        assertEquals("", WordUtils.initials("   Ben \n   John\tLee\t", array));
+        assertEquals("", WordUtils.initials("Ben J.Lee", array));
+        assertEquals("", WordUtils.initials(" Ben   John  . Lee", array));
+        assertEquals("", WordUtils.initials("Kay O'Murphy", array));
+        assertEquals("", WordUtils.initials("i am here 123", array));
+        array = " ".toCharArray();
+        assertNull(WordUtils.initials(null, array));
+        assertEquals("", WordUtils.initials("", array));
+        assertEquals("", WordUtils.initials("  ", array));
+        assertEquals("I", WordUtils.initials("I", array));
+        assertEquals("i", WordUtils.initials("i", array));
+        assertEquals("S", WordUtils.initials("SJC", array));
+        assertEquals("BJL", WordUtils.initials("Ben John Lee", array));
+        assertEquals("BJ", WordUtils.initials("Ben J.Lee", array));
+        assertEquals("B\nJ", WordUtils.initials("   Ben \n   John\tLee\t", array));
+        assertEquals("BJ.L", WordUtils.initials(" Ben   John  . Lee", array));
+        assertEquals("KO", WordUtils.initials("Kay O'Murphy", array));
+        assertEquals("iah1", WordUtils.initials("i am here 123", array));
+        array = " .".toCharArray();
+        assertNull(WordUtils.initials(null, array));
+        assertEquals("", WordUtils.initials("", array));
+        assertEquals("", WordUtils.initials("  ", array));
+        assertEquals("I", WordUtils.initials("I", array));
+        assertEquals("i", WordUtils.initials("i", array));
+        assertEquals("S", WordUtils.initials("SJC", array));
+        assertEquals("BJL", WordUtils.initials("Ben John Lee", array));
+        assertEquals("BJL", WordUtils.initials("Ben J.Lee", array));
+        assertEquals("BJL", WordUtils.initials(" Ben   John  . Lee", array));
+        assertEquals("KO", WordUtils.initials("Kay O'Murphy", array));
+        assertEquals("iah1", WordUtils.initials("i am here 123", array));
+        array = " .'".toCharArray();
+        assertNull(WordUtils.initials(null, array));
+        assertEquals("", WordUtils.initials("", array));
+        assertEquals("", WordUtils.initials("  ", array));
+        assertEquals("I", WordUtils.initials("I", array));
+        assertEquals("i", WordUtils.initials("i", array));
+        assertEquals("S", WordUtils.initials("SJC", array));
+        assertEquals("BJL", WordUtils.initials("Ben John Lee", array));
+        assertEquals("BJL", WordUtils.initials("Ben J.Lee", array));
+        assertEquals("BJL", WordUtils.initials(" Ben   John  . Lee", array));
+        assertEquals("KOM", WordUtils.initials("Kay O'Murphy", array));
+        assertEquals("iah1", WordUtils.initials("i am here 123", array));
+        array = "SIJo1".toCharArray();
+        assertNull(WordUtils.initials(null, array));
+        assertEquals("", WordUtils.initials("", array));
+        assertEquals(" ", WordUtils.initials("  ", array));
+        assertEquals("", WordUtils.initials("I", array));
+        assertEquals("i", WordUtils.initials("i", array));
+        assertEquals("C", WordUtils.initials("SJC", array));
+        assertEquals("Bh", WordUtils.initials("Ben John Lee", array));
+        assertEquals("B.", WordUtils.initials("Ben J.Lee", array));
+        assertEquals(" h", WordUtils.initials(" Ben   John  . Lee", array));
+        assertEquals("K", WordUtils.initials("Kay O'Murphy", array));
+        assertEquals("i2", WordUtils.initials("i am here 123", array));
+    }
+}

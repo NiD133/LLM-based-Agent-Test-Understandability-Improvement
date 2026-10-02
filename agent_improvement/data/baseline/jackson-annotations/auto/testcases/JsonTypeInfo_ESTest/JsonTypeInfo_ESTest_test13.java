@@ -1,0 +1,27 @@
+package com.fasterxml.jackson.annotation;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.shaded.org.mockito.Mockito.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.evosuite.runtime.ViolatedAssumptionAnswer;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class JsonTypeInfo_ESTest_test13 extends JsonTypeInfo_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test13() throws Throwable {
+        JsonTypeInfo.As jsonTypeInfo_As0 = JsonTypeInfo.As.PROPERTY;
+        Class<Object> class0 = Object.class;
+        Boolean boolean0 = Boolean.FALSE;
+        JsonTypeInfo.Value jsonTypeInfo_Value0 = new JsonTypeInfo.Value((JsonTypeInfo.Id) null, jsonTypeInfo_As0, "M8", class0, false, boolean0, boolean0);
+        boolean boolean1 = JsonTypeInfo.Value.isEnabled(jsonTypeInfo_Value0);
+        assertFalse(jsonTypeInfo_Value0.getIdVisible());
+        assertFalse(boolean1);
+        assertFalse(jsonTypeInfo_Value0.shouldWriteTypeIdForDefaultImpl());
+    }
+}

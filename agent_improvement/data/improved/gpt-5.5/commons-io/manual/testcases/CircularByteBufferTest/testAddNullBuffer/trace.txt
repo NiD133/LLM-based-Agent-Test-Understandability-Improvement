@@ -1,0 +1,443 @@
+[3] AGENT
+I’ll use the compile-check workflow because this is a Java test-generation task with a mandatory compile gate. First I need the skill instructions, then I’ll inspect only the specified test/CUT inputs and the workspace file I create.
+
+[4] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md'
+
+[5] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md'
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[6] AGENT
+The compile-check instruction confirms the only verification command is exactly `bash compile.sh`. I’m going to read the original test and the CUT API now, keeping the change limited to the generated test file in this workspace.
+
+[7] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-io/src/main/java/org/apache/commons/io/input/buffer/CircularByteBuffer.java'
+
+[8] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-io/manual/testcases/CircularByteBufferTest/CircularByteBufferTest_testAddNullBuffer.java'
+
+[9] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-io/manual/testcases/CircularByteBufferTest/CircularByteBufferTest_testAddNullBuffer.java'
+--- output ---
+package org.apache.commons.io.input.buffer;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.charset.StandardCharsets;
+import org.junit.jupiter.api.Test;
+
+public class CircularByteBufferTest_testAddNullBuffer {
+
+    @Test
+    void testAddNullBuffer() {
+        final CircularByteBuffer cbb = new CircularByteBuffer();
+        assertThrows(NullPointerException.class, () -> cbb.add(null, 0, 3));
+    }
+}
+
+
+[10] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-io/src/main/java/org/apache/commons/io/input/buffer/CircularByteBuffer.java'
+--- output ---
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.commons.io.input.buffer;
+
+import java.util.Objects;
+
+import org.apache.commons.io.IOUtils;
+
+/**
+ * A buffer, which doesn't need reallocation of byte arrays, because it
+ * reuses a single byte array. This works particularly well, if reading
+ * from the buffer takes place at the same time than writing to. Such is the
+ * case, for example, when using the buffer within a filtering input stream,
+ * like the {@link CircularBufferInputStream}.
+ *
+ * @since 2.7
+ */
+public class CircularByteBuffer {
+
+    private final byte[] buffer;
+    private int startOffset;
+    private int endOffset;
+    private int currentNumberOfBytes;
+
+    /**
+     * Constructs a new instance with a reasonable default buffer size ({@link IOUtils#DEFAULT_BUFFER_SIZE}).
+     */
+    public CircularByteBuffer() {
+        this(IOUtils.DEFAULT_BUFFER_SIZE);
+    }
+
+    /**
+     * Constructs a new instance with the given buffer size.
+     *
+     * @param size the size of buffer to create.
+     */
+    public CircularByteBuffer(final int size) {
+        buffer = IOUtils.byteArray(size);
+        startOffset = 0;
+        endOffset = 0;
+        currentNumberOfBytes = 0;
+    }
+
+    /**
+     * Adds a new byte to the buffer, which will eventually be returned by following
+     * invocations of {@link #read()}.
+     *
+     * @param value The byte, which is being added to the buffer.
+     * @throws IllegalStateException The buffer is full. Use {@link #hasSpace()},
+     *                               or {@link #getSpace()}, to prevent this exception.
+     */
+    public void add(final byte value) {
+        if (currentNumberOfBytes >= buffer.length) {
+            throw new IllegalStateException("No space available");
+        }
+        buffer[endOffset] = value;
+        ++currentNumberOfBytes;
+        if (++endOffset == buffer.length) {
+            endOffset = 0;
+        }
+    }
+
+    /**
+     * Adds the given bytes to the buffer. This is the same as invoking {@link #add(byte)}
+     * for the bytes at offsets {@code offset+0}, {@code offset+1}, ...,
+     * {@code offset+length-1} of byte array {@code targetBuffer}.
+     *
+     * @param targetBuffer the buffer to copy.
+     * @param offset start offset.
+     * @param length length to copy.
+     * @throws IllegalStateException    The buffer doesn't have sufficient space. Use
+     *                                  {@link #getSpace()} to prevent this exception.
+     * @throws IllegalArgumentException Either of {@code offset}, or {@code length} is negative.
+     * @throws NullPointerException     The byte array {@code targetBuffer} is null.
+     */
+    public void add(final byte[] targetBuffer, final int offset, final int length) {
+        Objects.requireNonNull(targetBuffer, "Buffer");
+        if (offset < 0 || offset >= targetBuffer.length) {
+            throw new IllegalArgumentException("Illegal offset: " + offset);
+        }
+        if (length < 0) {
+            throw new IllegalArgumentException("Illegal length: " + length);
+        }
+        if (currentNumberOfBytes + length > buffer.length) {
+            throw new IllegalStateException("No space available");
+        }
+        for (int i = 0; i < length; i++) {
+            buffer[endOffset] = targetBuffer[offset + i];
+            if (++endOffset == buffer.length) {
+                endOffset = 0;
+            }
+        }
+        currentNumberOfBytes += length;
+    }
+
+    /**
+     * Removes all bytes from the buffer.
+     */
+    public void clear() {
+        startOffset = 0;
+        endOffset = 0;
+        currentNumberOfBytes = 0;
+    }
+
+    /**
+     * Gets the number of bytes, that are currently present in the buffer.
+     *
+     * @return the number of bytes.
+     */
+    public int getCurrentNumberOfBytes() {
+        return currentNumberOfBytes;
+    }
+
+    /**
+     * Gets the number of bytes, that can currently be added to the buffer.
+     *
+     * @return the number of bytes that can be added.
+     */
+    public int getSpace() {
+        return buffer.length - currentNumberOfBytes;
+    }
+
+    /**
+     * Tests whether the buffer is currently holding at least a single byte.
+     *
+     * @return true whether the buffer is currently holding at least a single byte.
+     */
+    public boolean hasBytes() {
+        return currentNumberOfBytes > 0;
+    }
+
+    /**
+     * Tests whether there is currently room for a single byte in the buffer.
+     * Same as {@link #hasSpace(int) hasSpace(1)}.
+     *
+     * @return true whether there is currently room for a single byte in the buffer.
+     * @see #hasSpace(int)
+     * @see #getSpace()
+     */
+    public boolean hasSpace() {
+        return currentNumberOfBytes < buffer.length;
+    }
+
+    /**
+     * Tests whether there is currently room for the given number of bytes in the buffer.
+     *
+     * @param count the byte count.
+     * @return true whether there is currently room for the given number of bytes in the buffer.
+     * @see #hasSpace()
+     * @see #getSpace()
+     */
+    public boolean hasSpace(final int count) {
+        return currentNumberOfBytes + count <= buffer.length;
+    }
+
+    /**
+     * Returns, whether the next bytes in the buffer are exactly those, given by
+     * {@code sourceBuffer}, {@code offset}, and {@code length}. No bytes are being
+     * removed from the buffer. If the result is true, then the following invocations
+     * of {@link #read()} are guaranteed to return exactly those bytes.
+     *
+     * @param sourceBuffer the buffer to compare against.
+     * @param offset start offset.
+     * @param length length to compare.
+     * @return True, if the next invocations of {@link #read()} will return the
+     * bytes at offsets {@code sourceBuffer}+0, {@code offset}+1, ...,
+     * {@code offset}+{@code length}-1 of byte array {@code sourceBuffer}.
+     * @throws IllegalArgumentException Either of {@code sourceBuffer}, or {@code length} is negative.
+     * @throws NullPointerException     The byte array {@code sourceBuffer} is null.
+     */
+    public boolean peek(final byte[] sourceBuffer, final int offset, final int length) {
+        Objects.requireNonNull(sourceBuffer, "Buffer");
+        if (offset < 0 || offset >= sourceBuffer.length) {
+            throw new IllegalArgumentException("Illegal offset: " + offset);
+        }
+        if (length < 0 || length > buffer.length) {
+            throw new IllegalArgumentException("Illegal length: " + length);
+        }
+        if (length < currentNumberOfBytes) {
+            return false;
+        }
+        int localOffset = startOffset;
+        for (int i = 0; i < length; i++) {
+            if (buffer[localOffset] != sourceBuffer[i + offset]) {
+                return false;
+            }
+            if (++localOffset == buffer.length) {
+                localOffset = 0;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Returns the next byte from the buffer, removing it at the same time, so
+     * that following invocations won't return it again.
+     *
+     * @return The byte, which is being returned.
+     * @throws IllegalStateException The buffer is empty. Use {@link #hasBytes()},
+     *                               or {@link #getCurrentNumberOfBytes()}, to prevent this exception.
+     */
+    public byte read() {
+        if (currentNumberOfBytes <= 0) {
+            throw new IllegalStateException("No bytes available.");
+        }
+        final byte b = buffer[startOffset];
+        --currentNumberOfBytes;
+        if (++startOffset == buffer.length) {
+            startOffset = 0;
+        }
+        return b;
+    }
+
+    /**
+     * Returns the given number of bytes from the buffer by storing them in
+     * the given byte array at the given offset.
+     *
+     * @param targetBuffer The byte array, where to add bytes.
+     * @param targetOffset The offset, where to store bytes in the byte array.
+     * @param length The number of bytes to return.
+     * @throws NullPointerException     The byte array {@code targetBuffer} is null.
+     * @throws IllegalArgumentException Either of {@code targetOffset}, or {@code length} is negative,
+     *                                  or the length of the byte array {@code targetBuffer} is too small.
+     * @throws IllegalStateException    The buffer doesn't hold the given number
+     *                                  of bytes. Use {@link #getCurrentNumberOfBytes()} to prevent this
+     *                                  exception.
+     */
+    public void read(final byte[] targetBuffer, final int targetOffset, final int length) {
+        Objects.requireNonNull(targetBuffer, "targetBuffer");
+        if (targetOffset < 0 || targetOffset >= targetBuffer.length) {
+            throw new IllegalArgumentException("Illegal offset: " + targetOffset);
+        }
+        if (length < 0 || length > buffer.length) {
+            throw new IllegalArgumentException("Illegal length: " + length);
+        }
+        if (targetOffset + length > targetBuffer.length) {
+            throw new IllegalArgumentException("The supplied byte array contains only "
+                    + targetBuffer.length + " bytes, but offset, and length would require "
+                    + (targetOffset + length - 1));
+        }
+        if (currentNumberOfBytes < length) {
+            throw new IllegalStateException("Currently, there are only " + currentNumberOfBytes
+                    + "in the buffer, not " + length);
+        }
+        int offset = targetOffset;
+        for (int i = 0; i < length; i++) {
+            targetBuffer[offset++] = buffer[startOffset];
+            --currentNumberOfBytes;
+            if (++startOffset == buffer.length) {
+                startOffset = 0;
+            }
+        }
+    }
+}
+
+
+[11] COMMAND in_progress
+/bin/zsh -lc ls
+
+[12] COMMAND completed
+/bin/zsh -lc ls
+--- output ---
+compile.sh
+test-classes
+
+
+[13] AGENT
+The original behavior is very small: construct `CircularByteBuffer`, then assert `add(null, 0, 3)` throws `NullPointerException`. I’ll rewrite only that test file to make the scenario and arguments explicit, without adding extra runtime assertions or changing the call under test.
+
+[14] COMMAND in_progress
+/bin/zsh -lc 'cat compile.sh'
+
+[15] COMMAND completed
+/bin/zsh -lc 'cat compile.sh'
+--- output ---
+#!/usr/bin/env bash
+set -u
+JAVAC="/Library/Java/JavaVirtualMachines/temurin-11.jdk/Contents/Home/bin/javac"
+CP="/Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-io/manual/testcases/CircularByteBufferTest/testAddNullBuffer/test-classes:/Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-io/target/classes:/Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-io/target/test-classes:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter/5.14.3/junit-jupiter-5.14.3.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.14.3/junit-jupiter-api-5.14.3.jar:/Users/tenghaha/.m2/repository/org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.jar:/Users/tenghaha/.m2/repository/org/junit/platform/junit-platform-commons/1.14.3/junit-platform-commons-1.14.3.jar:/Users/tenghaha/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-params/5.14.3/junit-jupiter-params-5.14.3.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-engine/5.14.3/junit-jupiter-engine-5.14.3.jar:/Users/tenghaha/.m2/repository/org/junit/platform/junit-platform-engine/1.14.3/junit-platform-engine-1.14.3.jar:/Users/tenghaha/.m2/repository/org/junit-pioneer/junit-pioneer/1.9.1/junit-pioneer-1.9.1.jar:/Users/tenghaha/.m2/repository/org/junit/platform/junit-platform-launcher/1.14.3/junit-platform-launcher-1.14.3.jar:/Users/tenghaha/.m2/repository/net/bytebuddy/byte-buddy/1.18.8/byte-buddy-1.18.8.jar:/Users/tenghaha/.m2/repository/net/bytebuddy/byte-buddy-agent/1.18.8/byte-buddy-agent-1.18.8.jar:/Users/tenghaha/.m2/repository/org/mockito/mockito-inline/4.11.0/mockito-inline-4.11.0.jar:/Users/tenghaha/.m2/repository/org/mockito/mockito-core/4.11.0/mockito-core-4.11.0.jar:/Users/tenghaha/.m2/repository/org/objenesis/objenesis/3.3/objenesis-3.3.jar:/Users/tenghaha/.m2/repository/com/google/jimfs/jimfs/1.3.1/jimfs-1.3.1.jar:/Users/tenghaha/.m2/repository/com/google/guava/guava/33.4.8-jre/guava-33.4.8-jre.jar:/Users/tenghaha/.m2/repository/com/google/guava/failureaccess/1.0.3/failureaccess-1.0.3.jar:/Users/tenghaha/.m2/repository/com/google/guava/listenablefuture/9999.0-empty-to-avoid-conflict-with-guava/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar:/Users/tenghaha/.m2/repository/org/jspecify/jspecify/1.0.0/jspecify-1.0.0.jar:/Users/tenghaha/.m2/repository/com/google/errorprone/error_prone_annotations/2.36.0/error_prone_annotations-2.36.0.jar:/Users/tenghaha/.m2/repository/com/google/j2objc/j2objc-annotations/3.0.0/j2objc-annotations-3.0.0.jar:/Users/tenghaha/.m2/repository/org/apache/commons/commons-lang3/3.20.0/commons-lang3-3.20.0.jar:/Users/tenghaha/.m2/repository/commons-codec/commons-codec/1.22.0/commons-codec-1.22.0.jar:/Users/tenghaha/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar:/Users/tenghaha/.m2/repository/net/sf/jopt-simple/jopt-simple/5.0.4/jopt-simple-5.0.4.jar:/Users/tenghaha/.m2/repository/org/apache/commons/commons-math3/3.6.1/commons-math3-3.6.1.jar:/Users/tenghaha/Desktop/Codex_Improvement/tools/junit/junit-4.13.2.jar:/Users/tenghaha/Desktop/Codex_Improvement/tools/junit/hamcrest-core-1.3.jar"
+OUT="/Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-io/manual/testcases/CircularByteBufferTest/testAddNullBuffer/test-classes"
+"$JAVAC" -encoding UTF-8 -cp "$CP" -d "$OUT" "CircularByteBufferTest_testAddNullBuffer.java"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "COMPILE_OK"
+else
+  echo "COMPILE_FAIL (exit=$rc)"
+fi
+exit $rc
+
+
+[16] AGENT
+I found `compile.sh` compiles `CircularByteBufferTest_testAddNullBuffer.java` from the workspace root. I’m creating that file now with the same package, framework, method call, arguments, and expected exception, while removing unused imports from the original.
+
+[17] FILE_CHANGE in_progress
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-io/manual/testcases/CircularByteBufferTest/testAddNullBuffer/CircularByteBufferTest_testAddNullBuffer.java
+
+[18] FILE_CHANGE completed
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-io/manual/testcases/CircularByteBufferTest/testAddNullBuffer/CircularByteBufferTest_testAddNullBuffer.java
+
+[19] AGENT
+The test file is in place. I’m running the required compile check exactly as specified.
+
+[20] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[21] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[22] AGENT
+Implemented `CircularByteBufferTest_testAddNullBuffer.java` with clearer names and only the needed imports. Verification passed: `COMPILE_OK`.

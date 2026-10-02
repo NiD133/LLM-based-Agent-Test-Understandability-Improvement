@@ -1,0 +1,1134 @@
+{
+  "status": "COMPILE_SUCCESS",
+  "attempts_used": 1,
+  "model": "claude-sonnet-4-6",
+  "prompt_version": "understandability_improvement_constraints",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `TestUtcInstant.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/threeten-extra/src/test/java/org/threeten/extra/scale/TestUtcInstant.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n"
+    },
+    {
+      "role": "assistant",
+      "content": "I'll read both the CUT and the original test file to understand the codebase before improving understandability.Now I have a full picture of both files. Let me write the improved test with better understandability: named constants for magic MJD values, column header comments on data tables, clearer local variable names, and consistent use of existing constants.Now let me compile-check the file.The improved test compiled successfully. The changes made to enhance understandability:\n\n1. **Named constants for magic MJD values** — `MJD_TAI_EPOCH = 36204` (1958-01-01), `MJD_UNIX_EPOCH = 40587` (1970-01-01), `MJD_1980_01_01 = 44239`, plus `TAI_UTC_OFFSET_SECS = 10` and `UNIX_EPOCH_SECS_AT_1980_01_01` with explanatory comments\n2. **Column header comments on all data tables** — `data_plus`, `data_minus`, `data_withModifiedJulianDay`, `data_withNanoOfDay`, `data_toString` now each have a `// Columns: ...` comment\n3. **Clearer local variable names** — `t`/`test` → `utcInstant`, `i` (UtcInstant result) → `result`, `test` (TaiInstant) → `taiInstant`\n4. **Renamed helper method** — `doTest_comparisons_UtcInstant` → `assertOrderedChronologically` with a Javadoc describing what it verifies\n5. **Replaced expanded arithmetic** — `24L * 60L * 60L * 1000000000L - 1000000000L` → `NANOS_PER_DAY - NANOS_PER_SEC`; `86400`/`86401` → `SECS_PER_DAY`/`SECS_PER_DAY + 1` in duration assertions\n6. **`data_toString` uses relative offsets** — raw values like `40588` become `MJD_UNIX_EPOCH + 1`, making the date arithmetic self-documenting"
+    }
+  ],
+  "last_code": "/*\n * Copyright (c) 2007-present, Stephen Colebourne & Michael Nascimento Santos\n *\n * All rights reserved.\n *\n * Redistribution and use in source and binary forms, with or without\n * modification, are permitted provided that the following conditions are met:\n *\n *  * Redistributions of source code must retain the above copyright notice,\n *    this list of conditions and the following disclaimer.\n *\n *  * Redistributions in binary form must reproduce the above copyright notice,\n *    this list of conditions and the following disclaimer in the documentation\n *    and/or other materials provided with the distribution.\n *\n *  * Neither the name of JSR-310 nor the names of its contributors\n *    may be used to endorse or promote products derived from this software\n *    without specific prior written permission.\n *\n * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n * \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\n * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR\n * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR\n * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,\n * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,\n * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR\n * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF\n * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING\n * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\n * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n */\npackage org.threeten.extra.scale;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nimport static org.junit.jupiter.api.Assertions.assertFalse;\nimport static org.junit.jupiter.api.Assertions.assertNotEquals;\nimport static org.junit.jupiter.api.Assertions.assertThrows;\nimport static org.junit.jupiter.api.Assertions.assertTrue;\n\nimport java.io.ByteArrayInputStream;\nimport java.io.ByteArrayOutputStream;\nimport java.io.ObjectInputStream;\nimport java.io.ObjectOutputStream;\nimport java.io.Serializable;\nimport java.time.DateTimeException;\nimport java.time.Duration;\nimport java.time.Instant;\n\nimport org.jspecify.annotations.Nullable;\nimport org.junit.jupiter.api.Test;\nimport org.junit.jupiter.params.ParameterizedTest;\nimport org.junit.jupiter.params.provider.MethodSource;\n\nimport com.google.common.testing.EqualsTester;\n\n/**\n * Test UtcInstant.\n */\npublic class TestUtcInstant {\n\n    // Known Modified Julian Days for well-known calendar dates\n    private static final long MJD_1972_12_30 = 41681;\n    private static final long MJD_1972_12_31_LEAP = 41682;  // positive leap second at end of this day\n    private static final long MJD_1973_01_01 = 41683;\n    private static final long MJD_1973_12_31_LEAP = MJD_1972_12_31_LEAP + 365;  // another leap-second day\n    private static final long MJD_TAI_EPOCH = 36204;    // 1958-01-01: start of the TAI time scale\n    private static final long MJD_UNIX_EPOCH = 40587;   // 1970-01-01: Unix and Java Instant epoch\n    private static final long MJD_1980_01_01 = 44239;   // reference date used in toInstant round-trip tests\n\n    // Duration constants\n    private static final long SECS_PER_DAY = 24L * 60 * 60;\n    private static final long NANOS_PER_SEC = 1000000000L;\n    private static final long NANOS_PER_DAY = SECS_PER_DAY * NANOS_PER_SEC;\n    private static final long NANOS_PER_LEAP_DAY = (SECS_PER_DAY + 1) * NANOS_PER_SEC;\n\n    // TAI was initialised 10 seconds ahead of UTC when UTC was defined in 1958\n    private static final int TAI_UTC_OFFSET_SECS = 10;\n    // Unix epoch seconds corresponding to 1980-01-01T00:00:00Z (MJD_1980_01_01)\n    private static final long UNIX_EPOCH_SECS_AT_1980_01_01 = 315532800L;\n\n    //-----------------------------------------------------------------------\n    @Test\n    public void test_interfaces() {\n        assertTrue(Serializable.class.isAssignableFrom(UtcInstant.class));\n        assertTrue(Comparable.class.isAssignableFrom(UtcInstant.class));\n    }\n\n    //-----------------------------------------------------------------------\n    // serialization\n    //-----------------------------------------------------------------------\n    @Test\n    public void test_serialization() throws Exception {\n        UtcInstant test = UtcInstant.ofModifiedJulianDay(2, 3);\n        ByteArrayOutputStream baos = new ByteArrayOutputStream();\n        try (ObjectOutputStream oos = new ObjectOutputStream(baos)) {\n            oos.writeObject(test);\n        }\n        try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(baos.toByteArray()))) {\n            assertEquals(test, ois.readObject());\n        }\n    }\n\n    //-----------------------------------------------------------------------\n    // ofModififiedJulianDay(long,long)\n    //-----------------------------------------------------------------------\n    @Test\n    public void factory_ofModifiedJulianDay_long_long() {\n        for (long i = -2; i <= 2; i++) {\n            for (int j = 0; j < 10; j++) {\n                UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(i, j);\n                assertEquals(i, utcInstant.getModifiedJulianDay());\n                assertEquals(j, utcInstant.getNanoOfDay());\n                assertFalse(utcInstant.isLeapSecond());\n            }\n        }\n    }\n\n    @Test\n    public void factory_ofModifiedJulianDay_long_long_endNormal() {\n        UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1);\n        assertEquals(MJD_1972_12_31_LEAP, utcInstant.getModifiedJulianDay());\n        assertEquals(NANOS_PER_DAY - 1, utcInstant.getNanoOfDay());\n        assertFalse(utcInstant.isLeapSecond());\n        assertEquals(\"1972-12-31T23:59:59.999999999Z\", utcInstant.toString());\n    }\n\n    @Test\n    public void factory_ofModifiedJulianDay_long_long_startLeap() {\n        UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(MJD_1972_12_31_LEAP, NANOS_PER_DAY);\n        assertEquals(MJD_1972_12_31_LEAP, utcInstant.getModifiedJulianDay());\n        assertEquals(NANOS_PER_DAY, utcInstant.getNanoOfDay());\n        assertTrue(utcInstant.isLeapSecond());\n        assertEquals(\"1972-12-31T23:59:60Z\", utcInstant.toString());\n    }\n\n    @Test\n    public void factory_ofModifiedJulianDay_long_long_endLeap() {\n        UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(MJD_1972_12_31_LEAP, NANOS_PER_LEAP_DAY - 1);\n        assertEquals(MJD_1972_12_31_LEAP, utcInstant.getModifiedJulianDay());\n        assertEquals(NANOS_PER_LEAP_DAY - 1, utcInstant.getNanoOfDay());\n        assertTrue(utcInstant.isLeapSecond());\n        assertEquals(\"1972-12-31T23:59:60.999999999Z\", utcInstant.toString());\n    }\n\n    @Test\n    public void factory_ofModifiedJulianDay_long_long_nanosNegative() {\n        assertThrows(DateTimeException.class, () -> UtcInstant.ofModifiedJulianDay(MJD_1973_01_01, -1));\n    }\n\n    @Test\n    public void factory_ofModifiedJulianDay_long_long_nanosTooBig_notLeap() {\n        assertThrows(DateTimeException.class, () -> UtcInstant.ofModifiedJulianDay(MJD_1973_01_01, NANOS_PER_DAY));\n    }\n\n    @Test\n    public void factory_ofModifiedJulianDay_long_long_nanosTooBig_leap() {\n        assertThrows(DateTimeException.class, () -> UtcInstant.ofModifiedJulianDay(MJD_1972_12_31_LEAP, NANOS_PER_LEAP_DAY));\n    }\n\n    //-----------------------------------------------------------------------\n    // of(Instant)\n    //-----------------------------------------------------------------------\n    @Test\n    public void factory_of_Instant() {\n        UtcInstant utcInstant = UtcInstant.of(Instant.ofEpochSecond(0, 2));  // 1970-01-01\n        assertEquals(MJD_UNIX_EPOCH, utcInstant.getModifiedJulianDay());\n        assertEquals(2, utcInstant.getNanoOfDay());\n    }\n\n    @Test\n    public void factory_of_Instant_null() {\n        //noinspection DataFlowIssue - testing nulls\n        assertThrows(NullPointerException.class, () -> UtcInstant.of((Instant) null));\n    }\n\n    //-----------------------------------------------------------------------\n    // of(TaiInstant)\n    //-----------------------------------------------------------------------\n    @Test\n    public void factory_of_TaiInstant() {\n        // TAI seconds are counted from 1958-01-01 (MJD_TAI_EPOCH) with a 10-second UTC offset\n        for (int i = -1000; i < 1000; i++) {\n            for (int j = 0; j < 10; j++) {\n                UtcInstant expected = UtcInstant.ofModifiedJulianDay(MJD_TAI_EPOCH + i, j * NANOS_PER_SEC + 2L);\n                TaiInstant tai = TaiInstant.ofTaiSeconds(i * SECS_PER_DAY + j + TAI_UTC_OFFSET_SECS, 2);\n                assertEquals(expected, UtcInstant.of(tai));\n            }\n        }\n    }\n\n    @Test\n    public void factory_of_TaiInstant_null() {\n        //noinspection DataFlowIssue - testing nulls\n        assertThrows(NullPointerException.class, () -> UtcInstant.of((TaiInstant) null));\n    }\n\n    //-----------------------------------------------------------------------\n    // parse(CharSequence)\n    //-----------------------------------------------------------------------\n    @Test\n    public void factory_parse_CharSequence() {\n        assertEquals(UtcInstant.ofModifiedJulianDay(MJD_1972_12_31_LEAP, NANOS_PER_DAY - NANOS_PER_SEC), UtcInstant.parse(\"1972-12-31T23:59:59Z\"));\n        assertEquals(UtcInstant.ofModifiedJulianDay(MJD_1972_12_31_LEAP, NANOS_PER_DAY), UtcInstant.parse(\"1972-12-31T23:59:60Z\"));\n    }\n\n    public static Object[][] data_badParse() {\n        return new Object[][] {\n            {\"\"},\n            {\"A\"},\n            {\"2012-13-01T00:00:00Z\"},  // bad month\n        };\n    }\n\n    @ParameterizedTest\n    @MethodSource(\"data_badParse\")\n    public void factory_parse_CharSequence_invalid(String str) {\n        assertThrows(DateTimeException.class, () -> UtcInstant.parse(str));\n    }\n\n    @Test\n    public void factory_parse_CharSequence_invalidLeapSecond() {\n        assertThrows(DateTimeException.class, () -> UtcInstant.parse(\"1972-11-11T23:59:60Z\")); // leap second but not leap day\n    }\n\n    @Test\n    public void factory_parse_CharSequence_null() {\n        //noinspection DataFlowIssue - testing nulls\n        assertThrows(NullPointerException.class, () -> UtcInstant.parse((String) null));\n    }\n\n    //-----------------------------------------------------------------------\n    // withModifiedJulianDay()\n    //-----------------------------------------------------------------------\n    public static @Nullable Object[][] data_withModifiedJulianDay() {\n        // Columns: mjd, nanoOfDay, newMjd, expectedMjd (null = expect DateTimeException), expectedNanoOfDay\n        return new @Nullable Object[][] {\n            {0L, 12345L, 1L, 1L, 12345L},\n            {0L, 12345L, -1L, -1L, 12345L},\n            {7L, 12345L, 2L, 2L, 12345L},\n            {7L, 12345L, -2L, -2L, 12345L},\n            {-99L, 12345L, 3L, 3L, 12345L},\n            {-99L, 12345L, -3L, -3L, 12345L},\n            {MJD_1972_12_31_LEAP, NANOS_PER_DAY, MJD_1972_12_30, null, 0L},           // leap nanoOfDay invalid on non-leap day\n            {MJD_1972_12_31_LEAP, NANOS_PER_DAY, MJD_1972_12_31_LEAP, MJD_1972_12_31_LEAP, NANOS_PER_DAY},\n            {MJD_1972_12_31_LEAP, NANOS_PER_DAY, MJD_1973_01_01, null, 0L},           // leap nanoOfDay invalid on non-leap day\n            {MJD_1972_12_31_LEAP, NANOS_PER_DAY, MJD_1973_12_31_LEAP, MJD_1973_12_31_LEAP, NANOS_PER_DAY},\n        };\n    }\n\n    @ParameterizedTest\n    @MethodSource(\"data_withModifiedJulianDay\")\n    public void test_withModifiedJulianDay(long mjd, long nanos, long newMjd, @Nullable Long expectedMjd, long expectedNanos) {\n        UtcInstant i = UtcInstant.ofModifiedJulianDay(mjd, nanos);\n        if (expectedMjd != null) {\n            UtcInstant withModifiedJulianDay = i.withModifiedJulianDay(newMjd);\n            assertEquals(expectedMjd.longValue(), withModifiedJulianDay.getModifiedJulianDay());\n            assertEquals(expectedNanos, withModifiedJulianDay.getNanoOfDay());\n        } else {\n            assertThrows(DateTimeException.class, () -> i.withModifiedJulianDay(newMjd));\n        }\n    }\n\n    //-----------------------------------------------------------------------\n    // withNanoOfDay()\n    //-----------------------------------------------------------------------\n    public static @Nullable Object[][] data_withNanoOfDay() {\n        // Columns: mjd, nanoOfDay, newNanoOfDay, expectedMjd (null = expect DateTimeException), expectedNanoOfDay\n        return new @Nullable Object[][] {\n            {0L, 12345L, 1L, 0L, 1L},\n            {0L, 12345L, -1L, null, 0L},\n            {7L, 12345L, 2L, 7L, 2L},\n            {-99L, 12345L, 3L, -99L, 3L},\n            {MJD_1972_12_30,      NANOS_PER_DAY - 1, NANOS_PER_DAY - 1, MJD_1972_12_30,      NANOS_PER_DAY - 1},\n            {MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1, NANOS_PER_DAY - 1, MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1},\n            {MJD_1973_01_01,      NANOS_PER_DAY - 1, NANOS_PER_DAY - 1, MJD_1973_01_01,      NANOS_PER_DAY - 1},\n            {MJD_1972_12_30,      NANOS_PER_DAY - 1, NANOS_PER_DAY,     null,                0L},  // NANOS_PER_DAY invalid on non-leap day\n            {MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1, NANOS_PER_DAY,     MJD_1972_12_31_LEAP, NANOS_PER_DAY},\n            {MJD_1973_01_01,      NANOS_PER_DAY - 1, NANOS_PER_DAY,     null,                0L},  // NANOS_PER_DAY invalid on non-leap day\n            {MJD_1972_12_30,      NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY - 1, null,                0L},\n            {MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY - 1, MJD_1972_12_31_LEAP, NANOS_PER_LEAP_DAY - 1},\n            {MJD_1973_01_01,      NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY - 1, null,                0L},\n            {MJD_1972_12_30,      NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY,     null,                0L},\n            {MJD_1972_12_31_LEAP, NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY,     null,                0L},\n            {MJD_1973_01_01,      NANOS_PER_DAY - 1, NANOS_PER_LEAP_DAY,     null,                0L},\n        };\n    }\n\n    @ParameterizedTest\n    @MethodSource(\"data_withNanoOfDay\")\n    public void test_withNanoOfDay(long mjd, long nanos, long newNanoOfDay, @Nullable Long expectedMjd, long expectedNanos) {\n        UtcInstant i = UtcInstant.ofModifiedJulianDay(mjd, nanos);\n        if (expectedMjd != null) {\n            UtcInstant withNanoOfDay = i.withNanoOfDay(newNanoOfDay);\n            assertEquals(expectedMjd.longValue(), withNanoOfDay.getModifiedJulianDay());\n            assertEquals(expectedNanos, withNanoOfDay.getNanoOfDay());\n        } else {\n            assertThrows(DateTimeException.class, () -> i.withNanoOfDay(newNanoOfDay));\n        }\n    }\n\n    //-----------------------------------------------------------------------\n    // plus(Duration)\n    //-----------------------------------------------------------------------\n    public static Object[][] data_plus() {\n        // Columns: startMjd, startNanoOfDay, durationSecs, durationNanos, expectedMjd, expectedNanoOfDay\n        return new Object[][] {\n            {0, 0,  -2 * SECS_PER_DAY, 5, -2, 5},\n            {0, 0,  -1 * SECS_PER_DAY, 1, -1, 1},\n            {0, 0,  -1 * SECS_PER_DAY, 0, -1, 0},\n            {0, 0,  0,        -2, -1,  NANOS_PER_DAY - 2},\n            {0, 0,  0,        -1, -1,  NANOS_PER_DAY - 1},\n            {0, 0,  0,         0,  0,  0},\n            {0, 0,  0,         1,  0,  1},\n            {0, 0,  0,         2,  0,  2},\n            {0, 0,  1,         0,  0,  1 * NANOS_PER_SEC},\n            {0, 0,  2,         0,  0,  2 * NANOS_PER_SEC},\n            {0, 0,  3, 333333333,  0,  3 * NANOS_PER_SEC + 333333333},\n            {0, 0,  1 * SECS_PER_DAY, 0,  1, 0},\n            {0, 0,  1 * SECS_PER_DAY, 1,  1, 1},\n            {0, 0,  2 * SECS_PER_DAY, 5,  2, 5},\n\n            {1, 0,  -2 * SECS_PER_DAY, 5, -1, 5},\n            {1, 0,  -1 * SECS_PER_DAY, 1, 0, 1},\n            {1, 0,  -1 * SECS_PER_DAY, 0, 0, 0},\n            {1, 0,  0,        -2,  0,  NANOS_PER_DAY - 2},\n            {1, 0,  0,        -1,  0,  NANOS_PER_DAY - 1},\n            {1, 0,  0,         0,  1,  0},\n            {1, 0,  0,         1,  1,  1},\n            {1, 0,  0,         2,  1,  2},\n            {1, 0,  1,         0,  1,  1 * NANOS_PER_SEC},\n            {1, 0,  2,         0,  1,  2 * NANOS_PER_SEC},\n            {1, 0,  3, 333333333,  1,  3 * NANOS_PER_SEC + 333333333},\n            {1, 0,  1 * SECS_PER_DAY, 0,  2, 0},\n            {1, 0,  1 * SECS_PER_DAY, 1,  2, 1},\n            {1, 0,  2 * SECS_PER_DAY, 5,  3, 5},\n        };\n    }\n\n    @ParameterizedTest\n    @MethodSource(\"data_plus\")\n    public void test_plus(long mjd, long nanos, long plusSeconds, int plusNanos, long expectedMjd, long expectedNanos) {\n        UtcInstant result = UtcInstant.ofModifiedJulianDay(mjd, nanos).plus(Duration.ofSeconds(plusSeconds, plusNanos));\n        assertEquals(expectedMjd, result.getModifiedJulianDay());\n        assertEquals(expectedNanos, result.getNanoOfDay());\n    }\n\n    @Test\n    public void test_plus_overflowTooBig() {\n        UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(Long.MAX_VALUE, NANOS_PER_DAY - 1);\n        assertThrows(ArithmeticException.class, () -> utcInstant.plus(Duration.ofNanos(1)));\n    }\n\n    @Test\n    public void test_plus_overflowTooSmall() {\n        UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(Long.MIN_VALUE, 0);\n        assertThrows(ArithmeticException.class, () -> utcInstant.plus(Duration.ofNanos(-1)));\n    }\n\n    //-----------------------------------------------------------------------\n    // minus(Duration)\n    //-----------------------------------------------------------------------\n    public static Object[][] data_minus() {\n        // Columns: startMjd, startNanoOfDay, durationSecs, durationNanos, expectedMjd, expectedNanoOfDay\n        return new Object[][] {\n            {0, 0,  2 * SECS_PER_DAY, -5, -2, 5},\n            {0, 0,  1 * SECS_PER_DAY, -1, -1, 1},\n            {0, 0,  1 * SECS_PER_DAY, 0, -1, 0},\n            {0, 0,  0,          2, -1,  NANOS_PER_DAY - 2},\n            {0, 0,  0,          1, -1,  NANOS_PER_DAY - 1},\n            {0, 0,  0,          0,  0,  0},\n            {0, 0,  0,         -1,  0,  1},\n            {0, 0,  0,         -2,  0,  2},\n            {0, 0,  -1,         0,  0,  1 * NANOS_PER_SEC},\n            {0, 0,  -2,         0,  0,  2 * NANOS_PER_SEC},\n            {0, 0,  -3, -333333333,  0,  3 * NANOS_PER_SEC + 333333333},\n            {0, 0,  -1 * SECS_PER_DAY, 0,  1, 0},\n            {0, 0,  -1 * SECS_PER_DAY, -1,  1, 1},\n            {0, 0,  -2 * SECS_PER_DAY, -5,  2, 5},\n\n            {1, 0,  2 * SECS_PER_DAY, -5, -1, 5},\n            {1, 0,  1 * SECS_PER_DAY, -1, 0, 1},\n            {1, 0,  1 * SECS_PER_DAY, 0, 0, 0},\n            {1, 0,  0,          2,  0,  NANOS_PER_DAY - 2},\n            {1, 0,  0,          1,  0,  NANOS_PER_DAY - 1},\n            {1, 0,  0,          0,  1,  0},\n            {1, 0,  0,         -1,  1,  1},\n            {1, 0,  0,         -2,  1,  2},\n            {1, 0,  -1,         0,  1,  1 * NANOS_PER_SEC},\n            {1, 0,  -2,         0,  1,  2 * NANOS_PER_SEC},\n            {1, 0,  -3, -333333333,  1,  3 * NANOS_PER_SEC + 333333333},\n            {1, 0,  -1 * SECS_PER_DAY, 0,  2, 0},\n            {1, 0,  -1 * SECS_PER_DAY, -1,  2, 1},\n            {1, 0,  -2 * SECS_PER_DAY, -5,  3, 5},\n        };\n    }\n\n    @ParameterizedTest\n    @MethodSource(\"data_minus\")\n    public void test_minus(long mjd, long nanos, long minusSeconds, int minusNanos, long expectedMjd, long expectedNanos) {\n        UtcInstant result = UtcInstant.ofModifiedJulianDay(mjd, nanos).minus(Duration.ofSeconds(minusSeconds, minusNanos));\n        assertEquals(expectedMjd, result.getModifiedJulianDay());\n        assertEquals(expectedNanos, result.getNanoOfDay());\n    }\n\n    @Test\n    public void test_minus_overflowTooSmall() {\n        UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(Long.MIN_VALUE, 0);\n        assertThrows(ArithmeticException.class, () -> utcInstant.minus(Duration.ofNanos(1)));\n    }\n\n    @Test\n    public void test_minus_overflowTooBig() {\n        UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(Long.MAX_VALUE, NANOS_PER_DAY - 1);\n        assertThrows(ArithmeticException.class, () -> utcInstant.minus(Duration.ofNanos(-1)));\n    }\n\n    //-----------------------------------------------------------------------\n    // durationUntil()\n    //-----------------------------------------------------------------------\n    @Test\n    public void test_durationUntil_oneDayNoLeap() {\n        UtcInstant utc1 = UtcInstant.ofModifiedJulianDay(MJD_1972_12_30, 0);\n        UtcInstant utc2 = UtcInstant.ofModifiedJulianDay(MJD_1972_12_31_LEAP, 0);\n        Duration test = utc1.durationUntil(utc2);\n        assertEquals(SECS_PER_DAY, test.getSeconds());\n        assertEquals(0, test.getNano());\n    }\n\n    @Test\n    public void test_durationUntil_oneDayLeap() {\n        // A day containing a leap second has SECS_PER_DAY + 1 seconds\n        UtcInstant utc1 = UtcInstant.ofModifiedJulianDay(MJD_1972_12_31_LEAP, 0);\n        UtcInstant utc2 = UtcInstant.ofModifiedJulianDay(MJD_1973_01_01, 0);\n        Duration test = utc1.durationUntil(utc2);\n        assertEquals(SECS_PER_DAY + 1, test.getSeconds());\n        assertEquals(0, test.getNano());\n    }\n\n    @Test\n    public void test_durationUntil_oneDayLeapNegative() {\n        UtcInstant utc1 = UtcInstant.ofModifiedJulianDay(MJD_1973_01_01, 0);\n        UtcInstant utc2 = UtcInstant.ofModifiedJulianDay(MJD_1972_12_31_LEAP, 0);\n        Duration test = utc1.durationUntil(utc2);\n        assertEquals(-(SECS_PER_DAY + 1), test.getSeconds());\n        assertEquals(0, test.getNano());\n    }\n\n    //-----------------------------------------------------------------------\n    // toTaiInstant()\n    //-----------------------------------------------------------------------\n    @Test\n    public void test_toTaiInstant() {\n        // TAI seconds are counted from 1958-01-01 (MJD_TAI_EPOCH) with a 10-second UTC offset\n        for (int i = -1000; i < 1000; i++) {\n            for (int j = 0; j < 10; j++) {\n                UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(MJD_TAI_EPOCH + i, j * NANOS_PER_SEC + 2L);\n                TaiInstant taiInstant = utcInstant.toTaiInstant();\n                assertEquals(i * SECS_PER_DAY + j + TAI_UTC_OFFSET_SECS, taiInstant.getTaiSeconds());\n                assertEquals(2, taiInstant.getNano());\n            }\n        }\n    }\n\n    @Test\n    public void test_toTaiInstant_maxInvalid() {\n        UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(Long.MAX_VALUE, 0);\n        assertThrows(ArithmeticException.class, () -> utcInstant.toTaiInstant());\n    }\n\n    //-----------------------------------------------------------------------\n    // toInstant()\n    //-----------------------------------------------------------------------\n    @Test\n    public void test_toInstant() {\n        // Round-trip check: UTC instants around 1980-01-01 convert correctly to Java Instant\n        for (int i = -1000; i < 1000; i++) {\n            for (int j = 0; j < 10; j++) {\n                Instant expected = Instant.ofEpochSecond(UNIX_EPOCH_SECS_AT_1980_01_01 + i * SECS_PER_DAY + j).plusNanos(2);\n                UtcInstant utcInstant = UtcInstant.ofModifiedJulianDay(MJD_1980_01_01 + i, j * NANOS_PER_SEC + 2);\n                assertEquals(expected, utcInstant.toInstant());\n            }\n        }\n    }\n\n    //-----------------------------------------------------------------------\n    // compareTo()\n    //-----------------------------------------------------------------------\n    @Test\n    public void test_comparisons() {\n        assertOrderedChronologically(\n            UtcInstant.ofModifiedJulianDay(-2L, 0),\n            UtcInstant.ofModifiedJulianDay(-2L, NANOS_PER_DAY - 2),\n            UtcInstant.ofModifiedJulianDay(-2L, NANOS_PER_DAY - 1),\n            UtcInstant.ofModifiedJulianDay(-1L, 0),\n            UtcInstant.ofModifiedJulianDay(-1L, 1),\n            UtcInstant.ofModifiedJulianDay(-1L, NANOS_PER_DAY - 2),\n            UtcInstant.ofModifiedJulianDay(-1L, NANOS_PER_DAY - 1),\n            UtcInstant.ofModifiedJulianDay(0L, 0),\n            UtcInstant.ofModifiedJulianDay(0L, 1),\n            UtcInstant.ofModifiedJulianDay(0L, 2),\n            UtcInstant.ofModifiedJulianDay(0L, NANOS_PER_DAY - 1),\n            UtcInstant.ofModifiedJulianDay(1L, 0),\n            UtcInstant.ofModifiedJulianDay(2L, 0)\n        );\n    }\n\n    /**\n     * Verifies that the given instants are in strict chronological order by exhaustively\n     * checking all pairwise combinations of compareTo, isBefore, isAfter, and equals.\n     */\n    void assertOrderedChronologically(UtcInstant... instants) {\n        for (int i = 0; i < instants.length; i++) {\n            UtcInstant a = instants[i];\n            for (int j = 0; j < instants.length; j++) {\n                UtcInstant b = instants[j];\n                if (i < j) {\n                    assertEquals(-1, a.compareTo(b));\n                    assertNotEquals(a, b);\n                    assertTrue(a.isBefore(b));\n                    assertFalse(a.isAfter(b));\n                } else if (i > j) {\n                    assertEquals(1, a.compareTo(b));\n                    assertNotEquals(a, b);\n                    assertFalse(a.isBefore(b));\n                    assertTrue(a.isAfter(b));\n                } else {\n                    assertEquals(0, a.compareTo(b));\n                    assertEquals(a, b);\n                    assertFalse(a.isBefore(b));\n                    assertFalse(a.isAfter(b));\n                }\n            }\n        }\n    }\n\n    @Test\n    public void test_compareTo_ObjectNull() {\n        UtcInstant a = UtcInstant.ofModifiedJulianDay(0L, 0);\n        //noinspection DataFlowIssue - testing nulls\n        assertThrows(NullPointerException.class, () -> a.compareTo(null));\n    }\n\n    @Test\n    @SuppressWarnings({\"unchecked\", \"rawtypes\"})\n    public void test_compareToNonUtcInstant() {\n        Comparable c = UtcInstant.ofModifiedJulianDay(0L, 2);\n        assertThrows(ClassCastException.class, () -> c.compareTo(new Object()));\n    }\n\n    //-----------------------------------------------------------------------\n    // equals() / hashCode()\n    //-----------------------------------------------------------------------\n    @Test\n    public void test_equals_and_hashCode() {\n        new EqualsTester()\n            .addEqualityGroup(UtcInstant.ofModifiedJulianDay(5L, 20), UtcInstant.ofModifiedJulianDay(5L, 20))\n            .addEqualityGroup(UtcInstant.ofModifiedJulianDay(5L, 30), UtcInstant.ofModifiedJulianDay(5L, 30))\n            .addEqualityGroup(UtcInstant.ofModifiedJulianDay(6L, 20), UtcInstant.ofModifiedJulianDay(6L, 20))\n            .testEquals();\n    }\n\n    //-----------------------------------------------------------------------\n    // toString()\n    //-----------------------------------------------------------------------\n    public static Object[][] data_toString() {\n        // Columns: mjd, nanoOfDay, expectedString\n        return new Object[][] {\n            {MJD_UNIX_EPOCH,      0,                              \"1970-01-01T00:00:00Z\"},\n            {MJD_UNIX_EPOCH + 1,  1,                              \"1970-01-02T00:00:00.000000001Z\"},\n            {MJD_UNIX_EPOCH + 1,  999,                            \"1970-01-02T00:00:00.000000999Z\"},\n            {MJD_UNIX_EPOCH + 1,  1000,                           \"1970-01-02T00:00:00.000001Z\"},\n            {MJD_UNIX_EPOCH + 1,  999000,                         \"1970-01-02T00:00:00.000999Z\"},\n            {MJD_UNIX_EPOCH + 1,  1000000,                        \"1970-01-02T00:00:00.001Z\"},\n            {MJD_UNIX_EPOCH + 31, 999999999,                      \"1970-02-01T00:00:00.999999999Z\"},\n            {MJD_UNIX_EPOCH + 32, 1000000000,                     \"1970-02-02T00:00:01Z\"},\n            {MJD_UNIX_EPOCH + 33, 60L * 1000000000L,              \"1970-02-03T00:01:00Z\"},\n            {MJD_UNIX_EPOCH + 34, 60L * 60L * 1000000000L,        \"1970-02-04T01:00:00Z\"},\n            {MJD_1972_12_31_LEAP, NANOS_PER_DAY - NANOS_PER_SEC,  \"1972-12-31T23:59:59Z\"},\n            {MJD_1972_12_31_LEAP, NANOS_PER_DAY,                  \"1972-12-31T23:59:60Z\"},\n            {MJD_1973_01_01,      0,                              \"1973-01-01T00:00:00Z\"},\n        };\n    }\n\n    @ParameterizedTest\n    @MethodSource(\"data_toString\")\n    public void test_toString(long mjd, long nod, String expected) {\n        assertEquals(expected, UtcInstant.ofModifiedJulianDay(mjd, nod).toString());\n    }\n\n    @ParameterizedTest\n    @MethodSource(\"data_toString\")\n    public void test_toString_parse(long mjd, long nod, String str) {\n        assertEquals(UtcInstant.ofModifiedJulianDay(mjd, nod), UtcInstant.parse(str));\n    }\n\n}\n",
+  "last_error": "",
+  "last_java_path": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/threeten-extra/manual/testsuites/TestUtcInstant/TestUtcInstant.java",
+  "initial_prompt": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `TestUtcInstant.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/threeten-extra/src/test/java/org/threeten/extra/scale/TestUtcInstant.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n",
+  "improvement_mode": "agent_improve_and_repair",
+  "file_prefix": "",
+  "project_id": "threeten-extra",
+  "target_class": "org.threeten.extra.scale.UtcInstant",
+  "test_category": "manual_suite",
+  "test_id": "TestUtcInstant",
+  "suite_class": "TestUtcInstant",
+  "is_evosuite": false,
+  "scaffolding_java": null,
+  "original_java": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/threeten-extra/src/test/java/org/threeten/extra/scale/TestUtcInstant.java",
+  "agent_sandbox": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-sonnet-4-6-understandability_improvement_constraints/threeten-extra/manual/testsuites/TestUtcInstant",
+  "agent_compile_attempts": 1,
+  "skill_names": [
+    "compile-check",
+    "repair-loop"
+  ],
+  "skill_paths": [
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/compile-check/SKILL.md",
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/repair-loop/SKILL.md"
+  ],
+  "provider_model": "claude-sonnet-4-6",
+  "requested_provider_model": "claude-sonnet-4-6",
+  "actual_provider_model": "claude-sonnet-4-6",
+  "runtime_observability": {
+    "rate_limit_events": [
+      {
+        "status": "rejected",
+        "rate_limit_type": "five_hour",
+        "utilization": null,
+        "resets_at": 1782172800,
+        "overage_status": "allowed",
+        "session_id": "43221503-04be-4202-a320-883b2c23f15f"
+      }
+    ],
+    "rate_limit_hit": true,
+    "rate_limit_warned": false,
+    "token_usage": {
+      "usage": {
+        "input_tokens": 7,
+        "cache_creation_input_tokens": 71518,
+        "cache_read_input_tokens": 207991,
+        "output_tokens": 26837,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 6933,
+          "ephemeral_5m_input_tokens": 64585
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 1,
+            "output_tokens": 439,
+            "cache_read_input_tokens": 70583,
+            "cache_creation_input_tokens": 73,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 73,
+              "ephemeral_1h_input_tokens": 0
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 581,
+          "outputTokens": 23,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000696,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-sonnet-4-6": {
+          "inputTokens": 7,
+          "outputTokens": 26837,
+          "cacheReadInputTokens": 207991,
+          "cacheCreationInputTokens": 71518,
+          "webSearchRequests": 0,
+          "costUSD": 0.7331657999999999,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        }
+      },
+      "total_cost_usd": 0.7338617999999999,
+      "num_turns": 7,
+      "duration_ms": 339285,
+      "duration_api_ms": 339440
+    },
+    "context_usage": {
+      "categories": [
+        {
+          "name": "System prompt",
+          "tokens": 6520,
+          "color": "promptBorder"
+        },
+        {
+          "name": "System tools",
+          "tokens": 14629,
+          "color": "inactive"
+        },
+        {
+          "name": "System tools (deferred)",
+          "tokens": 14252,
+          "color": "inactive",
+          "isDeferred": true
+        },
+        {
+          "name": "Skills",
+          "tokens": 1461,
+          "color": "warning"
+        },
+        {
+          "name": "Messages",
+          "tokens": 48446,
+          "color": "purple_FOR_SUBAGENTS_ONLY"
+        },
+        {
+          "name": "Free space",
+          "tokens": 128944,
+          "color": "promptBorder"
+        }
+      ],
+      "totalTokens": 70657,
+      "maxTokens": 200000,
+      "rawMaxTokens": 200000,
+      "autocompactSource": "auto",
+      "percentage": 35,
+      "gridRows": [
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "System prompt",
+            "tokens": 6520,
+            "percentage": 3,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "System prompt",
+            "tokens": 6520,
+            "percentage": 3,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "System prompt",
+            "tokens": 6520,
+            "percentage": 3,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14629,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14629,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14629,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14629,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14629,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14629,
+            "percentage": 7,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14629,
+            "percentage": 7,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "warning",
+            "isFilled": true,
+            "categoryName": "Skills",
+            "tokens": 1461,
+            "percentage": 1,
+            "squareFullness": 0.7305
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 48446,
+            "percentage": 24,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 128944,
+            "percentage": 64,
+            "squareFullness": 1
+          }
+        ]
+      ],
+      "model": "claude-sonnet-4-6",
+      "memoryFiles": [],
+      "mcpTools": [],
+      "agents": [],
+      "slashCommands": {
+        "totalCommands": 16,
+        "includedCommands": 16,
+        "tokens": 937
+      },
+      "skills": {
+        "totalSkills": 16,
+        "includedSkills": 16,
+        "tokens": 1461,
+        "skillFrontmatter": [
+          {
+            "name": "compile-check",
+            "source": "projectSettings",
+            "tokens": 146
+          },
+          {
+            "name": "repair-loop",
+            "source": "projectSettings",
+            "tokens": 205
+          },
+          {
+            "name": "deep-research",
+            "source": "built-in",
+            "tokens": 121
+          },
+          {
+            "name": "update-config",
+            "source": "built-in",
+            "tokens": 176
+          },
+          {
+            "name": "keybindings-help",
+            "source": "built-in",
+            "tokens": 61
+          },
+          {
+            "name": "verify",
+            "source": "built-in",
+            "tokens": 64
+          },
+          {
+            "name": "code-review",
+            "source": "built-in",
+            "tokens": 90
+          },
+          {
+            "name": "simplify",
+            "source": "built-in",
+            "tokens": 46
+          },
+          {
+            "name": "fewer-permission-prompts",
+            "source": "built-in",
+            "tokens": 47
+          },
+          {
+            "name": "loop",
+            "source": "built-in",
+            "tokens": 85
+          },
+          {
+            "name": "schedule",
+            "source": "built-in",
+            "tokens": 95
+          },
+          {
+            "name": "claude-api",
+            "source": "built-in",
+            "tokens": 189
+          },
+          {
+            "name": "run",
+            "source": "built-in",
+            "tokens": 91
+          },
+          {
+            "name": "init",
+            "source": "built-in",
+            "tokens": 16
+          },
+          {
+            "name": "review",
+            "source": "built-in",
+            "tokens": 7
+          },
+          {
+            "name": "security-review",
+            "source": "built-in",
+            "tokens": 22
+          }
+        ]
+      },
+      "autoCompactThreshold": 167000,
+      "isAutoCompactEnabled": true,
+      "messageBreakdown": {
+        "toolCallTokens": 7641,
+        "toolResultTokens": 14138,
+        "attachmentTokens": 2181,
+        "assistantMessageTokens": 17355,
+        "userMessageTokens": 834,
+        "redirectedContextTokens": 0,
+        "unattributedTokens": 6297,
+        "toolCallsByType": [
+          {
+            "name": "Read",
+            "callTokens": 137,
+            "resultTokens": 13987
+          },
+          {
+            "name": "Write",
+            "callTokens": 7437,
+            "resultTokens": 96
+          },
+          {
+            "name": "Skill",
+            "callTokens": 33,
+            "resultTokens": 28
+          },
+          {
+            "name": "Bash",
+            "callTokens": 34,
+            "resultTokens": 27
+          }
+        ],
+        "attachmentsByType": [
+          {
+            "name": "skill_listing",
+            "tokens": 1566
+          },
+          {
+            "name": "agent_listing_delta",
+            "tokens": 440
+          },
+          {
+            "name": "deferred_tools_delta",
+            "tokens": 163
+          },
+          {
+            "name": "command_permissions",
+            "tokens": 12
+          }
+        ]
+      },
+      "apiUsage": {
+        "input_tokens": 1,
+        "output_tokens": 439,
+        "cache_creation_input_tokens": 73,
+        "cache_read_input_tokens": 70583
+      }
+    },
+    "auth_used": "oauth",
+    "auth_attempts_available": [
+      "oauth"
+    ]
+  }
+}

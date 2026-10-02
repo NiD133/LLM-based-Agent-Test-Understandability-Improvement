@@ -1,0 +1,263 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# THIS FILE CONTROLS THE MAIN STUDY — Step 1 through Step 5b — and holds the
+# RQ4 agent settings at the end (downstream:).
+#
+#   Step 1  clone target repo + Maven build
+#   Step 2  EvoSuite generates an automated suite; both suites measured
+#           (JaCoCo line/branch + PIT mutation); stage gate filters classes
+#   Step 3  AST split of each surviving suite into per-test-case .java files,
+#           every case measured (JaCoCo + PIT)
+#   Step 4  Claude Code SDK / Codex CLI agents improve each test's
+#           understandability (compile-check + repair-loop skills)
+#   Step 5  compile every improved test, re-measure coverage + mutation,
+#           exact-match verdict per test (metrics.json)
+#   Step 5b write data/improved/summary/
+#
+# EVERYTHING AFTER THAT LIVES IN ITS OWN CONFIG:
+#   feature_analysis/config.yaml   structural / feature analysis of the
+#                                  original-vs-improved diffs (GumTree +
+#                                  RefactoringMiner + JavaParser)
+#   stability_check/config.yaml    repeated improvement runs on the 362-case sample
+#
+# See README.md for who owns what.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# ── Output roots ─────────────────────────────────────────────────────────
+# Resolved by scripts/pipeline_paths.py. RELATIVE → this folder
+# (agent_improvement/); ABSOLUTE → used as-is. tools/ and local_workplace/ are
+# shared by every task and live one level up, at the repository root.
+paths:
+  workplace_dir: "../local_workplace"   # cloned repos → <repo>/local_workplace/<project_id>/
+  data_root:     "data"                 # all measurement output → agent_improvement/data/...
+
+
+# ── Pipeline step toggles ────────────────────────────────────────────────
+# Every step is idempotent and reuses earlier artifacts, so re-running with
+# only the trailing steps enabled is safe.
+pipeline_control:
+  # Step 1: clone target repo (data/dataset.json) and run mvn
+  clone_and_build: false
+  # Step 2a: run EvoSuite to generate automated tests
+  generate_evosuite: false
+  # Step 2b: JaCoCo + PIT for the manual + evosuite SUITES →
+  #          data/baseline/<proj>/{manual,auto}/testsuites/. No filtering,
+  #          no splitting happens here.
+  measure_baseline: false
+  # Step 2c: copy the suites of gate-passing classes data/baseline/ →
+  #          data/original/, and write data/tests_for_improvements.json.
+  #   enabled      — run the filter_out step at all
+  #   apply_filter — true → only classes passing require_* are copied
+  #                  false → passthrough (data/original mirrors data/baseline)
+  filter_out:
+    enabled: false
+    apply_filter: false
+
+    # COMBINED gate — every check is INDEPENDENT. A metric is ENFORCED when
+    # set, SKIPPED when null. A class passes only if EVERY enabled check does.
+
+    # Per-suite absolute floors
+    require_manual:
+      line_pct: 60.0
+      branch_pct: 60.0
+      mutation_score_pct: 40.0
+    require_evosuite:
+      line_pct: 60.0
+      branch_pct: 60.0
+      mutation_score_pct: 40.0
+
+  # Step 3: split each suite in data/original/ into per-test-case .java files
+  #         and measure every case (JaCoCo + PIT) →
+  #         data/original/<proj>/{manual,auto}/testcases/<Suite>/.
+  #         Only classes that passed Step 2c are in data/original/, so only
+  #         they are split. Re-run after any re-run of filter_out (which
+  #         clears a class's folder, testcases included).
+  split_and_measure_cases: false
+
+  # Step 4 — agent improvement. The two backends toggle INDEPENDENTLY and
+  # each runs every model listed in its own section below.
+  generate_improvement_prompts: false   # dry-run: write prompts to ImprovePrompts/
+  run_claude_code: false                # → scripts/agent_with_repair.py
+  run_codex:       false                # → scripts/codex_agent_with_repair.py
+
+  # Step 5: compile every improved test + JaCoCo + PIT; the exact-match verdict
+  # (same covered lines and branches, same killed mutants) is written into each
+  # test's metrics.json.
+  compile_improvement_outputs: false
+
+  # Step 5b: aggregate every model folder under data/improved/ into
+  # data/improved/summary/ (scripts/summarize_improvements.py):
+  #   summary.md                  the accepted-tests table (one table, nothing else)
+  #   feature_analysis_input.json the exact-match pairs feature_analysis/ analyses (RQ1)
+  #   suite_cases.json            suite ↔ case mapping for the RQ3 analysis
+  # Cheap: reads metrics.json + state.json only, no Java. Safe to leave on.
+  generate_summary: true
+
+
+# ── Step 1 + 2 + 5 external tools ────────────────────────────────────────
+tools:
+  # ── JDK homes come from .env at the repository root (JDK_8_HOME, JDK_11_HOME,
+  # JDK_21_HOME; see .env.example). `${VAR}` is expanded by main.load_config;
+  # an unset variable expands to "" (auto-detect / PATH).
+  # The study used Corretto 1.8.0_442, Temurin 11 and JDK 21. JDK 8 builds the
+  # subject projects (they pin -source 1.5..1.8) and runs EvoSuite; JDK 11 runs
+  # every measurement (JaCoCo, PIT, JUnit need --add-opens); JDK 21 is only used
+  # by feature_analysis/ and the oracle-masking helper, not by this pipeline.
+  java_path: "${JDK_11_HOME}/bin/java"
+  # EvoSuite 1.2.0 requires Java 8 or 11 to run.
+  java_8_path: "${JDK_8_HOME}"
+  # Java 11+ used by Maven for compiling + running JUnit 5 tests.
+  java_home_compile: "${JDK_11_HOME}"
+  maven_path: "mvn"
+
+  # ── Per-project JDK selection (Step 1 build + Step 2b/5 measurement) ────
+  # build_executor.resolve_java_home() maps a project's detected/overridden
+  # Java release to one of these installed JDK homes. Without this a single
+  # fixed JDK fails (e.g. "-source 5 no longer supported" for itextpdf on 11+).
+  # All 14 subjects resolve to release 8 (build on JDK 8, measure on JDK 11), so
+  # no 17 tier is configured; resolve_java_home falls through to 11 / 21.
+  # Keys are quoted strings on purpose — load_config builds a SimpleNamespace
+  # via **kwargs, which rejects bare integer keys.
+  java_homes:
+    "8":  "${JDK_8_HOME}"
+    "11": "${JDK_11_HOME}"
+    "21": "${JDK_21_HOME}"
+  # Explicit release override for projects whose Java version lives only in a
+  # parent pom (detect_java_release returns None / a wrong value).
+  project_jdk_overrides:
+    # itextpdf is itext5 (Java 8); its root pom declares no compiler version.
+    itextpdf: 8
+
+  # EvoSuite (Step 2a). evosuite_runtime is required to compile + run the
+  # generated tests in Step 2b/5.
+  evosuite_jar: "../tools/evosuite-1.2.0.jar"
+  evosuite_runtime: "../tools/evosuite-standalone-runtime-1.2.0.jar"
+  evosuite_time_budget: 180   # seconds per class
+
+  # JaCoCo (Steps 1, 2b, 5)
+  jacoco_agent: "../tools/jacoco/jacocoagent.jar"
+  jacoco_cli:   "../tools/jacoco/jacococli.jar"
+  # true → also write a browsable HTML report next to each jacoco.xml.
+  # KEEP THIS OFF. It is what produced 469,250 .html files (5.2 GB) in the
+  # old data/baseline/commons-text tree.
+  jacoco_html: false
+
+  # JUnit 4 runner used outside Maven (Steps 2b/5, EvoSuite path)
+  junit_jar:    "../tools/junit/junit-4.13.2.jar"
+  hamcrest_jar: "../tools/junit/hamcrest-core-1.3.jar"
+
+
+# ── Measurement scratch retention ────────────────────────────────────────
+# Each measured test gets a _work/ folder holding JaCoCo/PIT intermediates
+# (jacoco.xml, jacoco.exec, PIT reports, .class files). Everything analysis
+# needs is already extracted into metrics.json — covered_lines, missed_lines,
+# branches_by_line, and the FULL per-mutant killed_mutants records — so _work
+# is pure scratch.
+#
+# It is also enormous: 27.5 GB across the three model runs, ~80% of the whole
+# data tree. Leave keep_work false unless you are debugging one specific test.
+measurement:
+  keep_work: false
+  # Note: only _work/cov/ (jacoco.xml + jacoco.exec + PIT report) is dropped.
+  # _work/test-classes/ is always kept — later steps put it on the classpath
+  # and it costs ~0.13 GB in total.
+
+
+# ── Step 1 + 5: PIT mutation testing ─────────────────────────────────────
+# scripts/mutation_measurement.py. PIT plugin routing (coverage_runner.py):
+#   JUnit 3 / 4 → --testPlugin junit   |   JUnit 5 → --testPlugin junit5
+mutation_testing:
+  enabled: true
+  pit_jars:
+    - "../tools/pit/pitest-1.23.0.jar"
+    - "../tools/pit/pitest-entry-1.23.0.jar"
+    - "../tools/pit/pitest-command-line-1.23.0.jar"
+    # PIT's XMLReportListener needs commons-text, which the CLI distribution
+    # does not bundle …
+    - "../tools/pit/commons-text-1.10.0.jar"
+    # … and commons-text needs commons-lang3 at runtime. Without it PIT runs
+    # every mutant fine but throws NoClassDefFoundError while WRITING
+    # mutations.xml → empty file → mutation score None for every test.
+    - "../tools/pit/commons-lang3-3.14.0.jar"
+  pit_junit5_plugin_jar: "../tools/pit/pitest-junit5-plugin-1.2.3.jar"
+  timeout_seconds: 600
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Step 4a — Claude Code SDK agent   (pipeline_control.run_claude_code)
+# ══════════════════════════════════════════════════════════════════════════
+# Backend routing is decided by WHICH SECTION the model sits in, not by the
+# model id — anything here goes to Claude Code SDK.
+#
+# OUTPUT FOLDER (new): each model entry may carry its own `output_dir`, which
+# becomes the top-level folder name under data/improved/:
+#
+#     data/improved/<output_dir>/<project>/<src>/{testsuites|testcases}/...
+#
+# That is exactly the shape feature_analysis expects as its DATA_ROOT, so the
+# old "export a renamed copy" step is gone. Without `output_dir` the legacy
+# name `<model>-<prompt>` is used.
+#
+# RULE: the folder name no longer carries the prompt version, so if you enable
+# TWO prompts at once you must give each (model, prompt) pair a distinct
+# folder — main.py refuses to start when two active combinations collide.
+agent:
+  models:
+    - id: "claude-opus-4-8"
+      output_dir: "opus-4.8"
+    - id: "claude-sonnet-4-6"
+      output_dir: "sonnet-4.6"
+
+  # Extended thinking + effort (SDK ≥ 0.2.x). claude-opus-4-8 REQUIRES
+  # adaptive thinking — the older "enabled" form is rejected with HTTP 400.
+  # Delete both keys to use SDK/CLI defaults.
+  thinking:
+    type: "adaptive"          # or "disabled"
+  effort: "medium"            # low | medium | high | xhigh | max
+
+  # Parallel agent sessions (asyncio.Semaphore cap).
+  concurrency: 16
+  # Bounds the repair loop on tests that cannot be made to compile.
+  max_turns_with_repair: 10
+  # Safe here because Bash is restricted by convention to `bash compile.sh`.
+  permission_mode: "acceptEdits"
+  allowed_tools_with_repair: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+  # Skill loading is governed by the SDK: system_prompt uses the claude_code
+  # preset and setting_sources=["project"] loads .claude/ from the sandbox cwd,
+  # giving the 3-tier lazy model (metadata in context, bodies via Skill tool).
+  keep_sandbox: false         # true = leave sandboxes on disk (debug only)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Step 4b — Codex agent   (pipeline_control.run_codex)
+# ══════════════════════════════════════════════════════════════════════════
+codex_agent:
+  # The study ran GPT-5.5 through the Codex CLI (CODEX_CLI_PATH in .env);
+  # `cli` is the only runtime included in this package.
+  runtime: "cli"
+  models:
+    - id: "gpt-5.5"
+      output_dir: "gpt-5.5"
+
+  # Each run boots a full agent session — start conservatively.
+  concurrency: 2
+  sandbox_mode: "workspace-write"
+  # ALIGNED to agent.max_turns_with_repair so Claude vs Codex differ ONLY by
+  # model — the fair-comparison requirement for this study.
+  max_turns_with_repair: 10
+  keep_sandbox: false
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# RQ4 — oracle-generation agent (downstream_tasks/oracle_generation_evosuite)
+# ══════════════════════════════════════════════════════════════════════════
+# Read by downstream_tasks/ds_common.run_claude_session. The model
+# (claude-sonnet-4-6) and the turn cap (80) are command-line arguments of the
+# study scripts (improve.py / oraclegen.py); only the reasoning settings live
+# here. improvefirst_49/oraclegen.py additionally sets thinking.display:
+# "summarized" at run time (recorded in runs/<label>/run_config.json).
+downstream:
+  agent:
+    thinking:
+      type: "adaptive"
+    effort: "medium"

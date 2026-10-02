@@ -1,0 +1,892 @@
+[3] AGENT
+I’ll use the compile-check workflow as required. First I’m reading the skill instructions and the two allowed source files so I can preserve behavior while making only the generated test clearer.
+
+[4] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[5] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[6] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[7] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[8] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/data/baseline/commons-text/_evosuite_raw/org/apache/commons/text/WordUtils_ESTest.java"
+
+[9] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/data/baseline/commons-text/_evosuite_raw/org/apache/commons/text/WordUtils_ESTest.java"
+--- output ---
+/*
+ * This file was automatically generated by EvoSuite
+ * Wed Jun 17 06:10:48 GMT 2026
+ */
+
+package org.apache.commons.text;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import org.apache.commons.text.WordUtils;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class) @EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false) 
+public class WordUtils_ESTest extends WordUtils_ESTest_scaffolding {
+
+  @Test(timeout = 4000)
+  public void test00()  throws Throwable  {
+      String string0 = WordUtils.wrap("|eT ($ElK)2^p:", (-3137), "|eT ($ElK)2^p:", false, "|eT ($ElK)2^p:");
+      assertEquals("eT|eT ($ElK)2^p:$E|eT ($ElK)2^p:)2|eT ($ElK)2^p:p:", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test01()  throws Throwable  {
+      String string0 = WordUtils.wrap("|", (-2392), "|", false, "|");
+      assertEquals("", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test02()  throws Throwable  {
+      String string0 = WordUtils.wrap("3^s.6", 0, "\b.*", true, "\b.*");
+      assertEquals("3\b.*^\b.*s\b.*.\b.*6", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test03()  throws Throwable  {
+      String string0 = WordUtils.wrap(":9~&Gxna!", (-182), (String) null, false, ":9~&Gxna!");
+      assertEquals(":9~&Gxna!", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test04()  throws Throwable  {
+      String string0 = WordUtils.wrap(".*\b", (-1995));
+      assertEquals(".*\b", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test05()  throws Throwable  {
+      String string0 = WordUtils.wrap("?*!2g,cNA6z2~8(~C,", 259, "*|", true);
+      assertEquals("?*!2g,cNA6z2~8(~C,", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test06()  throws Throwable  {
+      String string0 = WordUtils.wrap((String) null, 296, ";)(5b_Sh4o|A8@", true);
+      assertNull(string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test07()  throws Throwable  {
+      String string0 = WordUtils.uncapitalize(".*\b");
+      assertEquals(".*\b", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test08()  throws Throwable  {
+      char[] charArray0 = new char[1];
+      String string0 = WordUtils.uncapitalize((String) null, charArray0);
+      assertNull(string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test09()  throws Throwable  {
+      String string0 = WordUtils.swapCase("upper value is less than lower value");
+      assertEquals("UPPER VALUE IS LESS THAN LOWER VALUE", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test10()  throws Throwable  {
+      String string0 = WordUtils.swapCase("-l]U*[b,I?0");
+      assertEquals("-L]u*[B,i?0", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test11()  throws Throwable  {
+      String string0 = WordUtils.swapCase("");
+      assertEquals("", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test12()  throws Throwable  {
+      char[] charArray0 = new char[2];
+      charArray0[0] = 'X';
+      boolean boolean0 = WordUtils.isDelimiter((int) 'X', charArray0);
+      assertTrue(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test13()  throws Throwable  {
+      boolean boolean0 = WordUtils.isDelimiter((-1628), (char[]) null);
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test14()  throws Throwable  {
+      char[] charArray0 = new char[1];
+      boolean boolean0 = WordUtils.isDelimiter((-716), charArray0);
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test15()  throws Throwable  {
+      char[] charArray0 = new char[2];
+      charArray0[0] = 'G';
+      boolean boolean0 = WordUtils.isDelimiter('G', charArray0);
+      assertTrue(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test16()  throws Throwable  {
+      boolean boolean0 = WordUtils.isDelimiter('J', (char[]) null);
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test17()  throws Throwable  {
+      char[] charArray0 = new char[2];
+      boolean boolean0 = WordUtils.isDelimiter('G', charArray0);
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test18()  throws Throwable  {
+      String string0 = WordUtils.initials("upper valuecannot be less than -1");
+      assertEquals("uvblt-", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test19()  throws Throwable  {
+      char[] charArray0 = new char[4];
+      String string0 = WordUtils.initials("R'G4}z<EYofF'C", charArray0);
+      assertEquals("R", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test20()  throws Throwable  {
+      char[] charArray0 = new char[0];
+      String string0 = WordUtils.initials("org.apache.commons.lang3.Strings$CiStrings", charArray0);
+      assertEquals("", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test21()  throws Throwable  {
+      char[] charArray0 = new char[0];
+      String string0 = WordUtils.capitalize("upper value is less than lower value", charArray0);
+      assertEquals("Upper value is less than lower value", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test22()  throws Throwable  {
+      CharSequence[] charSequenceArray0 = new CharSequence[4];
+      charSequenceArray0[0] = (CharSequence) "The validated object is null";
+      boolean boolean0 = WordUtils.containsAllWords("The Validated Object Is Null", charSequenceArray0);
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test23()  throws Throwable  {
+      CharSequence[] charSequenceArray0 = new CharSequence[4];
+      charSequenceArray0[0] = (CharSequence) "6~h5%B";
+      charSequenceArray0[1] = (CharSequence) "6~h5%B";
+      charSequenceArray0[2] = (CharSequence) "6~h5%B";
+      charSequenceArray0[3] = (CharSequence) "6~h5%B";
+      boolean boolean0 = WordUtils.containsAllWords("6~h5%B", charSequenceArray0);
+      assertTrue(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test24()  throws Throwable  {
+      CharSequence[] charSequenceArray0 = new CharSequence[4];
+      boolean boolean0 = WordUtils.containsAllWords("The Validated Object Is Null", charSequenceArray0);
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test25()  throws Throwable  {
+      boolean boolean0 = WordUtils.containsAllWords("(f)>#}c]W/%TXT9},", (CharSequence[]) null);
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test26()  throws Throwable  {
+      boolean boolean0 = WordUtils.containsAllWords("", (CharSequence[]) null);
+      assertFalse(boolean0);
+  }
+
+  @Test(timeout = 4000)
+  public void test27()  throws Throwable  {
+      String string0 = WordUtils.capitalize("? AnDuL6yPz+");
+      assertEquals("? AnDuL6yPz+", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test28()  throws Throwable  {
+      char[] charArray0 = new char[2];
+      String string0 = WordUtils.capitalizeFully(";)(5b_Sh4o|A8@", charArray0);
+      assertEquals(";)(5b_sh4o|a8@", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test29()  throws Throwable  {
+      String string0 = WordUtils.abbreviate("b6Qf>#}c]W/%TXT9},Eb", 7, 7, "b6Qf>#}c]W/%TXT9},Eb");
+      assertEquals("b6Qf>#}b6Qf>#}c]W/%TXT9},Eb", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test30()  throws Throwable  {
+      String string0 = WordUtils.abbreviate("Y oD/'", 0, 1, "Upper value cannot be less than -1");
+      assertEquals("YUpper value cannot be less than -1", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test31()  throws Throwable  {
+      String string0 = WordUtils.abbreviate("TC& wHYFqV 45", 911, 911, "");
+      assertEquals("TC& wHYFqV 45", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test32()  throws Throwable  {
+      // Undeclared exception!
+      try { 
+        WordUtils.abbreviate("M%VpyY9", 3451, 1693, "M%VpyY9");
+        fail("Expecting exception: IllegalArgumentException");
+      
+      } catch(IllegalArgumentException e) {
+         //
+         // upper value is less than lower value
+         //
+         verifyException("org.apache.commons.lang3.Validate", e);
+      }
+  }
+
+  @Test(timeout = 4000)
+  public void test33()  throws Throwable  {
+      String string0 = WordUtils.abbreviate("org.apache.commons.text.WordUtils", 0, (-1), "org.apache.commons.text.WordUtils");
+      assertEquals("org.apache.commons.text.WordUtils", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test34()  throws Throwable  {
+      String string0 = WordUtils.abbreviate("", 0, 1308, "");
+      assertEquals("", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test35()  throws Throwable  {
+      // Undeclared exception!
+      try { 
+
+
+[10] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-text/src/main/java/org/apache/commons/text/WordUtils.java"
+
+[11] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-text/src/main/java/org/apache/commons/text/WordUtils.java"
+--- output ---
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.commons.text;
+
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
+import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.Strings;
+import org.apache.commons.lang3.Validate;
+
+/**
+ * Operations on Strings that contain words.
+ *
+ * <p>
+ * This class tries to handle {@code null} input gracefully. An exception will not be thrown for a
+ * {@code null} input. Each method documents its behavior in more detail.
+ * </p>
+ *
+ * @since 1.1
+ */
+public class WordUtils {
+
+    /**
+     * Abbreviates the words nicely.
+     *
+     * <p>
+     * This method searches for the first space after the lower limit and abbreviates
+     * the String there. It will also append any String passed as a parameter
+     * to the end of the String. The upper limit can be specified to forcibly
+     * abbreviate a String.
+     * </p>
+     *
+     * @param str         the string to be abbreviated. If null is passed, null is returned.
+     *                    If the empty String is passed, the empty string is returned.
+     * @param lower       the lower limit; negative value is treated as zero.
+     * @param upper       the upper limit; specify -1 if no limit is desired.
+     *                    The upper limit cannot be lower than the lower limit.
+     * @param appendToEnd String to be appended to the end of the abbreviated string.
+     *                    This is appended ONLY if the string was indeed abbreviated.
+     *                    The append does not count towards the lower or upper limits.
+     * @return The abbreviated String.
+     *
+     * <pre>
+     * WordUtils.abbreviate("Now is the time for all good men", 0, 40, null));     = "Now"
+     * WordUtils.abbreviate("Now is the time for all good men", 10, 40, null));    = "Now is the"
+     * WordUtils.abbreviate("Now is the time for all good men", 20, 40, null));    = "Now is the time for all"
+     * WordUtils.abbreviate("Now is the time for all good men", 0, 40, ""));       = "Now"
+     * WordUtils.abbreviate("Now is the time for all good men", 10, 40, ""));      = "Now is the"
+     * WordUtils.abbreviate("Now is the time for all good men", 20, 40, ""));      = "Now is the time for all"
+     * WordUtils.abbreviate("Now is the time for all good men", 0, 40, " ..."));   = "Now ..."
+     * WordUtils.abbreviate("Now is the time for all good men", 10, 40, " ..."));  = "Now is the ..."
+     * WordUtils.abbreviate("Now is the time for all good men", 20, 40, " ..."));  = "Now is the time for all ..."
+     * WordUtils.abbreviate("Now is the time for all good men", 0, -1, ""));       = "Now"
+     * WordUtils.abbreviate("Now is the time for all good men", 10, -1, ""));      = "Now is the"
+     * WordUtils.abbreviate("Now is the time for all good men", 20, -1, ""));      = "Now is the time for all"
+     * WordUtils.abbreviate("Now is the time for all good men", 50, -1, ""));      = "Now is the time for all good men"
+     * WordUtils.abbreviate("Now is the time for all good men", 1000, -1, ""));    = "Now is the time for all good men"
+     * WordUtils.abbreviate("Now is the time for all good men", 9, -10, null));    = Throws {@link IllegalArgumentException}
+     * WordUtils.abbreviate("Now is the time for all good men", 10, 5, null));     = Throws {@link IllegalArgumentException}
+     * </pre>
+     */
+    public static String abbreviate(final String str, int lower, int upper, final String appendToEnd) {
+        Validate.isTrue(upper >= -1, "upper value cannot be less than -1");
+        Validate.isTrue(upper >= lower || upper == -1, "upper value is less than lower value");
+        if (StringUtils.isEmpty(str)) {
+            return str;
+        }
+
+        // if the lower value is greater than the length of the string,
+        // set to the length of the string
+        if (lower > str.length()) {
+            lower = str.length();
+        }
+
+        // if the upper value is -1 (i.e. no limit) or is greater
+        // than the length of the string, set to the length of the string
+        if (upper == -1 || upper > str.length()) {
+            upper = str.length();
+        }
+
+        final StringBuilder result = new StringBuilder();
+        final int index = Strings.CS.indexOf(str, " ", lower);
+        if (index == -1) {
+            result.append(str, 0, upper);
+            // only if abbreviation has occurred do we append the appendToEnd value
+            if (upper != str.length()) {
+                result.append(StringUtils.defaultString(appendToEnd));
+            }
+        } else {
+            result.append(str, 0, Math.min(index, upper));
+            result.append(StringUtils.defaultString(appendToEnd));
+        }
+
+        return result.toString();
+    }
+
+    /**
+     * Capitalizes all the whitespace separated words in a String.
+     * Only the first character of each word is changed. To convert the
+     * rest of each word to lowercase at the same time,
+     * use {@link #capitalizeFully(String)}.
+     *
+     * <p>Whitespace is defined by {@link Character#isWhitespace(char)}.
+     * A {@code null} input String returns {@code null}.
+     * Capitalization uses the Unicode title case, normally equivalent to
+     * upper case.</p>
+     *
+     * <pre>
+     * WordUtils.capitalize(null)        = null
+     * WordUtils.capitalize("")          = ""
+     * WordUtils.capitalize("i am FINE") = "I Am FINE"
+     * </pre>
+     *
+     * @param str  the String to capitalize, may be null.
+     * @return capitalized String, {@code null} if null String input.
+     * @see #uncapitalize(String)
+     * @see #capitalizeFully(String)
+     */
+    public static String capitalize(final String str) {
+        return capitalize(str, null);
+    }
+
+    /**
+     * Capitalizes all the delimiter separated words in a String.
+     * Only the first character of each word is changed. To convert the
+     * rest of each word to lowercase at the same time,
+     * use {@link #capitalizeFully(String, char[])}.
+     *
+     * <p>The delimiters represent a set of characters understood to separate words.
+     * The first string character and the first non-delimiter character after a
+     * delimiter will be capitalized.</p>
+     *
+     * <p>A {@code null} input String returns {@code null}.
+     * Capitalization uses the Unicode title case, normally equivalent to
+     * upper case.</p>
+     *
+     * <pre>
+     * WordUtils.capitalize(null, *)            = null
+     * WordUtils.capitalize("", *)              = ""
+     * WordUtils.capitalize(*, new char[0])     = *
+     * WordUtils.capitalize("i am fine", null)  = "I Am Fine"
+     * WordUtils.capitalize("i aM.fine", {'.'}) = "I aM.Fine"
+     * WordUtils.capitalize("i am fine", new char[]{}) = "I am fine"
+     * </pre>
+     *
+     * @param str  the String to capitalize, may be null.
+     * @param delimiters  set of characters to determine capitalization, null means whitespace.
+     * @return capitalized String, {@code null} if null String input.
+     * @see #uncapitalize(String)
+     * @see #capitalizeFully(String)
+     */
+    public static String capitalize(final String str, final char... delimiters) {
+        if (StringUtils.isEmpty(str)) {
+            return str;
+        }
+        final Predicate<Integer> isDelimiter = generateIsDelimiterFunction(delimiters);
+        final int strLen = str.length();
+        final int[] newCodePoints = new int[strLen];
+        int outOffset = 0;
+
+        boolean capitalizeNext = true;
+        for (int index = 0; index < strLen;) {
+            final int codePoint = str.codePointAt(index);
+
+            if (isDelimiter.test(codePoint)) {
+                capitalizeNext = true;
+                newCodePoints[outOffset++] = codePoint;
+                index += Character.charCount(codePoint);
+            } else if (capitalizeNext) {
+                final int titleCaseCodePoint = Character.toTitleCase(codePoint);
+                newCodePoints[outOffset++] = titleCaseCodePoint;
+                index += Character.charCount(titleCaseCodePoint);
+                capitalizeNext = false;
+            } else {
+                newCodePoints[outOffset++] = codePoint;
+                index += Character.charCount(codePoint);
+            }
+        }
+        return new String(newCodePoints, 0, outOffset);
+    }
+
+    /**
+     * Converts all the whitespace separated words in a String into capitalized words,
+     * that is each word is made up of a titlecase character and then a series of
+     * lowercase characters.
+     *
+     * <p>Whitespace is defined by {@link Character#isWhitespace(char)}.
+     * A {@code null} input String returns {@code null}.
+     * Capitalization uses the Unicode title case, normally equivalent to
+     * upper case.</p>
+     *
+     * <pre>
+     * WordUtils.capitalizeFully(null)        = null
+     * WordUtils.capitalizeFully("")          = ""
+     * WordUtils.capitalizeFully("i am FINE") = "I Am Fine"
+     * </pre>
+     *
+     * @param str  the String to capitalize, may be null.
+     * @return capitalized String, {@code null} if null String input.
+     */
+    public static String capitalizeFully(final String str) {
+        return capitalizeFully(str, null);
+    }
+
+    /**
+     * Converts all the delimiter separated words in a String into capitalized words,
+     * that is each word is made up of a titlecase character and then a series of
+     * lowercase characters.
+     *
+     * <p>The delimiters represent a set of characters understood to separate words.
+     * The first string character and the first non-delimiter character after a
+     * delimiter will be capitalized.</p>
+     *
+     * <p>A {@code null} input String returns {@code null}.
+     * Capitalization uses the Unicode title case, normally equivalent to
+     * upper case.</p>
+     *
+     * <pre>
+     * WordUtils.capitalizeFully(null, *)            = null
+     * WordUtils.capitalizeFully("", *)              = ""
+     * WordUtils.capitalizeFully(*, null)            = *
+     * WordUtils.capitalizeFully(*, new char[0])     = *
+     * WordUtils.capitalizeFully("i aM.fine", {'.'}) = "I am.Fine"
+     * </pre>
+     *
+     * @param str  the String to capitalize, may be null.
+     * @param delimiters  set of characters to determine capitalization, null means whitespace.
+     * @return capitalized String, {@code null} if null String input.
+     */
+    public static String capitalizeFully(final String str, final char... delimiters) {
+        return StringUtils.isEmpty(str) ? str : capitalize(str.toLowerCase(Locale.ROOT), delimiters);
+    }
+
+    /**
+     * Checks if the String contains all words in the given array.
+     *
+     * <p>
+     * A {@code null} String will return {@code false}. A {@code null}, zero
+     * length search array or if one element of array is null will return {@code false}.
+     * </p>
+
+
+[12] AGENT
+The original test is small and mostly mechanical. I’ve got the runner/import constraints in view; next I’m going to preserve those exactly and replace opaque local names with intention-revealing constants and assertion messages where that does not change calls or outcomes.
+
+[13] COMMAND in_progress
+/bin/zsh -lc "sed -n '261,520p' /Users/tenghaha/Desktop/Codex_Improvement/data/baseline/commons-text/_evosuite_raw/org/apache/commons/text/WordUtils_ESTest.java"
+
+[14] COMMAND completed
+/bin/zsh -lc "sed -n '261,520p' /Users/tenghaha/Desktop/Codex_Improvement/data/baseline/commons-text/_evosuite_raw/org/apache/commons/text/WordUtils_ESTest.java"
+--- output ---
+        WordUtils.abbreviate("LZzA7+<X<Kkh0y", 0, (-1881), "?AnDuL6yPz+");
+        fail("Expecting exception: IllegalArgumentException");
+      
+      } catch(IllegalArgumentException e) {
+         //
+         // upper value cannot be less than -1
+         //
+         verifyException("org.apache.commons.lang3.Validate", e);
+      }
+  }
+
+  @Test(timeout = 4000)
+  public void test36()  throws Throwable  {
+      WordUtils wordUtils0 = new WordUtils();
+  }
+
+  @Test(timeout = 4000)
+  public void test37()  throws Throwable  {
+      String string0 = WordUtils.capitalize("");
+      assertEquals("", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test38()  throws Throwable  {
+      String string0 = WordUtils.capitalizeFully((String) null);
+      assertNull(string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test39()  throws Throwable  {
+      String string0 = WordUtils.initials((String) null);
+      assertNull(string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test40()  throws Throwable  {
+      String string0 = WordUtils.wrap("upper value cannot be less than -1", 2);
+      assertNotNull(string0);
+      assertEquals("upper\r\nvalue\r\ncannot\r\nbe\r\nless\r\nthan\r\n-1", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test41()  throws Throwable  {
+      String string0 = WordUtils.uncapitalize(" ");
+      assertEquals(" ", string0);
+  }
+}
+
+
+[15] AGENT
+I found there are 42 generated tests total, including two expected-exception cases and one constructor coverage case. I’m checking the missing middle span before writing so the output keeps the exact same behavioral surface.
+
+[16] COMMAND in_progress
+/bin/zsh -lc "sed -n '220,290p' /Users/tenghaha/Desktop/Codex_Improvement/data/baseline/commons-text/_evosuite_raw/org/apache/commons/text/WordUtils_ESTest.java"
+
+[17] COMMAND completed
+/bin/zsh -lc "sed -n '220,290p' /Users/tenghaha/Desktop/Codex_Improvement/data/baseline/commons-text/_evosuite_raw/org/apache/commons/text/WordUtils_ESTest.java"
+--- output ---
+      String string0 = WordUtils.abbreviate("Y oD/'", 0, 1, "Upper value cannot be less than -1");
+      assertEquals("YUpper value cannot be less than -1", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test31()  throws Throwable  {
+      String string0 = WordUtils.abbreviate("TC& wHYFqV 45", 911, 911, "");
+      assertEquals("TC& wHYFqV 45", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test32()  throws Throwable  {
+      // Undeclared exception!
+      try { 
+        WordUtils.abbreviate("M%VpyY9", 3451, 1693, "M%VpyY9");
+        fail("Expecting exception: IllegalArgumentException");
+      
+      } catch(IllegalArgumentException e) {
+         //
+         // upper value is less than lower value
+         //
+         verifyException("org.apache.commons.lang3.Validate", e);
+      }
+  }
+
+  @Test(timeout = 4000)
+  public void test33()  throws Throwable  {
+      String string0 = WordUtils.abbreviate("org.apache.commons.text.WordUtils", 0, (-1), "org.apache.commons.text.WordUtils");
+      assertEquals("org.apache.commons.text.WordUtils", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test34()  throws Throwable  {
+      String string0 = WordUtils.abbreviate("", 0, 1308, "");
+      assertEquals("", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test35()  throws Throwable  {
+      // Undeclared exception!
+      try { 
+        WordUtils.abbreviate("LZzA7+<X<Kkh0y", 0, (-1881), "?AnDuL6yPz+");
+        fail("Expecting exception: IllegalArgumentException");
+      
+      } catch(IllegalArgumentException e) {
+         //
+         // upper value cannot be less than -1
+         //
+         verifyException("org.apache.commons.lang3.Validate", e);
+      }
+  }
+
+  @Test(timeout = 4000)
+  public void test36()  throws Throwable  {
+      WordUtils wordUtils0 = new WordUtils();
+  }
+
+  @Test(timeout = 4000)
+  public void test37()  throws Throwable  {
+      String string0 = WordUtils.capitalize("");
+      assertEquals("", string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test38()  throws Throwable  {
+      String string0 = WordUtils.capitalizeFully((String) null);
+      assertNull(string0);
+  }
+
+  @Test(timeout = 4000)
+  public void test39()  throws Throwable  {
+
+
+[18] AGENT
+I’m about to write the refactored test file in the working directory. The edit will keep the EvoSuite imports, runner annotations, scaffolding inheritance, timeouts, CUT calls, argument values, and assertions intact, while making fixture names and intent easier to follow.
+
+[19] FILE_CHANGE in_progress
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/auto/testsuites/WordUtils_ESTest/WordUtils_ESTest.java
+
+[20] FILE_CHANGE completed
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/auto/testsuites/WordUtils_ESTest/WordUtils_ESTest.java
+
+[21] AGENT
+The refactored test file is written. I’m running the required compile check now, and if javac reports anything I’ll apply the repair-loop instructions with the smallest possible edit.
+
+[22] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[23] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+Note: WordUtils_ESTest.java uses or overrides a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+COMPILE_OK
+
+
+[24] AGENT
+Refactored `WordUtils_ESTest.java` in the working directory and verified it with `bash compile.sh`.
+
+`COMPILE_OK`

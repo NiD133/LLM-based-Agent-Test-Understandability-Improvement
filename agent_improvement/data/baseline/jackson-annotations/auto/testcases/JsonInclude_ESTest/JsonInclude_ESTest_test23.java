@@ -1,0 +1,25 @@
+package com.fasterxml.jackson.annotation;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.shaded.org.mockito.Mockito.*;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.evosuite.runtime.ViolatedAssumptionAnswer;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class JsonInclude_ESTest_test23 extends JsonInclude_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test23() throws Throwable {
+        JsonInclude.Value jsonInclude_Value0 = JsonInclude.Value.from((JsonInclude) null);
+        JsonInclude.Value jsonInclude_Value1 = JsonInclude.Value.ALL_NON_ABSENT;
+        Class<Integer> class0 = Integer.class;
+        JsonInclude.Value jsonInclude_Value2 = jsonInclude_Value0.withContentFilter(class0);
+        JsonInclude.Value jsonInclude_Value3 = jsonInclude_Value1.withOverrides(jsonInclude_Value2);
+        assertEquals(JsonInclude.Include.NON_ABSENT, jsonInclude_Value3.getValueInclusion());
+        assertEquals(JsonInclude.Include.CUSTOM, jsonInclude_Value3.getContentInclusion());
+    }
+}

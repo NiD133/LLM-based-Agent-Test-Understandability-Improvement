@@ -1,0 +1,1 @@
+I'll read the original test and the CUT to understand the context before improving understandability.Now let me check the `Traffic` enum and `AbstractLangTest` to understand the test infrastructure.Now let me check the compile script in my working directory.

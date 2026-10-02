@@ -1,0 +1,1343 @@
+[3] AGENT
+I’ll use the compile-check skill exactly for verification, and repair-loop only if compilation fails. First I need to inspect the provided test and CUT signatures, then I’ll create only the improved test file in this working directory.
+
+[4] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/.codex/skills/.system/compile-check/SKILL.md"
+
+[5] COMMAND failed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/.codex/skills/.system/compile-check/SKILL.md"
+--- output ---
+sed: /Users/tenghaha/.codex/skills/.system/compile-check/SKILL.md: No such file or directory
+
+
+[6] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/.codex/skills/.system/repair-loop/SKILL.md"
+
+[7] COMMAND failed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/.codex/skills/.system/repair-loop/SKILL.md"
+--- output ---
+sed: /Users/tenghaha/.codex/skills/.system/repair-loop/SKILL.md: No such file or directory
+
+
+[8] AGENT
+The system skill paths are the project-local `.agents` copies in this task, so I’m switching to those. After that I’ll read only the original test and the CUT file named in the prompt.
+
+[9] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[10] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[11] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[12] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[13] AGENT
+I’ve got the verification workflow: write the refactored test, run exactly `bash compile.sh`, and only repair compile errors if they appear. I’m now checking the original test and the relevant `CommandLine` methods so the refactor preserves the exact behavior.
+
+[14] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,240p' /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-cli/manual/testcases/CommandLineTest/CommandLineTest_testBadGetParsedOptionValue.java"
+
+[15] COMMAND completed
+/bin/zsh -lc "sed -n '1,240p' /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-cli/manual/testcases/CommandLineTest/CommandLineTest_testBadGetParsedOptionValue.java"
+--- output ---
+package org.apache.commons.cli;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Properties;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+
+public class CommandLineTest_testBadGetParsedOptionValue {
+
+    private static Stream<Arguments> createHasOptionParameters() throws ParseException {
+        final List<Arguments> lst = new ArrayList<>();
+        final Option optT = Option.builder().option("T").longOpt("tee").deprecated().optionalArg(true).get();
+        final Option optU = Option.builder("U").longOpt("you").optionalArg(true).get();
+        final OptionGroup optionGroup = new OptionGroup().addOption(optT).addOption(optU);
+        final String[] foobar = { "foo", "bar" };
+        // T set
+        lst.add(Arguments.of(new String[] { "-T" }, optT, optionGroup, true, true, true, true, optT));
+        lst.add(Arguments.of(new String[] { "-T", "foo" }, optT, optionGroup, true, true, true, true, optT));
+        lst.add(Arguments.of(new String[] { "--tee" }, optT, optionGroup, true, true, true, true, optT));
+        lst.add(Arguments.of(new String[] { "--tee", "foo" }, optT, optionGroup, true, true, true, true, optT));
+        lst.add(Arguments.of(new String[] { "-U" }, optT, optionGroup, false, false, false, true, optU));
+        lst.add(Arguments.of(new String[] { "-U", "foo", "bar" }, optT, optionGroup, false, false, false, true, optU));
+        lst.add(Arguments.of(new String[] { "--you" }, optT, optionGroup, false, false, false, true, optU));
+        lst.add(Arguments.of(new String[] { "--you", "foo", "bar" }, optT, optionGroup, false, false, false, true, optU));
+        // U set
+        lst.add(Arguments.of(new String[] { "-T" }, optU, optionGroup, false, false, true, true, optT));
+        lst.add(Arguments.of(new String[] { "-T", "foo", "bar" }, optU, optionGroup, false, false, true, true, optT));
+        lst.add(Arguments.of(new String[] { "--tee" }, optU, optionGroup, false, false, true, true, optT));
+        lst.add(Arguments.of(new String[] { "--tee", "foo", "bar" }, optU, optionGroup, false, false, true, true, optT));
+        lst.add(Arguments.of(new String[] { "-U" }, optU, optionGroup, false, true, false, true, optU));
+        lst.add(Arguments.of(new String[] { "-U", "foo", "bar" }, optU, optionGroup, false, true, false, true, optU));
+        lst.add(Arguments.of(new String[] { "--you" }, optU, optionGroup, false, true, false, true, optU));
+        lst.add(Arguments.of(new String[] { "--you", "foo", "bar" }, optU, optionGroup, false, true, false, true, optU));
+        return lst.stream();
+    }
+
+    private static Stream<Arguments> createOptionValueParameters() throws ParseException {
+        final List<Arguments> lst = new ArrayList<>();
+        final Option optT = Option.builder().option("T").longOpt("tee").deprecated().optionalArg(true).get();
+        final Option optU = Option.builder("U").longOpt("you").optionalArg(true).get();
+        final OptionGroup optionGroup = new OptionGroup().addOption(optT).addOption(optU);
+        // T set
+        lst.add(Arguments.of(new String[] { "-T" }, optT, optionGroup, true, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "-T", "foo" }, optT, optionGroup, true, "foo", true, "foo", optT));
+        lst.add(Arguments.of(new String[] { "--tee" }, optT, optionGroup, true, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "--tee", "foo" }, optT, optionGroup, true, "foo", true, "foo", optT));
+        lst.add(Arguments.of(new String[] { "-U" }, optT, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "-U", "foo" }, optT, optionGroup, false, null, false, "foo", optU));
+        lst.add(Arguments.of(new String[] { "--you" }, optT, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "--you", "foo" }, optT, optionGroup, false, null, false, "foo", optU));
+        // U set
+        lst.add(Arguments.of(new String[] { "-T" }, optU, optionGroup, false, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "-T", "foo" }, optU, optionGroup, false, null, true, "foo", optT));
+        lst.add(Arguments.of(new String[] { "--tee" }, optU, optionGroup, false, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "--tee", "foo" }, optU, optionGroup, false, null, true, "foo", optT));
+        lst.add(Arguments.of(new String[] { "-U" }, optU, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "-U", "foo" }, optU, optionGroup, false, "foo", false, "foo", optU));
+        lst.add(Arguments.of(new String[] { "--you" }, optU, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "--you", "foo" }, optU, optionGroup, false, "foo", false, "foo", optU));
+        return lst.stream();
+    }
+
+    private static Stream<Arguments> createOptionValuesParameters() throws ParseException {
+        final List<Arguments> lst = new ArrayList<>();
+        final Option optT = Option.builder().option("T").longOpt("tee").numberOfArgs(2).deprecated().optionalArg(true).get();
+        final Option optU = Option.builder("U").longOpt("you").numberOfArgs(2).optionalArg(true).get();
+        final OptionGroup optionGroup = new OptionGroup().addOption(optT).addOption(optU);
+        final String[] foobar = { "foo", "bar" };
+        // T set
+        lst.add(Arguments.of(new String[] { "-T" }, optT, optionGroup, true, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "-T", "foo", "bar" }, optT, optionGroup, true, foobar, true, foobar, optT));
+        lst.add(Arguments.of(new String[] { "--tee" }, optT, optionGroup, true, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "--tee", "foo", "bar" }, optT, optionGroup, true, foobar, true, foobar, optT));
+        lst.add(Arguments.of(new String[] { "-U" }, optT, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "-U", "foo", "bar" }, optT, optionGroup, false, null, false, foobar, optU));
+        lst.add(Arguments.of(new String[] { "--you" }, optT, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "--you", "foo", "bar" }, optT, optionGroup, false, null, false, foobar, optU));
+        // U set
+        lst.add(Arguments.of(new String[] { "-T" }, optU, optionGroup, false, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "-T", "foo", "bar" }, optU, optionGroup, false, null, true, foobar, optT));
+        lst.add(Arguments.of(new String[] { "--tee" }, optU, optionGroup, false, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "--tee", "foo", "bar" }, optU, optionGroup, false, null, true, foobar, optT));
+        lst.add(Arguments.of(new String[] { "-U" }, optU, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "-U", "foo", "bar" }, optU, optionGroup, false, foobar, false, foobar, optU));
+        lst.add(Arguments.of(new String[] { "--you" }, optU, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "--you", "foo", "bar" }, optU, optionGroup, false, foobar, false, foobar, optU));
+        return lst.stream();
+    }
+
+    private static Stream<Arguments> createParsedOptionValueParameters() throws ParseException {
+        final List<Arguments> lst = new ArrayList<>();
+        final Option optT = Option.builder().option("T").longOpt("tee").deprecated().type(Integer.class).optionalArg(true).get();
+        final Option optU = Option.builder("U").longOpt("you").type(Integer.class).optionalArg(true).get();
+        final OptionGroup optionGroup = new OptionGroup().addOption(optT).addOption(optU);
+        final Integer expected = Integer.valueOf(1);
+        // T set
+        lst.add(Arguments.of(new String[] { "-T" }, optT, optionGroup, true, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "-T", "1" }, optT, optionGroup, true, expected, true, expected, optT));
+        lst.add(Arguments.of(new String[] { "--tee" }, optT, optionGroup, true, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "--tee", "1" }, optT, optionGroup, true, expected, true, expected, optT));
+        lst.add(Arguments.of(new String[] { "-U" }, optT, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "-U", "1" }, optT, optionGroup, false, null, false, expected, optU));
+        lst.add(Arguments.of(new String[] { "--you" }, optT, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "--you", "1" }, optT, optionGroup, false, null, false, expected, optU));
+        // U set
+        lst.add(Arguments.of(new String[] { "-T" }, optU, optionGroup, false, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "-T", "1" }, optU, optionGroup, false, null, true, expected, optT));
+        lst.add(Arguments.of(new String[] { "--tee" }, optU, optionGroup, false, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "--tee", "1" }, optU, optionGroup, false, null, true, expected, optT));
+        lst.add(Arguments.of(new String[] { "-U" }, optU, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "-U", "1" }, optU, optionGroup, false, expected, false, expected, optU));
+        lst.add(Arguments.of(new String[] { "--you" }, optU, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "--you", "1" }, optU, optionGroup, false, expected, false, expected, optU));
+        return lst.stream();
+    }
+
+    private static Stream<Arguments> createParsedOptionValuesParameters() throws ParseException {
+        final List<Arguments> lst = new ArrayList<>();
+        final Option optT = Option.builder().option("T").longOpt("tee").deprecated().type(Integer.class).optionalArg(true).hasArgs().get();
+        final Option optU = Option.builder("U").longOpt("you").type(Integer.class).optionalArg(true).hasArgs().get();
+        final OptionGroup optionGroup = new OptionGroup().addOption(optT).addOption(optU);
+        final Integer[] expected = { 1, 2 };
+        // T set
+        lst.add(Arguments.of(new String[] { "-T" }, optT, optionGroup, true, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "-T", "1", "2" }, optT, optionGroup, true, expected, true, expected, optT));
+        lst.add(Arguments.of(new String[] { "--tee" }, optT, optionGroup, true, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "--tee", "1", "2" }, optT, optionGroup, true, expected, true, expected, optT));
+        lst.add(Arguments.of(new String[] { "-U" }, optT, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "-U", "1", "2" }, optT, optionGroup, false, null, false, expected, optU));
+        lst.add(Arguments.of(new String[] { "--you" }, optT, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "--you", "1", "2" }, optT, optionGroup, false, null, false, expected, optU));
+        // U set
+        lst.add(Arguments.of(new String[] { "-T" }, optU, optionGroup, false, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "-T", "1", "2" }, optU, optionGroup, false, null, true, expected, optT));
+        lst.add(Arguments.of(new String[] { "--tee" }, optU, optionGroup, false, null, true, null, optT));
+        lst.add(Arguments.of(new String[] { "--tee", "1", "2" }, optU, optionGroup, false, null, true, expected, optT));
+        lst.add(Arguments.of(new String[] { "-U" }, optU, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "-U", "1", "2" }, optU, optionGroup, false, expected, false, expected, optU));
+        lst.add(Arguments.of(new String[] { "--you" }, optU, optionGroup, false, null, false, null, optU));
+        lst.add(Arguments.of(new String[] { "--you", "1", "2" }, optU, optionGroup, false, expected, false, expected, optU));
+        return lst.stream();
+    }
+
+    char asChar(final Option opt) {
+        return opt.getOpt().charAt(0);
+    }
+
+    private void assertWritten(final boolean optDep, final ByteArrayOutputStream baos) {
+        System.out.flush();
+        if (optDep) {
+            assertEquals("Option 'T''tee': Deprecated", baos.toString().trim());
+        } else {
+            assertEquals("", baos.toString());
+        }
+        baos.reset();
+    }
+
+    /**
+     * verifies that the deprecation handler has been called only once or not at all.
+     * @param optDep {@code true} if the dependency should have been logged.
+     * @param handler The list that the deprecation is logged to.
+     * @param opt The option that triggered the logging. May be (@code null} if {@code optDep} is {@code false}.
+     */
+    void checkHandler(final boolean optDep, final List<Option> handler, final Option opt) {
+        if (optDep) {
+            assertEquals(1, handler.size());
+            assertEquals(opt, handler.get(0));
+        } else {
+            assertEquals(0, handler.size());
+        }
+        handler.clear();
+    }
+
+    @Test
+    void testBadGetParsedOptionValue() throws Exception {
+        final Options options = new Options();
+        options.addOption(Option.builder("i").hasArg().type(Number.class).get());
+        options.addOption(Option.builder("c").hasArg().converter(s -> Count.valueOf(s.toUpperCase())).get());
+        final CommandLineParser parser = new DefaultParser();
+        final CommandLine cmd = parser.parse(options, new String[] { "-i", "foo", "-c", "bar" });
+        assertEquals(NumberFormatException.class, assertThrows(ParseException.class, () -> cmd.getParsedOptionValue("i")).getCause().getClass());
+        assertEquals(IllegalArgumentException.class, assertThrows(ParseException.class, () -> cmd.getParsedOptionValue("c")).getCause().getClass());
+    }
+}
+
+
+[16] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-cli/src/main/java/org/apache/commons/cli/CommandLine.java"
+
+[17] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-cli/src/main/java/org/apache/commons/cli/CommandLine.java"
+--- output ---
+/*
+  Licensed to the Apache Software Foundation (ASF) under one or more
+  contributor license agreements.  See the NOTICE file distributed with
+  this work for additional information regarding copyright ownership.
+  The ASF licenses this file to You under the Apache License, Version 2.0
+  (the "License"); you may not use this file except in compliance with
+  the License.  You may obtain a copy of the License at
+
+      https://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+ */
+
+package org.apache.commons.cli;
+
+import java.io.Serializable;
+import java.lang.reflect.Array;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Objects;
+import java.util.Properties;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+
+/**
+ * Represents list of arguments parsed against a {@link Options} descriptor.
+ * <p>
+ * It allows querying of a boolean {@link #hasOption(String optionName)}, in addition to retrieving the
+ * {@link #getOptionValue(String optionName)} for options requiring arguments.
+ * </p>
+ * <p>
+ * Additionally, any left-over or unrecognized arguments, are available for further processing.
+ * </p>
+ */
+public class CommandLine implements Serializable {
+
+    /**
+     * A nested builder class to create {@code CommandLine} instance using descriptive methods.
+     *
+     * @since 1.4
+     */
+    public static final class Builder implements Supplier<CommandLine> {
+
+        /**
+         * Prints an Option to {@link System#out}.
+         */
+        static final Consumer<Option> DEPRECATED_HANDLER = o -> System.out.println(o.toDeprecatedString());
+
+        /** The unrecognized options/arguments */
+        private final List<String> args = new LinkedList<>();
+
+        /** The processed options */
+        private final List<Option> options = new ArrayList<>();
+
+        /**
+         * Deprecated Option handler.
+         */
+        private Consumer<Option> deprecatedHandler = DEPRECATED_HANDLER;
+
+        /**
+         * Constructs a new instance.
+         *
+         * @deprecated Use {@link #builder()}.
+         */
+        @Deprecated
+        public Builder() {
+            // empty
+        }
+
+        /**
+         * Adds left-over unrecognized option/argument.
+         *
+         * @param arg the unrecognized option/argument.
+         * @return this Builder instance for method chaining.
+         */
+        public Builder addArg(final String arg) {
+            if (arg != null) {
+                args.add(arg);
+            }
+            return this;
+        }
+
+        /**
+         * Adds an option to the command line. The values of the option are stored.
+         *
+         * @param option the processed option.
+         * @return this Builder instance for method chaining.
+         */
+        public Builder addOption(final Option option) {
+            if (option != null) {
+                options.add(option);
+            }
+            return this;
+        }
+
+        /**
+         * Creates a new instance.
+         *
+         * @return a new instance.
+         * @deprecated Use {@link #get()}.
+         */
+        @Deprecated
+        public CommandLine build() {
+            return get();
+        }
+
+        /**
+         * Creates a new instance.
+         *
+         * @return a new instance.
+         * @since 1.10.0
+         */
+        @Override
+        public CommandLine get() {
+            return new CommandLine(args, options, deprecatedHandler);
+        }
+
+        /**
+         * Sets the deprecated option handler.
+         *
+         * @param deprecatedHandler the deprecated option handler.
+         * @return {@code this} instance.
+         * @since 1.7.0
+         */
+        public Builder setDeprecatedHandler(final Consumer<Option> deprecatedHandler) {
+            this.deprecatedHandler = deprecatedHandler;
+            return this;
+        }
+    }
+
+    /** The serial version UID. */
+    private static final long serialVersionUID = 1L;
+
+    /**
+     * Creates a new builder.
+     *
+     * @return a new builder.
+     * @since 1.7.0
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /** The unrecognized options/arguments */
+    private final List<String> args;
+
+    /** The processed options */
+    private final List<Option> options;
+
+    /**
+     * The deprecated option handler.
+     * <p>
+     * If you want to serialize this field, use a serialization proxy.
+     * </p>
+     */
+    private final transient Consumer<Option> deprecatedHandler;
+
+    /**
+     * Creates a command line.
+     */
+    protected CommandLine() {
+        this(new LinkedList<>(), new ArrayList<>(), Builder.DEPRECATED_HANDLER);
+    }
+
+    /**
+     * Creates a command line.
+     */
+    private CommandLine(final List<String> args, final List<Option> options, final Consumer<Option> deprecatedHandler) {
+        this.args = Objects.requireNonNull(args, "args");
+        this.options = Objects.requireNonNull(options, "options");
+        this.deprecatedHandler = deprecatedHandler;
+    }
+
+    /**
+     * Adds left-over unrecognized option/argument.
+     *
+     * @param arg the unrecognized option/argument.
+     */
+    protected void addArg(final String arg) {
+        if (arg != null) {
+            args.add(arg);
+        }
+    }
+
+    /**
+     * Adds an option to the command line. The values of the option are stored.
+     *
+     * @param option the processed option.
+     */
+    protected void addOption(final Option option) {
+        if (option != null) {
+            options.add(option);
+        }
+    }
+
+    /**
+     * Gets the first element or null if values is null.
+     *
+     * @param values the array to query.
+     * @return the first element or null if values is null.
+     */
+    private String first(final String[] values) {
+        return values == null ? null : values[0];
+    }
+
+    private <T> T get(final Supplier<T> supplier) {
+        return supplier == null ? null : supplier.get();
+    }
+
+    /**
+     * Gets any left-over non-recognized options and arguments.
+     *
+     * @return remaining items passed in but not parsed as a {@code List}.
+     */
+    public List<String> getArgList() {
+        return args;
+    }
+
+    /**
+     * Gets any left-over non-recognized options and arguments.
+     *
+     * @return remaining items passed in but not parsed as an array.
+     */
+    public String[] getArgs() {
+        return args.toArray(Util.EMPTY_STRING_ARRAY);
+    }
+
+    /**
+     * Gets the number of times this option appears in the command line
+     *
+     * @param optionChar the character name of the option.
+     * @return Number of times the option is present.
+     * @since 1.11.0
+     */
+    public int getOptionCount(final char optionChar) {
+        return getOptionCount(String.valueOf(optionChar));
+    }
+
+    /**
+     * Gets the number of times this option appears in the command line.
+     *
+     * @param option the option.
+     * @return Number of times the option is present.
+     * @since 1.11.0
+     */
+    public int getOptionCount(final Option option) {
+        return (int) options.stream().filter(opt -> Objects.equals(opt, option)).count();
+    }
+
+    /**
+     * Gets the number of times this option appears in the command line
+     *
+     * @param optionName the name of the option.
+     * @return Number of times the option is present.
+
+
+[18] AGENT
+The original file contains many unrelated parameter providers, but the target behavior is just the `testBadGetParsedOptionValue` method. I’m narrowing the new file to that scenario while keeping the same parser setup, option definitions, calls, and expected exception causes.
+
+[19] COMMAND in_progress
+/bin/zsh -lc 'grep -n "getParsedOptionValue" -A80 -B20 /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-cli/src/main/java/org/apache/commons/cli/CommandLine.java'
+
+[20] COMMAND completed
+/bin/zsh -lc 'grep -n "getParsedOptionValue" -A80 -B20 /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-cli/src/main/java/org/apache/commons/cli/CommandLine.java'
+--- output ---
+252-    public int getOptionCount(final Option option) {
+253-        return (int) options.stream().filter(opt -> Objects.equals(opt, option)).count();
+254-    }
+255-
+256-    /**
+257-     * Gets the number of times this option appears in the command line
+258-     *
+259-     * @param optionName the name of the option.
+260-     * @return Number of times the option is present.
+261-     * @since 1.11.0
+262-     */
+263-    public int getOptionCount(final String optionName) {
+264-        return getOptionCount(resolveOption(optionName));
+265-    }
+266-
+267-    /**
+268-     * Gets the {@code Object} type of this {@code Option}.
+269-     *
+270-     * @param optionChar the name of the option.
+271-     * @return the type of opt.
+272:     * @deprecated due to System.err message; use {@link #getParsedOptionValue(char)} instead.
+273-     */
+274-    @Deprecated
+275-    public Object getOptionObject(final char optionChar) {
+276-        return getOptionObject(String.valueOf(optionChar));
+277-    }
+278-
+279-    /**
+280-     * Gets the {@code Object} type of this {@code Option}.
+281-     *
+282-     * @param optionName the name of the option.
+283-     * @return the type of this {@code Option}.
+284:     * @deprecated due to System.err message; use {@link #getParsedOptionValue(String)} instead.
+285-     */
+286-    @Deprecated
+287-    public Object getOptionObject(final String optionName) {
+288-        try {
+289:            return getParsedOptionValue(optionName);
+290-        } catch (final ParseException pe) {
+291-            System.err.println("Exception found converting " + optionName + " to desired type: " + pe.getMessage());
+292-            return null;
+293-        }
+294-    }
+295-
+296-    /**
+297-     * Gets the map of values associated to the option. This is convenient for options specifying Java properties like
+298-     * <code>-Dparam1=value1
+299-     * -Dparam2=value2</code>. All odd numbered values are property keys
+300-     * and even numbered values are property values.  If there are an odd number of values
+301-     * the last value is assumed to be a boolean flag and the value is "true".
+302-     *
+303-     * @param option name of the option.
+304-     * @return The Properties mapped by the option, never {@code null} even if the option doesn't exists.
+305-     * @since 1.5.0
+306-     */
+307-    public Properties getOptionProperties(final Option option) {
+308-        final Properties props = new Properties();
+309-        options.forEach(processedOption -> {
+310-            if (processedOption.equals(option)) {
+311-                processPropertiesFromValues(props, processedOption.getValuesList());
+312-            }
+313-        });
+314-        return props;
+315-    }
+316-
+317-    /**
+318-     * Gets the map of values associated to the option. This is convenient for options specifying Java properties like
+319-     * <code>-Dparam1=value1
+320-     * -Dparam2=value2</code>. The first argument of the option is the key, and the 2nd argument is the value. If the option
+321-     * has only one argument ({@code -Dfoo}) it is considered as a boolean flag and the value is {@code "true"}.
+322-     *
+323-     * @param optionName name of the option.
+324-     * @return The Properties mapped by the option, never {@code null} even if the option doesn't exists.
+325-     * @since 1.2
+326-     */
+327-    public Properties getOptionProperties(final String optionName) {
+328-        final Properties props = new Properties();
+329-        options.forEach(option -> {
+330-            if (optionName.equals(option.getOpt()) || optionName.equals(option.getLongOpt())) {
+331-                processPropertiesFromValues(props, option.getValuesList());
+332-            }
+333-        });
+334-        return props;
+335-    }
+336-
+337-    /**
+338-     * Gets an array of the processed {@link Option}s.
+339-     *
+340-     * @return an array of the processed {@link Option}s.
+341-     */
+342-    public Option[] getOptions() {
+343-        return options.toArray(Option.EMPTY_ARRAY);
+344-    }
+345-
+346-    /**
+347-     * Gets the first argument, if any, of this option.
+348-     *
+349-     * @param optionChar the character name of the option.
+350-     * @return Value of the argument if option is set, and has an argument, otherwise null.
+351-     */
+352-    public String getOptionValue(final char optionChar) {
+353-        return getOptionValue(String.valueOf(optionChar));
+354-    }
+355-
+356-    /**
+357-     * Gets the argument, if any, of an option.
+358-     *
+359-     * @param optionChar character name of the option
+360-     * @param defaultValue is the default value to be returned if the option is not specified.
+361-     * @return Value of the argument if option is set, and has an argument, otherwise {@code defaultValue}.
+362-     */
+363-    public String getOptionValue(final char optionChar, final String defaultValue) {
+364-        return getOptionValue(String.valueOf(optionChar), () -> defaultValue);
+365-    }
+366-
+367-    /**
+368-     * Gets the argument, if any, of an option.
+369-     *
+--
+531-    /**
+532-     * Gets the array of values, if any, of an option.
+533-     *
+534-     * @param optionName string name of the option.
+535-     * @return Values of the argument if option is set, and has an argument, otherwise null.
+536-     */
+537-    public String[] getOptionValues(final String optionName) {
+538-        return getOptionValues(resolveOption(optionName));
+539-    }
+540-
+541-    /**
+542-     * Gets a version of this {@code Option} converted to a particular type.
+543-     *
+544-     * @param optionChar the name of the option.
+545-     * @param <T> The return type for the method.
+546-     * @return the value parsed into a particular object or null if the option is not set.
+547-     * @throws ParseException if there are problems turning the option value into the desired type.
+548-     * @see PatternOptionBuilder
+549-     * @since 1.5.0
+550-     */
+551:    public <T> T getParsedOptionValue(final char optionChar) throws ParseException {
+552:        return getParsedOptionValue(String.valueOf(optionChar));
+553-    }
+554-
+555-    /**
+556-     * Gets a version of this {@code Option} converted to a particular type.
+557-     *
+558-     * @param optionChar the name of the option.
+559-     * @param defaultValue the default value to return if opt is not set.
+560-     * @param <T> The return type for the method.
+561-     * @return the value parsed into a particular object or the defaultValue if the option is not set.
+562-     * @throws ParseException if there are problems turning the option value into the desired type.
+563-     * @see PatternOptionBuilder
+564-     * @since 1.7.0
+565-     */
+566:    public <T> T getParsedOptionValue(final char optionChar, final Supplier<T> defaultValue) throws ParseException {
+567:        return getParsedOptionValue(String.valueOf(optionChar), defaultValue);
+568-    }
+569-
+570-    /**
+571-     * Gets a version of this {@code Option} converted to a particular type.
+572-     *
+573-     * @param optionChar the name of the option.
+574-     * @param defaultValue the default value to return if opt is not set.
+575-     * @param <T> The return type for the method.
+576-     * @return the value parsed into a particular object or the defaultValue if the option is not set.
+577-     * @throws ParseException if there are problems turning the option value into the desired type.
+578-     * @see PatternOptionBuilder
+579-     * @since 1.7.0
+580-     */
+581:    public <T> T getParsedOptionValue(final char optionChar, final T defaultValue) throws ParseException {
+582:        return getParsedOptionValue(String.valueOf(optionChar), defaultValue);
+583-    }
+584-
+585-    /**
+586-     * Gets a version of this {@code Option} converted to a particular type.
+587-     *
+588-     * @param option the option.
+589-     * @param <T> The return type for the method.
+590-     * @return the value parsed into a particular object or null if the option is not set.
+591-     * @throws ParseException if there are problems turning the option value into the desired type.
+592-     * @see PatternOptionBuilder
+593-     * @since 1.5.0
+594-     */
+595:    public <T> T getParsedOptionValue(final Option option) throws ParseException {
+596:        return getParsedOptionValue(option, () -> null);
+597-    }
+598-
+599-    /**
+600-     * Gets a version of this {@code Option} converted to a particular type.
+601-     *
+602-     * @param option the option.
+603-     * @param defaultValue the default value to return if opt is not set.
+604-     * @param <T> The return type for the method.
+605-     * @return the value parsed into a particular object or the defaultValue if the option is not set.
+606-     * @throws ParseException if there are problems turning the option value into the desired type.
+607-     * @see PatternOptionBuilder
+608-     * @since 1.7.0
+609-     */
+610-    @SuppressWarnings("unchecked")
+611:    public <T> T getParsedOptionValue(final Option option, final Supplier<T> defaultValue) throws ParseException {
+612-        if (option == null) {
+613-            return get(defaultValue);
+614-        }
+615-        final String res = getOptionValue(option);
+616-        try {
+617-            if (res == null) {
+618-                return get(defaultValue);
+619-            }
+620-            return (T) option.getConverter().apply(res);
+621-        } catch (final Exception e) {
+622-            throw ParseException.wrap(e);
+623-        }
+624-    }
+625-
+626-    /**
+627-     * Gets a version of this {@code Option} converted to a particular type.
+628-     *
+629-     * @param option the option.
+630-     * @param defaultValue the default value to return if opt is not set.
+631-     * @param <T> The return type for the method.
+632-     * @return the value parsed into a particular object or the defaultValue if the option is not set.
+633-     * @throws ParseException if there are problems turning the option value into the desired type.
+634-     * @see PatternOptionBuilder
+635-     * @since 1.7.0
+636-     */
+637:    public <T> T getParsedOptionValue(final Option option, final T defaultValue) throws ParseException {
+638:        return getParsedOptionValue(option, () -> defaultValue);
+639-    }
+640-
+641-    /**
+642-     * Gets a version of this {@code OptionGroup} converted to a particular type.
+643-     *
+644-     * @param optionGroup the option group.
+645-     * @param <T> The return type for the method.
+646-     * @return the value parsed into a particular object or null if no option in the OptionGroup is set.
+647-     * @throws ParseException if there are problems turning the selected option value into the desired type.
+648-     * @see PatternOptionBuilder
+649-     * @since 1.9.0
+650-     */
+651:    public <T> T getParsedOptionValue(final OptionGroup optionGroup) throws ParseException {
+652:        return getParsedOptionValue(optionGroup, () -> null);
+653-    }
+654-
+655-    /**
+656-     * Gets a version of this {@code OptionGroup} converted to a particular type.
+657-     *
+658-     * @param optionGroup the option group.
+659-     * @param defaultValue the default value to return if opt is not set.
+660-     * @param <T> The return type for the method.
+661-     * @return the value parsed into a particular object or the defaultValue if no option in the OptionGroup is set.
+662-     * @throws ParseException if there are problems turning the selected option value into the desired type.
+663-     * @see PatternOptionBuilder
+664-     * @since 1.9.0
+665-     */
+666:    public <T> T getParsedOptionValue(final OptionGroup optionGroup, final Supplier<T> defaultValue) throws ParseException {
+667-        if (optionGroup == null || !optionGroup.isSelected()) {
+668-            return get(defaultValue);
+669-        }
+670:        return getParsedOptionValue(optionGroup.getSelected(), defaultValue);
+671-    }
+672-
+673-    /**
+674-     * Gets a version of this {@code OptionGroup} converted to a particular type.
+675-     *
+676-     * @param optionGroup the option group.
+677-     * @param defaultValue the default value to return if an option is not selected.
+678-     * @param <T> The return type for the method.
+679-     * @return the value parsed into a particular object or the defaultValue if no option in the OptionGroup is set.
+680-     * @throws ParseException if there are problems turning the option value into the desired type.
+681-     * @see PatternOptionBuilder
+682-     * @since 1.9.0
+683-     */
+684:    public <T> T getParsedOptionValue(final OptionGroup optionGroup, final T defaultValue) throws ParseException {
+685:        return getParsedOptionValue(optionGroup, () -> defaultValue);
+686-    }
+687-
+688-    /**
+689-     * Gets a version of this {@code Option} converted to a particular type.
+690-     *
+691-     * @param optionName the name of the option.
+692-     * @param <T> The return type for the method.
+693-     * @return the value parsed into a particular object or null if the option is not set.
+694-     * @throws ParseException if there are problems turning the option value into the desired type.
+695-     * @see PatternOptionBuilder
+696-     * @since 1.2
+697-     */
+698:    public <T> T getParsedOptionValue(final String optionName) throws ParseException {
+699:        return getParsedOptionValue(resolveOption(optionName));
+700-    }
+701-
+702-    /**
+703-     * Gets a version of this {@code Option} converted to a particular type.
+704-     *
+705-     * @param optionName the name of the option.
+706-     * @param defaultValue the default value to return if opt is not set.
+707-     * @param <T> The return type for the method.
+708-     * @return the value parsed into a particular object or the defaultValue if the option is not set.
+709-     * @throws ParseException if there are problems turning the option value into the desired type.
+710-     * @see PatternOptionBuilder
+711-     * @since 1.7.0
+712-     */
+713:    public <T> T getParsedOptionValue(final String optionName, final Supplier<T> defaultValue) throws ParseException {
+714:        return getParsedOptionValue(resolveOption(optionName), defaultValue);
+715-    }
+716-
+717-    /**
+718-     * Gets a version of this {@code Option} converted to a particular type.
+719-     *
+720-     * @param optionName the name of the option.
+721-     * @param defaultValue the default value to return if opt is not set.
+722-     * @param <T> The return type for the method.
+723-     * @return the value parsed into a particular object or the defaultValue if the option is not set.
+724-     * @throws ParseException if there are problems turning the option value into the desired type.
+725-     * @see PatternOptionBuilder
+726-     * @since 1.7.0
+727-     */
+728:    public <T> T getParsedOptionValue(final String optionName, final T defaultValue) throws ParseException {
+729:        return getParsedOptionValue(resolveOption(optionName), defaultValue);
+730-    }
+731-
+732-    /**
+733-     * Gets a version of this {@code Option} converted to an array of a particular type.
+734-     *
+735-     * @param optionChar the name of the option.
+736-     * @param <T> The array type for the return value.
+737-     * @return the values parsed into an array of objects or null if the option is not set.
+738-     * @throws ParseException if there are problems turning the option value into the desired type.
+739-     * @see PatternOptionBuilder
+740-     * @since 1.10.0
+741-     */
+742:    public <T> T[] getParsedOptionValues(final char optionChar) throws ParseException {
+743:        return getParsedOptionValues(String.valueOf(optionChar));
+744-    }
+745-
+746-    /**
+747-     * Gets a version of this {@code Option} converted to an array of a particular type.
+748-     *
+749-     * @param optionChar the name of the option.
+750-     * @param defaultValue the default value to return if opt is not set.
+751-     * @param <T> The array type for the return value.
+752-     * @return the values parsed into an array of objects or the defaultValue if the option is not set.
+753-     * @throws ParseException if there are problems turning the option value into the desired type.
+754-     * @see PatternOptionBuilder
+755-     * @since 1.10.0
+756-     */
+757:    public <T> T[] getParsedOptionValues(final char optionChar, final Supplier<T[]> defaultValue) throws ParseException {
+758:        return getParsedOptionValues(String.valueOf(optionChar), defaultValue);
+759-    }
+760-
+761-    /**
+762-     * Gets a version of this {@code Option} converted to an array of a particular type.
+763-     *
+764-     * @param optionChar the name of the option.
+765-     * @param defaultValue the default value to return if opt is not set.
+766-     * @param <T> The array type for the return value.
+767-     * @return the values parsed into an array of objects or the defaultValue if the option is not set.
+768-     * @throws ParseException if there are problems turning the option value into the desired type.
+769-     * @see PatternOptionBuilder
+770-     * @since 1.10.0
+771-     */
+772:    public <T> T[] getParsedOptionValues(final char optionChar, final T[] defaultValue) throws ParseException {
+773:        return getParsedOptionValues(String.valueOf(optionChar), defaultValue);
+774-    }
+775-
+776-    /**
+777-     * Gets a version of this {@code Option} converted to an array of a particular type.
+778-     *
+779-     * @param option the option.
+780-     * @param <T> The array type for the return value.
+781-     * @return the values parsed into an array of objects or null if the option is not set.
+782-     * @throws ParseException if there are problems turning the option value into the desired type.
+783-     * @see PatternOptionBuilder
+784-     * @since 1.10.0
+785-     */
+786:    public <T> T[] getParsedOptionValues(final Option option) throws ParseException {
+787:        return getParsedOptionValues(option, () -> null);
+788-    }
+789-
+790-    /**
+791-     * Gets a version of this {@code Option} converted to an array of a particular type.
+792-     *
+793-     * @param option the option.
+794-     * @param defaultValue the default value to return if opt is not set.
+795-     * @param <T> The array type for the return value.
+796-     * @return the values parsed into an array of objects or the defaultValue if the option is not set.
+797-     * @throws ParseException if there are problems turning the option value into the desired type.
+798-     * @see PatternOptionBuilder
+799-     * @since 1.10.0
+800-     */
+801-    @SuppressWarnings("unchecked")
+802:    public <T> T[] getParsedOptionValues(final Option option, final Supplier<T[]> defaultValue) throws ParseException {
+803-        if (option == null) {
+804-            return get(defaultValue);
+805-        }
+806-        final Class<? extends T> clazz = (Class<? extends T>) option.getType();
+807-        final String[] values = getOptionValues(option);
+808-        if (values == null) {
+809-            return get(defaultValue);
+810-        }
+811-        final T[] result = (T[]) Array.newInstance(clazz, values.length);
+812-        try {
+813-            for (int i = 0; i < values.length; i++) {
+814-                result[i] = clazz.cast(option.getConverter().apply(values[i]));
+815-            }
+816-            return result;
+817-        } catch (final Exception t) {
+818-            throw ParseException.wrap(t);
+819-        }
+820-    }
+821-
+822-    /**
+823-     * Gets a version of this {@code Option} converted to an array of a particular type.
+824-     *
+825-     * @param option the option.
+826-     * @param defaultValue the default value to return if opt is not set.
+827-     * @param <T> The array type for the return value.
+828-     * @return the values parsed into an array of objects or the defaultValue if the option is not set.
+829-     * @throws ParseException if there are problems turning the option value into the desired type.
+830-     * @see PatternOptionBuilder
+831-     * @since 1.10.0
+832-     */
+833:    public <T> T[] getParsedOptionValues(final Option option, final T[] defaultValue) throws ParseException {
+834:        return getParsedOptionValues(option, () -> defaultValue);
+835-    }
+836-
+837-    /**
+838-     * Gets a version of this {@code OptionGroup} converted to an array of a particular type.
+839-     *
+840-     * @param optionGroup the option group.
+841-     * @param <T> The array type for the return value.
+842-     * @return the values parsed into an array of objects or null if no option in the OptionGroup is set.
+843-     * @throws ParseException if there are problems turning the selected option value into the desired type.
+844-     * @see PatternOptionBuilder
+845-     * @since 1.10.0
+846-     */
+847:    public <T> T[] getParsedOptionValues(final OptionGroup optionGroup) throws ParseException {
+848:        return getParsedOptionValues(optionGroup, () -> null);
+849-    }
+850-
+851-    /**
+852-     * Gets a version of this {@code OptionGroup} converted to an array of a particular type.
+853-     *
+854-     * @param optionGroup the option group.
+855-     * @param defaultValue the default value to return if opt is not set.
+856-     * @param <T> The array type for the return value.
+857-     * @return the values parsed into an array of objects or null if no option in the OptionGroup is set.
+858-     * @throws ParseException if there are problems turning the selected option value into the desired type.
+859-     * @see PatternOptionBuilder
+860-     * @since 1.10.0
+861-     */
+862:    public <T> T[] getParsedOptionValues(final OptionGroup optionGroup, final Supplier<T[]> defaultValue) throws ParseException {
+863-        if (optionGroup == null || !optionGroup.isSelected()) {
+864-            return get(defaultValue);
+865-        }
+866:        return getParsedOptionValues(optionGroup.getSelected(), defaultValue);
+867-    }
+868-
+869-    /**
+870-     * Gets a version of this {@code OptionGroup} converted to an array of a particular type.
+871-     *
+872-     * @param optionGroup the option group.
+873-     * @param defaultValue the default value to return if an option is not selected.
+874-     * @param <T> The array type for the return value.
+875-     * @return the values parsed into an array of objects or null if no option in the OptionGroup is set.
+876-     * @throws ParseException if there are problems turning the option value into the desired type.
+877-     * @see PatternOptionBuilder
+878-     * @since 1.10.0
+879-     */
+880:    public <T> T[] getParsedOptionValues(final OptionGroup optionGroup, final T[] defaultValue) throws ParseException {
+881:        return getParsedOptionValues(optionGroup, () -> defaultValue);
+882-    }
+883-
+884-    /**
+885-     * Gets a version of this {@code Option} converted to an array of a particular type.
+886-     *
+887-     * @param optionName the name of the option.
+888-     * @param <T> The array type for the return value.
+889-     * @return the values parsed into an array of objects or null if the option is not set.
+890-     * @throws ParseException if there are problems turning the option value into the desired type.
+891-     * @see PatternOptionBuilder
+892-     * @since 1.10.0
+893-     */
+894:    public <T> T[] getParsedOptionValues(final String optionName) throws ParseException {
+895:        return getParsedOptionValues(resolveOption(optionName));
+896-    }
+897-
+898-    /**
+899-     * Gets a version of this {@code Option} converted to an array of a particular type.
+900-     *
+901-     * @param optionName the name of the option.
+902-     * @param defaultValue the default value to return if opt is not set.
+903-     * @param <T> The array type for the return value.
+904-     * @return the values parsed into an array of objects or defaultValues if the option is not set.
+905-     * @throws ParseException if there are problems turning the option value into the desired type.
+906-     * @see PatternOptionBuilder
+907-     * @since 1.10.0
+908-     */
+909:    public <T> T[] getParsedOptionValues(final String optionName, final Supplier<T[]> defaultValue) throws ParseException {
+910:        return getParsedOptionValues(resolveOption(optionName), defaultValue);
+911-    }
+912-
+913-    /**
+914-     * Gets a version of this {@code Option} converted to an array of a particular type.
+915-     *
+916-     * @param optionName the name of the option.
+917-     * @param defaultValue the default value to return if opt is not set.
+918-     * @param <T> The array type for the return value.
+919-     * @return the values parsed into an array of objects or defaultValues if the option is not set.
+920-     * @throws ParseException if there are problems turning the option value into the desired type.
+921-     * @see PatternOptionBuilder
+922-     * @since 1.10.0
+923-     */
+924:    public <T> T[] getParsedOptionValues(final String optionName, final T[] defaultValue) throws ParseException {
+925:        return getParsedOptionValues(resolveOption(optionName), defaultValue);
+926-    }
+927-
+928-    /**
+929-     * Handles deprecated options.
+930-     *
+931-     * @param option a deprecated option.
+932-     */
+933-    private void handleDeprecated(final Option option) {
+934-        if (deprecatedHandler != null) {
+935-            deprecatedHandler.accept(option);
+936-        }
+937-    }
+938-
+939-    /**
+940-     * jkeyes - commented out until it is implemented properly
+941-     * <p>
+942-     * Dump state, suitable for debugging.
+943-     * </p>
+944-     *
+945-     * @return Stringified form of this object.
+946-     */
+947-
+948-    /*
+949-     * public String toString() { StringBuilder buf = new StringBuilder();
+950-     *
+951-     * buf.append("[ CommandLine: [ options: "); buf.append(options.toString()); buf.append(" ] [ args: ");
+952-     * buf.append(args.toString()); buf.append(" ] ]");
+953-     *
+954-     * return buf.toString(); }
+955-     */
+956-
+957-    /**
+958-     * Tests to see if an option has been set.
+959-     *
+960-     * @param optionChar character name of the option.
+961-     * @return true if set, false if not.
+962-     */
+963-    public boolean hasOption(final char optionChar) {
+964-        return hasOption(String.valueOf(optionChar));
+965-    }
+966-
+967-    /**
+968-     * Tests to see if an option has been set.
+969-     *
+970-     * @param option the option to check.
+971-     * @return true if set, false if not.
+972-     * @since 1.5.0
+973-     */
+974-    public boolean hasOption(final Option option) {
+975-        final boolean result = options.contains(option);
+976-        if (result && option.isDeprecated()) {
+977-            handleDeprecated(option);
+978-        }
+979-        return result;
+980-    }
+981-
+982-    /**
+983-     * Tests to see if an option has been set.
+984-     *
+985-     * @param optionGroup the option group to check.
+986-     * @return true if set, false if not.
+987-     * @since 1.9.0
+988-     */
+989-    public boolean hasOption(final OptionGroup optionGroup) {
+990-        if (optionGroup == null || !optionGroup.isSelected()) {
+991-            return false;
+992-        }
+993-        return hasOption(optionGroup.getSelected());
+994-    }
+995-
+996-    /**
+997-     * Tests to see if an option has been set.
+998-     *
+999-     * @param optionName Short name of the option.
+1000-     * @return true if set, false if not.
+1001-     */
+1002-    public boolean hasOption(final String optionName) {
+1003-        return hasOption(resolveOption(optionName));
+1004-    }
+1005-
+
+
+[21] AGENT
+I’m creating a compact test class with only the imports and fixture needed for this case. The main readability change is naming the invalid inputs and moving the repeated “ParseException cause class” assertion into a small helper without changing the calls under test.
+
+[22] FILE_CHANGE in_progress
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-cli/manual/testcases/CommandLineTest/testBadGetParsedOptionValue/CommandLineTest_testBadGetParsedOptionValue.java
+
+[23] FILE_CHANGE completed
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-cli/manual/testcases/CommandLineTest/testBadGetParsedOptionValue/CommandLineTest_testBadGetParsedOptionValue.java
+
+[24] AGENT
+The refactored test file is in place. I’m running the required compile check now with exactly `bash compile.sh`; if javac reports an issue, I’ll make the smallest targeted repair.
+
+[25] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[26] COMMAND failed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+CommandLineTest_testBadGetParsedOptionValue.java:17: error: cannot find symbol
+        options.addOption(Option.builder(COUNT_OPTION).hasArg().converter(value -> Count.valueOf(value.toUpperCase())).get());
+                                                                                   ^
+  symbol:   variable Count
+  location: class CommandLineTest_testBadGetParsedOptionValue
+1 error
+COMPILE_FAIL (exit=1)
+
+
+[27] AGENT
+The compile check found that `Count` is not available to this isolated generated test, even though the original references it. I’m applying the minimal repair: define a local enum without `BAR`, so the existing `Count.valueOf("BAR")` converter call still produces the same `IllegalArgumentException` outcome.
+
+[28] FILE_CHANGE in_progress
+update: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-cli/manual/testcases/CommandLineTest/testBadGetParsedOptionValue/CommandLineTest_testBadGetParsedOptionValue.java
+
+[29] FILE_CHANGE completed
+update: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-cli/manual/testcases/CommandLineTest/testBadGetParsedOptionValue/CommandLineTest_testBadGetParsedOptionValue.java
+
+[30] AGENT
+The focused repair is in place, and I’m rerunning the required compile check once. If it succeeds, I’ll stop there as the skill instructs.
+
+[31] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[32] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[33] AGENT
+Refactored `CommandLineTest_testBadGetParsedOptionValue.java` for readability and verified it with `bash compile.sh`.
+
+`COMPILE_OK`

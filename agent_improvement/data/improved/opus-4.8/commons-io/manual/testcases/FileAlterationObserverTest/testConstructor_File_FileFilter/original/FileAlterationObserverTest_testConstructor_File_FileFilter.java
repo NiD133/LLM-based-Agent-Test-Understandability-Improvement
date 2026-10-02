@@ -1,0 +1,31 @@
+package org.apache.commons.io.monitor;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.File;
+import java.io.FileFilter;
+import java.io.IOException;
+import java.util.Iterator;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.FilenameUtils;
+import org.apache.commons.io.IOCase;
+import org.apache.commons.io.comparator.NameFileComparator;
+import org.apache.commons.io.filefilter.CanReadFileFilter;
+import org.apache.commons.io.filefilter.FileFilterUtils;
+import org.apache.commons.io.monitor.FileAlterationObserver.Builder;
+import org.junit.jupiter.api.Test;
+
+public class FileAlterationObserverTest_testConstructor_File_FileFilter extends AbstractMonitorTest {
+
+    private static final String PATH_STRING_FIXTURE = "/foo";
+
+    @Test
+    void testConstructor_File_FileFilter() {
+        final File file = new File(PATH_STRING_FIXTURE);
+        @SuppressWarnings("deprecation")
+        final FileAlterationObserver observer = new FileAlterationObserver(file, CanReadFileFilter.CAN_READ);
+        assertEquals(file, observer.getDirectory());
+        assertEquals(CanReadFileFilter.CAN_READ, observer.getFileFilter());
+    }
+}

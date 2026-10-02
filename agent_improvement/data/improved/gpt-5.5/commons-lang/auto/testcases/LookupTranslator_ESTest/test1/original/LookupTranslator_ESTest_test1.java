@@ -1,0 +1,24 @@
+package org.apache.commons.lang3.text.translate;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class LookupTranslator_ESTest_test1 extends LookupTranslator_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test1() throws Throwable {
+        CharSequence[][] charSequenceArray0 = new CharSequence[1][7];
+        CharSequence[] charSequenceArray1 = new CharSequence[3];
+        charSequenceArray1[0] = (CharSequence) "FFFFFCCE";
+        charSequenceArray1[1] = (CharSequence) "FFFFFCCE";
+        charSequenceArray0[0] = charSequenceArray1;
+        LookupTranslator lookupTranslator0 = new LookupTranslator(charSequenceArray0);
+        String string0 = lookupTranslator0.translate((CharSequence) "FFFFFCCE");
+        assertEquals("FFFFFCCE", string0);
+    }
+}

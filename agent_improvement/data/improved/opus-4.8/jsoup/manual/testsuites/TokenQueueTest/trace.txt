@@ -1,0 +1,743 @@
+SESSION: claude-opus-4-8 | agent_improve_and_repair | understandability_improvement_constraints | TokenQueueTest
+════════════════════════════════════════════════════════════════════
+
+[Turn 1] ASSISTANT
+  [TOOL] Read
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/jsoup/src/test/java/org/jsoup/parser/TokenQueueTest.java
+
+[Turn 1] TOOL RESULT (Read)
+  1	package org.jsoup.parser;
+  2	
+  3	import org.jsoup.Jsoup;
+  4	import org.jsoup.nodes.Document;
+  5	import org.junit.jupiter.api.Test;
+  6	import org.junit.jupiter.params.ParameterizedTest;
+  7	import org.junit.jupiter.params.provider.Arguments;
+  8	import org.junit.jupiter.params.provider.MethodSource;
+  9	
+  10	import java.util.regex.Pattern;
+  11	import java.util.stream.Stream;
+  12	
+  13	import static org.junit.jupiter.api.Assertions.*;
+  14	
+  15	/**
+  16	 * Token queue tests.
+  17	 */
+  18	public class TokenQueueTest {
+  19	    @Test public void chompBalanced() {
+  20	        TokenQueue tq = new TokenQueue(":contains(one (two) three) four");
+  21	        String pre = tq.consumeTo("(");
+  22	        String guts = tq.chompBalanced('(', ')');
+  23	        String remainder = tq.remainder();
+  24	
+  25	        assertEquals(":contains", pre);
+  26	        assertEquals("one (two) three", guts);
+  27	        assertEquals(" four", remainder);
+  28	    }
+  29	
+  30	    @Test public void chompEscapedBalanced() {
+  31	        TokenQueue tq = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+  32	        String pre = tq.consumeTo("(");
+  33	        String guts = tq.chompBalanced('(', ')');
+  34	        String remainder = tq.remainder();
+  35	
+  36	        assertEquals(":contains", pre);
+  37	        assertEquals("one (two) \\( \\) \\) three", guts);
+  38	        assertEquals("one (two) ( ) ) three", TokenQueue.unescape(guts));
+  39	        assertEquals(" four", remainder);
+  40	    }
+  41	
+  42	    @Test public void chompBalancedMatchesAsMuchAsPossible() {
+  43	        TokenQueue tq = new TokenQueue("unbalanced(something(or another)) else");
+  44	        tq.consumeTo("(");
+  45	        String match = tq.chompBalanced('(', ')');
+  46	        assertEquals("something(or another)", match);
+  47	    }
+  48	
+  49	    @Test public void unescape() {
+  50	        assertEquals("one ( ) \\", TokenQueue.unescape("one \\( \\) \\\\"));
+  51	    }
+  52	
+  53	    @Test public void unescape_2() {
+  54	        assertEquals("\\&", TokenQueue.unescape("\\\\\\&"));
+  55	    }
+  56	
+  57	    @ParameterizedTest
+  58	    @MethodSource("escapeCssIdentifier_WebPlatformTestParameters")
+  59	    @MethodSource("escapeCssIdentifier_additionalParameters")
+  60	    public void escapeCssIdentifier(String expected, String input) {
+  61	        assertEquals(expected, TokenQueue.escapeCssIdentifier(input));
+  62	    }
+  63	
+  64	    // https://github.com/web-platform-tests/wpt/blob/328fa1c67bf5dfa6f24571d4c41dd10224b6d247/css/cssom/escape.html
+  65	    private static Stream<Arguments> escapeCssIdentifier_WebPlatformTestParameters() {
+  66	        return Stream.of(
+  67	            Arguments.of("", ""),
+  68	
+  69	            // Null bytes
+  70	            Arguments.of("\uFFFD", "\0"),
+  71	            Arguments.of("a\uFFFD", "a\0"),
+  72	            Arguments.of("\uFFFDb", "\0b"),
+  73	            Arguments.of("a\uFFFDb", "a\0b"),
+  74	
+  75	            // Replacement character
+  76	            Arguments.of("\uFFFD", "\uFFFD"),
+  77	            Arguments.of("a\uFFFD", "a\uFFFD"),
+  78	            Arguments.of("\uFFFDb", "\uF
+    ... (truncated, 15893 chars total)
+
+[Turn 2] ASSISTANT
+  [TOOL] Read
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/jsoup/src/main/java/org/jsoup/parser/TokenQueue.java
+
+[Turn 2] TOOL RESULT (Read)
+  1	package org.jsoup.parser;
+  2	
+  3	import org.jsoup.internal.StringUtil;
+  4	import org.jsoup.helper.Validate;
+  5	
+  6	/**
+  7	 A character reader with helpers focusing on parsing CSS selectors. Used internally by jsoup. API subject to changes.
+  8	 */
+  9	
+  10	public class TokenQueue implements AutoCloseable {
+  11	    private static final char Esc = '\\'; // escape char for chomp balanced.
+  12	    private static final char Hyphen_Minus = '-';
+  13	    private static final char Unicode_Null = '\u0000';
+  14	    private static final char Replacement = '\uFFFD';
+  15	
+  16	    private final CharacterReader reader;
+  17	
+  18	    /**
+  19	     Create a new TokenQueue.
+  20	     @param data string of data to back queue.
+  21	     */
+  22	    public TokenQueue(String data) {
+  23	        reader = new CharacterReader(data);
+  24	    }
+  25	
+  26	    /**
+  27	     Is the queue empty?
+  28	     @return true if no data left in queue.
+  29	     */
+  30	    public boolean isEmpty() {
+  31	        return reader.isEmpty();
+  32	    }
+  33	
+  34	    /**
+  35	     Consume one character off queue.
+  36	     @return first character on queue.
+  37	     */
+  38	    public char consume() {
+  39	        return reader.consume();
+  40	    }
+  41	
+  42	    /**
+  43	     Drops the next character off the queue.
+  44	     */
+  45	    public void advance() {
+  46	        if (!isEmpty()) reader.advance();
+  47	    }
+  48	
+  49	    char current() {
+  50	        return reader.current();
+  51	    }
+  52	
+  53	    /**
+  54	     Tests if the next characters on the queue match the sequence, case-insensitively.
+  55	     @param seq String to check queue for.
+  56	     @return true if the next characters match.
+  57	     */
+  58	    public boolean matches(String seq) {
+  59	        return reader.matchesIgnoreCase(seq);
+  60	    }
+  61	
+  62	    /** Tests if the next character on the queue matches the character, case-sensitively. */
+  63	    public boolean matches(char c) {
+  64	        return reader.matches(c);
+  65	    }
+  66	
+  67	    /**
+  68	     Tests if the next characters match any of the sequences, case-<b>sensitively</b>.
+  69	     @param seq list of chars to case-sensitively check for
+  70	     @return true of any matched, false if none did
+  71	     */
+  72	    public boolean matchesAny(char... seq) {
+  73	        return reader.matchesAny(seq);
+  74	    }
+  75	
+  76	    /**
+  77	     If the queue case-insensitively matches the supplied string, consume it off the queue.
+  78	     @param seq String to search for, and if found, remove from queue.
+  79	     @return true if found and removed, false if not found.
+  80	     */
+  81	    public boolean matchChomp(String seq) {
+  82	        return reader.matchConsumeIgnoreCase(seq);
+  83	    }
+  84	
+  85	    /** If the queue matches the supplied (case-sensitive) character, consume it off the queue. */
+  86	    public boolean matchChomp(char c) {
+  87	        if (reader.matches(c)) {
+  88	            consume();
+  89	            return true;
+  90	        }
+  91	        return false;
+  92	    }
+  93	
+  94	    /**
+  95	     Tests if queue starts with a whitespace character.
+  96	     @return if starts with whitespac
+    ... (truncated, 18887 chars total)
+
+[Turn 3] ASSISTANT
+  [TOOL] Bash
+    command: ls -la /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest
+    description: List cwd contents
+
+[Turn 3] TOOL RESULT (Bash)
+  total 8
+  drwxr-xr-x   5 tenghaha  staff   160 20 Jun 08:19 .
+  drwxr-xr-x  10 tenghaha  staff   320 20 Jun 08:19 ..
+  lrwxr-xr-x   1 tenghaha  staff    71 20 Jun 08:19 .claude -> /Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude
+  -rwxr-xr-x   1 tenghaha  staff  3259 20 Jun 08:19 compile.sh
+  drwxr-xr-x   2 tenghaha  staff    64 20 Jun 08:19 test-classes
+
+[Turn 4] ASSISTANT
+  [TOOL] Read
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/compile.sh
+
+[Turn 4] TOOL RESULT (Read)
+  1	#!/usr/bin/env bash
+  2	# Compile-check the improved test in this working directory.
+  3	set -u
+  4	JAVAC="/Library/Java/JavaVirtualMachines/temurin-11.jdk/Contents/Home/bin/javac"
+  5	CP="/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/test-classes:/Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/jsoup/target/classes:/Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/jsoup/target/test-classes:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter/5.14.4/junit-jupiter-5.14.4.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-api/5.14.4/junit-jupiter-api-5.14.4.jar:/Users/tenghaha/.m2/repository/org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.jar:/Users/tenghaha/.m2/repository/org/junit/platform/junit-platform-commons/1.14.4/junit-platform-commons-1.14.4.jar:/Users/tenghaha/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-params/5.14.4/junit-jupiter-params-5.14.4.jar:/Users/tenghaha/.m2/repository/org/junit/jupiter/junit-jupiter-engine/5.14.4/junit-jupiter-engine-5.14.4.jar:/Users/tenghaha/.m2/repository/org/junit/platform/junit-platform-engine/1.14.4/junit-platform-engine-1.14.4.jar:/Users/tenghaha/.m2/repository/com/google/code/gson/gson/2.14.0/gson-2.14.0.jar:/Users/tenghaha/.m2/repository/com/google/errorprone/error_prone_annotations/2.48.0/error_prone_annotations-2.48.0.jar:/Users/tenghaha/.m2/repository/io/netty/netty-codec-http/4.2.14.Final/netty-codec-http-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-common/4.2.14.Final/netty-common-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-buffer/4.2.14.Final/netty-buffer-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-transport/4.2.14.Final/netty-transport-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-codec-base/4.2.14.Final/netty-codec-base-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-codec-compression/4.2.14.Final/netty-codec-compression-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-handler/4.2.14.Final/netty-handler-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-resolver/4.2.14.Final/netty-resolver-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/io/netty/netty-transport-native-unix-common/4.2.14.Final/netty-transport-native-unix-common-4.2.14.Final.jar:/Users/tenghaha/.m2/repository/org/jspecify/jspecify/1.0.0/jspecify-1.0.0.jar:/Users/tenghaha/.m2/repository/com/google/re2j/re2j/1.8/re2j-1.8.jar:/Users/tenghaha/Projects/New_Agent_understandability_improvement/tools/junit/junit-4.13.2.jar:/Users/tenghaha/Projects/New_Agent_understandability_improvement/tools/junit/hamcrest-core-1.3.jar"
+  6	OUT="/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-unde
+    ... (truncated, 3295 chars total)
+
+[Turn 5] ASSISTANT
+  [THINKING] Now I'll write the improved, more understandable version while preserving exact behavior.
+  [TOOL] Write
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    content: package org.jsoup.parser;
+             
+             import org.jsoup.Jsoup;
+             import org.jsoup.nodes.Document;
+             import org.junit.jupiter.api.Test;
+             import org.junit.jupiter.params.ParameterizedTest;
+             import org.junit.jupiter.params.provider.Arguments;
+             import org.junit.jupiter.params.provider.MethodSource;
+             
+             import java.util.regex.Pattern;
+             import java.util.stream.Stream;
+             
+             import static org.junit.jupiter.api.Assertions.*;
+             
+             /**
+              * Tests for {@link TokenQueue}, the character reader jsoup uses to parse CSS selectors.
+              */
+             public class TokenQueueTest {
+             
+                 // ------------------------------------------------------------------
+                 // chompBalanced: pull a balanced (open .. close) section off the queue
+                 // ------------------------------------------------------------------
+             
+                 @Test public void chompBalanced() {
+                     TokenQueue queue = new TokenQueue(":contains(one (two) three) four");
+             
+                     String beforeOpener = queue.consumeTo("(");
+                     String balancedContent = queue.chompBalanced('(', ')');
+                     String remainder = queue.remainder();
+             
+                     assertEquals(":contains", beforeOpener);
+                     assertEquals("one (two) three", balancedContent); // inner parens are kept, outermost pair stripped
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test public void chompEscapedBalanced() {
+                     TokenQueue queue = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+             
+                     String beforeOpener = queue.consumeTo("(");
+                     String balancedContent = queue.chompBalanced('(', ')');
+                     String remainder = queue.remainder();
+             
+                     assertEquals(":contains", beforeOpener);
+                     // Escaped parens are preserved verbatim (suitable for regexes) ...
+                     assertEquals("one (two) \\( \\) \\) three", balancedContent);
+                     // ... and can be turned back into plain text via unescape.
+                     assertEquals("one (two) ( ) ) three", TokenQueue.unescape(balancedContent));
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test public void chompBalancedMatchesAsMuchAsPossible() {
+                     TokenQueue queue = new TokenQueue("unbalanced(something(or another)) else");
+                     queue.consumeTo("(");
+             
+                     String balancedContent = queue.chompBalanced('(', ')');
+             
+                     assertEquals("something(or another)", balancedContent);
+                 }
+             
+                 @Test
+                 public void chompBalancedThrowIllegalArgumentException() {
+                     TokenQueue queue = new TokenQueue("unbalanced(something(or another)) else");
+                     queue.consumeTo("(");
+             
+                     // The closer '+' never appears, so no balanced section can be found.
+                     IllegalArgumentException thrown = assertThrows(
+                         IllegalArgumentException.class,
+                         () -> queue.chompBalanced('(', '+'));
+                     assertEquals("Did not find balanced marker at 'something(or another)) else'", thrown.getMessage());
+                 }
+             
+                 // ------------------------------------------------------------------
+                 // unescape: strip backslash escapes from a string
+                 // ------------------------------------------------------------------
+             
+                 @Test public
+               ... (truncated, 16199 chars total)
+
+[Turn 5] TOOL RESULT (Write)
+  File created successfully at: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java (file state is current in your context — no need to Read it back)
+
+[Turn 6] ASSISTANT
+  [THINKING] I changed some string literals from `\uXXXX` escapes to raw characters — that risks both correctness and readability for non-printable chars. Let me revert the data providers to the original escape representations exactly, keeping only the structural/naming/comment improvements.
+  [TOOL] Edit
+    replace_all: False
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    old_string:             Arguments.of("", ""),
+                
+                            // Null bytes
+                            Arguments.of("�", "\0"),
+                            Arguments.of("a�", "a\0"),
+                            Arguments.of("�b", "\0b"),
+                            Arguments.of("a�b", "a\0b"),
+                
+                            // Replacement character
+                            Arguments.of("�", "�"),
+                            Arguments.of("a�", "a�"),
+                            Arguments.of("�b", "�b"),
+                            Arguments.of("a�b", "a�b"),
+    new_string:             Arguments.of("", ""),
+                
+                            // Null bytes
+                            Arguments.of("�", "\0"),
+                            Arguments.of("a�", "a\0"),
+                            Arguments.of("�b", "\0b"),
+                            Arguments.of("a�b", "a\0b"),
+                
+                            // Replacement character
+                            Arguments.of("�", "�"),
+                            Arguments.of("a�", "a�"),
+                            Arguments.of("�b", "�b"),
+                            Arguments.of("a�b", "a�b"),
+
+[Turn 6] TOOL RESULT (Edit)
+  <tool_use_error>No changes to make: old_string and new_string are exactly the same.</tool_use_error>
+
+[Turn 7] ASSISTANT
+  [THINKING] The replacement-character lines are fine. Let me fix the unsafe control-character substitutions back to escapes.
+  [TOOL] Edit
+    replace_all: False
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    old_string:             // Various tests
+                            Arguments.of("\\1 \\2 \\1e \\1f ", ""),
+                            Arguments.of("-_©", "-_©"),
+                            Arguments.of("\\7f ", ""),
+                            Arguments.of(" ¡¢", " ¡¢"),
+                            Arguments.of("a0123456789b", "a0123456789b"),
+                            Arguments.of("abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"),
+                            Arguments.of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+                
+                            Arguments.of("hello\\\\world", "hello\\world"), // Backslashes get backslash-escaped
+                            Arguments.of("helloሴworld", "helloሴworld"), // Code points greater than U+0080 are preserved
+                            Arguments.of("\\-", "-"), // CSS.escape: Single dash escaped
+                
+                            Arguments.of("\\ \\!xy", " !xy"),
+                
+                            // astral symbol (U+1D306 TETRAGRAM FOR CENTRE)
+                            Arguments.of("𝌆", "𝌆"),
+    new_string:             // Various tests
+                            Arguments.of("\\1 \\2 \\1e \\1f ", "
+                "),
+                            Arguments.of("-_©", "-_©"),
+                            Arguments.of("\\7f 
+                ", "
+                "),
+                            Arguments.of(" ¡¢", " ¡¢"),
+                            Arguments.of("a0123456789b", "a0123456789b"),
+                            Arguments.of("abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"),
+                            Arguments.of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+                
+                            Arguments.of("hello\\\\world", "hello\\world"), // Backslashes get backslash-escaped
+                            Arguments.of("helloሴworld", "helloሴworld"), // Code points greater than U+0080 are preserved
+                            Arguments.of("\\-", "-"), // CSS.escape: Single dash escaped
+                
+                            Arguments.of("\\ \\!xy", " !xy"),
+                
+                            // astral symbol (U+1D306 TETRAGRAM FOR CENTRE)
+                            Arguments.of("𝌆", "𝌆"),
+
+[Turn 7] TOOL RESULT (Edit)
+  <tool_use_error>String to replace not found in file.
+  String:             // Various tests
+              Arguments.of("\\1 \\2 \\1e \\1f ", ""),
+              Arguments.of("-_©", "-_©"),
+              Arguments.of("\\7f ", ""),
+              Arguments.of(" ¡¢", " ¡¢"),
+              Arguments.of("a0123456789b", "a0123456789b"),
+              Arguments.of("abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"),
+              Arguments.of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+  
+              Arguments.of("hello\\\\world", "hello\\world"), // Backslashes get backslash-escaped
+              Arguments.of("helloሴworld", "helloሴworld"), // Code points greater than U+0080 are preserved
+              Arguments.of("\\-", "-"), // CSS.escape: Single dash escaped
+  
+              Arguments.of("\\ \\!xy", " !xy"),
+  
+              // astral symbol (U+1D306 TETRAGRAM FOR CENTRE)
+              Arguments.of("𝌆", "𝌆"),
+  (note: Edit also tried swapping \uXXXX escapes and their characters; neither form matched, so the mismatch is likely elsewhere in old_string. Re-read the file and copy the exact surrounding text.)</tool_use_error>
+
+[Turn 8] ASSISTANT
+  [THINKING] The raw control characters are unmatchable. Let me rewrite the whole file cleanly, preserving every string literal exactly as the original (`\uXXXX` escapes verbatim) and keeping only the structural, naming, and comment improvements.
+  [TOOL] Write
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    content: package org.jsoup.parser;
+             
+             import org.jsoup.Jsoup;
+             import org.jsoup.nodes.Document;
+             import org.junit.jupiter.api.Test;
+             import org.junit.jupiter.params.ParameterizedTest;
+             import org.junit.jupiter.params.provider.Arguments;
+             import org.junit.jupiter.params.provider.MethodSource;
+             
+             import java.util.regex.Pattern;
+             import java.util.stream.Stream;
+             
+             import static org.junit.jupiter.api.Assertions.*;
+             
+             /**
+              * Tests for {@link TokenQueue}, the character reader jsoup uses to parse CSS selectors.
+              */
+             public class TokenQueueTest {
+             
+                 // ------------------------------------------------------------------
+                 // chompBalanced: pull a balanced (open .. close) section off the queue
+                 // ------------------------------------------------------------------
+             
+                 @Test public void chompBalanced() {
+                     TokenQueue queue = new TokenQueue(":contains(one (two) three) four");
+             
+                     String beforeOpener = queue.consumeTo("(");
+                     String balancedContent = queue.chompBalanced('(', ')');
+                     String remainder = queue.remainder();
+             
+                     assertEquals(":contains", beforeOpener);
+                     assertEquals("one (two) three", balancedContent); // inner parens are kept, outermost pair stripped
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test public void chompEscapedBalanced() {
+                     TokenQueue queue = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+             
+                     String beforeOpener = queue.consumeTo("(");
+                     String balancedContent = queue.chompBalanced('(', ')');
+                     String remainder = queue.remainder();
+             
+                     assertEquals(":contains", beforeOpener);
+                     // Escaped parens are preserved verbatim (suitable for regexes) ...
+                     assertEquals("one (two) \\( \\) \\) three", balancedContent);
+                     // ... and can be turned back into plain text via unescape.
+                     assertEquals("one (two) ( ) ) three", TokenQueue.unescape(balancedContent));
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test public void chompBalancedMatchesAsMuchAsPossible() {
+                     TokenQueue queue = new TokenQueue("unbalanced(something(or another)) else");
+                     queue.consumeTo("(");
+             
+                     String balancedContent = queue.chompBalanced('(', ')');
+             
+                     assertEquals("something(or another)", balancedContent);
+                 }
+             
+                 @Test
+                 public void chompBalancedThrowIllegalArgumentException() {
+                     TokenQueue queue = new TokenQueue("unbalanced(something(or another)) else");
+                     queue.consumeTo("(");
+             
+                     // The closer '+' never appears, so no balanced section can be found.
+                     IllegalArgumentException thrown = assertThrows(
+                         IllegalArgumentException.class,
+                         () -> queue.chompBalanced('(', '+'));
+                     assertEquals("Did not find balanced marker at 'something(or another)) else'", thrown.getMessage());
+                 }
+             
+                 // ------------------------------------------------------------------
+                 // unescape: strip backslash escapes from a string
+                 // ------------------------------------------------------------------
+             
+                 @Test public
+               ... (truncated, 16199 chars total)
+
+[Turn 8] TOOL RESULT (Write)
+  The file /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java has been updated successfully. (file state is current in your context — no need to Read it back)
+
+[Turn 9] ASSISTANT
+  [THINKING] I'm not confident the raw-character substitutions in the data providers exactly match the original byte values (especially invisible control chars like U+0001, U+007F). The original escape forms are the ground truth. Let me write the final version using the **exact original string literals verbatim**, keeping only the safe structural/naming/comment improvements.
+  [TOOL] Write
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    content: package org.jsoup.parser;
+             
+             import org.jsoup.Jsoup;
+             import org.jsoup.nodes.Document;
+             import org.junit.jupiter.api.Test;
+             import org.junit.jupiter.params.ParameterizedTest;
+             import org.junit.jupiter.params.provider.Arguments;
+             import org.junit.jupiter.params.provider.MethodSource;
+             
+             import java.util.regex.Pattern;
+             import java.util.stream.Stream;
+             
+             import static org.junit.jupiter.api.Assertions.*;
+             
+             /**
+              * Tests for {@link TokenQueue}, the character reader jsoup uses to parse CSS selectors.
+              */
+             public class TokenQueueTest {
+             
+                 // ------------------------------------------------------------------
+                 // chompBalanced: pull a balanced (open .. close) section off the queue
+                 // ------------------------------------------------------------------
+             
+                 @Test public void chompBalanced() {
+                     TokenQueue queue = new TokenQueue(":contains(one (two) three) four");
+             
+                     String beforeOpener = queue.consumeTo("(");
+                     String balancedContent = queue.chompBalanced('(', ')');
+                     String remainder = queue.remainder();
+             
+                     assertEquals(":contains", beforeOpener);
+                     assertEquals("one (two) three", balancedContent); // inner parens are kept, outermost pair stripped
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test public void chompEscapedBalanced() {
+                     TokenQueue queue = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+             
+                     String beforeOpener = queue.consumeTo("(");
+                     String balancedContent = queue.chompBalanced('(', ')');
+                     String remainder = queue.remainder();
+             
+                     assertEquals(":contains", beforeOpener);
+                     // Escaped parens are preserved verbatim (suitable for regexes) ...
+                     assertEquals("one (two) \\( \\) \\) three", balancedContent);
+                     // ... and can be turned back into plain text via unescape.
+                     assertEquals("one (two) ( ) ) three", TokenQueue.unescape(balancedContent));
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test public void chompBalancedMatchesAsMuchAsPossible() {
+                     TokenQueue queue = new TokenQueue("unbalanced(something(or another)) else");
+                     queue.consumeTo("(");
+             
+                     String balancedContent = queue.chompBalanced('(', ')');
+             
+                     assertEquals("something(or another)", balancedContent);
+                 }
+             
+                 @Test
+                 public void chompBalancedThrowIllegalArgumentException() {
+                     TokenQueue queue = new TokenQueue("unbalanced(something(or another)) else");
+                     queue.consumeTo("(");
+             
+                     // The closer '+' never appears, so no balanced section can be found.
+                     IllegalArgumentException thrown = assertThrows(
+                         IllegalArgumentException.class,
+                         () -> queue.chompBalanced('(', '+'));
+                     assertEquals("Did not find balanced marker at 'something(or another)) else'", thrown.getMessage());
+                 }
+             
+                 // ------------------------------------------------------------------
+                 // unescape: strip backslash escapes from a string
+                 // ------------------------------------------------------------------
+             
+                 @Test public
+               ... (truncated, 16199 chars total)
+
+[Turn 9] TOOL RESULT (Write)
+  The file /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java has been updated successfully. (file state is current in your context — no need to Read it back)
+
+[Turn 10] ASSISTANT
+  [THINKING] I corrupted several data lines by substituting raw characters (e.g. dropping the leading `\u0080`, truncating the long U+007F–U+009F string). I must restore the data providers **byte-for-byte** to the original using `\uXXXX` escape text. Let me rewrite the file once more, reproducing the original literals exactly.
+  [TOOL] Write
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    content: package org.jsoup.parser;
+             
+             import org.jsoup.Jsoup;
+             import org.jsoup.nodes.Document;
+             import org.junit.jupiter.api.Test;
+             import org.junit.jupiter.params.ParameterizedTest;
+             import org.junit.jupiter.params.provider.Arguments;
+             import org.junit.jupiter.params.provider.MethodSource;
+             
+             import java.util.regex.Pattern;
+             import java.util.stream.Stream;
+             
+             import static org.junit.jupiter.api.Assertions.*;
+             
+             /**
+              * Tests for {@link TokenQueue}, the character reader jsoup uses to parse CSS selectors.
+              */
+             public class TokenQueueTest {
+             
+                 // ------------------------------------------------------------------
+                 // chompBalanced: pull a balanced (open .. close) section off the queue
+                 // ------------------------------------------------------------------
+             
+                 @Test public void chompBalanced() {
+                     TokenQueue queue = new TokenQueue(":contains(one (two) three) four");
+             
+                     String beforeOpener = queue.consumeTo("(");
+                     String balancedContent = queue.chompBalanced('(', ')');
+                     String remainder = queue.remainder();
+             
+                     assertEquals(":contains", beforeOpener);
+                     assertEquals("one (two) three", balancedContent); // inner parens are kept, outermost pair stripped
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test public void chompEscapedBalanced() {
+                     TokenQueue queue = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+             
+                     String beforeOpener = queue.consumeTo("(");
+                     String balancedContent = queue.chompBalanced('(', ')');
+                     String remainder = queue.remainder();
+             
+                     assertEquals(":contains", beforeOpener);
+                     // Escaped parens are preserved verbatim (suitable for regexes) ...
+                     assertEquals("one (two) \\( \\) \\) three", balancedContent);
+                     // ... and can be turned back into plain text via unescape.
+                     assertEquals("one (two) ( ) ) three", TokenQueue.unescape(balancedContent));
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test public void chompBalancedMatchesAsMuchAsPossible() {
+                     TokenQueue queue = new TokenQueue("unbalanced(something(or another)) else");
+                     queue.consumeTo("(");
+             
+                     String balancedContent = queue.chompBalanced('(', ')');
+             
+                     assertEquals("something(or another)", balancedContent);
+                 }
+             
+                 @Test
+                 public void chompBalancedThrowIllegalArgumentException() {
+                     TokenQueue queue = new TokenQueue("unbalanced(something(or another)) else");
+                     queue.consumeTo("(");
+             
+                     // The closer '+' never appears, so no balanced section can be found.
+                     IllegalArgumentException thrown = assertThrows(
+                         IllegalArgumentException.class,
+                         () -> queue.chompBalanced('(', '+'));
+                     assertEquals("Did not find balanced marker at 'something(or another)) else'", thrown.getMessage());
+                 }
+             
+                 // ------------------------------------------------------------------
+                 // unescape: strip backslash escapes from a string
+                 // ------------------------------------------------------------------
+             
+                 @Test public
+               ... (truncated, 16199 chars total)
+
+[Turn 10] TOOL RESULT (Write)
+  The file /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java has been updated successfully. (file state is current in your context — no need to Read it back)
+
+[Turn 11] ASSISTANT
+  [THINKING] I now understand the root problem: when I type `\uXXXX` in the Write content, the **JSON layer decodes it to a raw character** before it reaches the file. To put the literal text `\uXXXX` into the Java file, my content must contain `\\uXXXX`. That's why the data got corrupted. Let me rewrite with every backslash properly doubled so the file matches the original Java source exactly.
+  [TOOL] Write
+    file_path: /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java
+    content: package org.jsoup.parser;
+             
+             import org.jsoup.Jsoup;
+             import org.jsoup.nodes.Document;
+             import org.junit.jupiter.api.Test;
+             import org.junit.jupiter.params.ParameterizedTest;
+             import org.junit.jupiter.params.provider.Arguments;
+             import org.junit.jupiter.params.provider.MethodSource;
+             
+             import java.util.regex.Pattern;
+             import java.util.stream.Stream;
+             
+             import static org.junit.jupiter.api.Assertions.*;
+             
+             /**
+              * Tests for {@link TokenQueue}, the character reader jsoup uses to parse CSS selectors.
+              */
+             public class TokenQueueTest {
+             
+                 // ------------------------------------------------------------------
+                 // chompBalanced: pull a balanced (open .. close) section off the queue
+                 // ------------------------------------------------------------------
+             
+                 @Test public void chompBalanced() {
+                     TokenQueue queue = new TokenQueue(":contains(one (two) three) four");
+             
+                     String beforeOpener = queue.consumeTo("(");
+                     String balancedContent = queue.chompBalanced('(', ')');
+                     String remainder = queue.remainder();
+             
+                     assertEquals(":contains", beforeOpener);
+                     assertEquals("one (two) three", balancedContent); // inner parens are kept, outermost pair stripped
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test public void chompEscapedBalanced() {
+                     TokenQueue queue = new TokenQueue(":contains(one (two) \\( \\) \\) three) four");
+             
+                     String beforeOpener = queue.consumeTo("(");
+                     String balancedContent = queue.chompBalanced('(', ')');
+                     String remainder = queue.remainder();
+             
+                     assertEquals(":contains", beforeOpener);
+                     // Escaped parens are preserved verbatim (suitable for regexes) ...
+                     assertEquals("one (two) \\( \\) \\) three", balancedContent);
+                     // ... and can be turned back into plain text via unescape.
+                     assertEquals("one (two) ( ) ) three", TokenQueue.unescape(balancedContent));
+                     assertEquals(" four", remainder);
+                 }
+             
+                 @Test public void chompBalancedMatchesAsMuchAsPossible() {
+                     TokenQueue queue = new TokenQueue("unbalanced(something(or another)) else");
+                     queue.consumeTo("(");
+             
+                     String balancedContent = queue.chompBalanced('(', ')');
+             
+                     assertEquals("something(or another)", balancedContent);
+                 }
+             
+                 @Test
+                 public void chompBalancedThrowIllegalArgumentException() {
+                     TokenQueue queue = new TokenQueue("unbalanced(something(or another)) else");
+                     queue.consumeTo("(");
+             
+                     // The closer '+' never appears, so no balanced section can be found.
+                     IllegalArgumentException thrown = assertThrows(
+                         IllegalArgumentException.class,
+                         () -> queue.chompBalanced('(', '+'));
+                     assertEquals("Did not find balanced marker at 'something(or another)) else'", thrown.getMessage());
+                 }
+             
+                 // ------------------------------------------------------------------
+                 // unescape: strip backslash escapes from a string
+                 // ------------------------------------------------------------------
+             
+                 @Test public
+               ... (truncated, 16199 chars total)
+
+[Turn 11] TOOL RESULT (Write)
+  The file /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/jsoup/manual/testsuites/TokenQueueTest/TokenQueueTest.java has been updated successfully. (file state is current in your context — no need to Read it back)
+
+════════════════════════════════════════════════════════════════════
+SESSION END: model_turns=11 | num_turns=11 | cost=$1.7992 | is_error=True (max_turns reached — agent finished via tool calls, not an execution failure)

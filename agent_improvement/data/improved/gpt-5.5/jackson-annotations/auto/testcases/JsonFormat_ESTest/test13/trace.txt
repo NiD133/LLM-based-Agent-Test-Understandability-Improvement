@@ -1,0 +1,1354 @@
+[3] AGENT
+I’ll use the `compile-check` skill after editing, and `repair-loop` only if compilation fails. First I’m going to read the required skill instructions and the two Java files so the refactor preserves the EvoSuite behavior exactly.
+
+[4] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md'
+
+[5] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md'
+
+[6] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md'
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[7] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md'
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[8] AGENT
+The compile workflow is clear: after the edited test exists in the working directory, I’ll run exactly `bash compile.sh` and stop on `COMPILE_OK`. I’m reading the original generated test and local scaffold next so I can keep runner/scaffolding details intact.
+
+[9] COMMAND in_progress
+/bin/zsh -lc ls
+
+[10] COMMAND completed
+/bin/zsh -lc ls
+--- output ---
+compile.sh
+test-classes
+
+
+[11] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/data/original/jackson-annotations/auto/testcases/JsonFormat_ESTest/JsonFormat_ESTest_test13.java'
+
+[12] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/data/original/jackson-annotations/auto/testcases/JsonFormat_ESTest/JsonFormat_ESTest_test13.java'
+--- output ---
+package com.fasterxml.jackson.annotation;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.shaded.org.mockito.Mockito.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.SimpleTimeZone;
+import java.util.TimeZone;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.evosuite.runtime.ViolatedAssumptionAnswer;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class JsonFormat_ESTest_test13 extends JsonFormat_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test13() throws Throwable {
+        JsonFormat.Shape jsonFormat_Shape0 = JsonFormat.Shape.NUMBER_FLOAT;
+        TimeZone timeZone0 = TimeZone.getTimeZone("-d`");
+        JsonFormat.Features jsonFormat_Features0 = JsonFormat.Features.empty();
+        Boolean boolean0 = Boolean.valueOf("com.fasterxml.jackson.annotation.JsonFormat$Features");
+        JsonFormat.Value jsonFormat_Value0 = new JsonFormat.Value("GTN#0o7A|nNN5e%^;@", jsonFormat_Shape0, (Locale) null, timeZone0, jsonFormat_Features0, boolean0, 1932);
+        boolean boolean1 = jsonFormat_Value0.hasLenient();
+        assertTrue(jsonFormat_Value0.hasShape());
+        assertTrue(boolean1);
+        assertEquals(1932, jsonFormat_Value0.getRadix());
+        assertEquals("GTN#0o7A|nNN5e%^;@", jsonFormat_Value0.getPattern());
+    }
+}
+
+
+[13] COMMAND in_progress
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/jackson-annotations/src/main/java/com/fasterxml/jackson/annotation/JsonFormat.java'
+
+[14] COMMAND completed
+/bin/zsh -lc 'cat /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/jackson-annotations/src/main/java/com/fasterxml/jackson/annotation/JsonFormat.java'
+--- output ---
+package com.fasterxml.jackson.annotation;
+
+import java.lang.annotation.*;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.TimeZone;
+
+/**
+ * General-purpose annotation used for configuring details of how
+ * values of properties are to be serialized and deserialized.
+ * Unlike most other Jackson annotations, annotation does not
+ * have specific universal interpretation: instead, effects depend on datatype
+ * of property being annotated (or more specifically, deserializer
+ * and serializer being used).
+ *<p>
+ * Annotation can be used on Classes (types) as well, for modified default behavior,
+ * possibly overridden by per-property annotations.
+ *<p>
+ * Common uses include choosing between alternate representations -- for example,
+ * whether {@link java.util.Date} is to be serialized as number (Java timestamp)
+ * or String (such as ISO-8601 compatible time value) -- as well as configuring
+ * exact details with {@link #pattern} property.
+ *<p>
+ * As of Jackson 2.20, known special handling includes:
+ *<br>(NOTE: list is incomplete)
+ *<ul>
+ * <li>For Date/Time types:
+ * <ul>
+ *   <li>Choice between textual {@code String} representation and numeric
+ *    alternatives (timestamps) with {@code shape} property
+ *    (shape can be {@link Shape#STRING} or {@link Shape#NUMBER}; for some
+ *    types also {@link Shape#ARRAY})
+ *     </li>
+ *   <li>{code timezone} may be used to override either Jackson default (UTC)
+ *      or time-date values timezone
+ *     </li>
+ *   <li>{code lenient} may be used to enable/disable lenient (vs strict) parsing
+ *      of values (default being {@code lenient}
+ *     </li>
+ *   <li>For {@link java.util.Date} or {@link java.util.Calendar}:
+ *    {@code pattern} may specify {@link java.text.SimpleDateFormat}-compatible
+ *    pattern definitions.
+ *   </li>
+ *   <li>For {@code java.time.*} types:
+ *    {@code pattern} may specify {@link java.time.format.DateTimeFormatter}-compatible
+ *    pattern definitions.
+ *     </li>
+ *   <li>For {@code org.joda.time.*} types
+ *    {@code pattern} may specify Joda's {@code org.joda.time.format.DateTimeFormat}-compatible
+ *    pattern definitions.
+ *     </li>
+ *   </ul>
+ * </li>
+ * <li>{@link java.lang.Enum}s: Shapes {@link Shape#STRING} and {@link Shape#NUMBER} can be
+ *    used to change between numeric (index) and textual (name or <code>toString()</code>);
+ *    but it is also possible to use {@link Shape#OBJECT} to serialize (but not deserialize)
+ *    {@link java.lang.Enum}s as JSON Objects (as if they were POJOs). NOTE: serialization
+ *     as JSON Object only works with class annotation;
+ *    will not work as per-property annotation.
+ *   </li>
+ * <li>{@link java.util.Collection}s can be serialized as (and deserialized from) JSON Objects,
+ *    if {@link Shape#OBJECT} is used. NOTE: can ONLY be used as class annotation;
+ *    will not work as per-property annotation.
+ *   </li>
+ *  <li>{@link java.lang.Number} subclasses can use {@link Shape#STRING} to serialize to a string.
+ *    This is useful to prevent large numeric values from being rounded to their closest double
+ *    values when deserialized by JSON parsers (for instance <code>JSON.parse()</code> in web
+ *    browsers) that do not support numbers with more than 53 bits of precision.
+ *    When serializing {@link java.lang.Number} to a string, it is possible to specify radix,
+ *    the numeric base used to output the number in.
+ *    <p>
+ *    They can also be serialized to full objects if {@link Shape#OBJECT} is used.
+ *    Otherwise, the default behavior of serializing to a scalar number value will be preferred.
+ *    NOTE: can ONLY be used as class annotation; will not work as per-property annotation.
+ *   </li>
+ *</ul>
+ *
+ * @since 2.0
+ */
+@Target({ElementType.ANNOTATION_TYPE, ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER,
+    ElementType.TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+@JacksonAnnotation
+public @interface JsonFormat
+{
+    /**
+     * Value that indicates that default {@link java.util.Locale}
+     * (from deserialization or serialization context) should be used:
+     * annotation does not define value to use.
+     */
+    public final static String DEFAULT_LOCALE = "##default";
+
+    /**
+     * Value that indicates that default {@link java.util.TimeZone}
+     * (from deserialization or serialization context) should be used:
+     * annotation does not define value to use.
+     *<p>
+     * NOTE: default here does NOT mean JVM defaults but Jackson databindings
+     * default, usually UTC, but may be changed on <code>ObjectMapper</code>.
+     */
+    public final static String DEFAULT_TIMEZONE = "##default";
+
+    /**
+     * This is a marker signaling that a configured default radix should be used, which typically means 10,
+     * when serializing {@link java.lang.Number} properties with {@link Shape#STRING}.
+     * @since 2.21
+     */
+    public final static int DEFAULT_RADIX = -1;
+
+    /**
+     * Datatype-specific additional piece of configuration that may be used
+     * to further refine formatting aspects. This may, for example, determine
+     * low-level format String used for {@link java.util.Date} serialization;
+     * however, exact use is determined by specific <code>JsonSerializer</code> (2.x)
+     * / <code>ValueSerializer</code> (3.x)
+     */
+    public String pattern() default "";
+
+    /**
+     * Structure to use for serialization: definition of mapping depends on datatype,
+     * but usually has straight-forward counterpart in data format (JSON).
+     * Note that commonly only a subset of shapes is available; and if 'invalid' value
+     * is chosen, defaults are usually used.
+     */
+    public Shape shape() default Shape.ANY;
+
+    /**
+     * {@link java.util.Locale} to use for serialization (if needed).
+     * Special value of {@link #DEFAULT_LOCALE}
+     * can be used to mean "just use the default", where default is specified
+     * by the serialization context, which in turn defaults to system
+     * defaults ({@link java.util.Locale#getDefault()}) unless explicitly
+     * set to another locale.
+     */
+    public String locale() default DEFAULT_LOCALE;
+
+    /**
+     * {@link java.util.TimeZone} to use for serialization (if needed).
+     * Special value of {@link #DEFAULT_TIMEZONE}
+     * can be used to mean "just use the default", where default is specified
+     * by the serialization context, which in turn defaults to system
+     * default (UTC) unless explicitly set to another timezone.
+     */
+    public String timezone() default DEFAULT_TIMEZONE;
+
+    /**
+     * Property that indicates whether "lenient" handling should be enabled or
+     * disabled. This is relevant mostly for deserialization of some textual
+     * datatypes, especially date/time types.
+     *<p>
+     * Note that underlying default setting depends on datatype (or more precisely
+     * deserializer for it): for most date/time types, default is for leniency
+     * to be enabled.
+     *
+     * @since 2.9
+     */
+    public OptBoolean lenient() default OptBoolean.DEFAULT;
+
+    /**
+     * Property that indicates the numeric base used to output {@link java.lang.Number} properties when {@link Shape#STRING}
+     * is specified.
+     * For example, if 2 is used, then the output will be a binary representation of a number as a string,
+     * and with 16, the number will be outputted in the hexadecimal form.
+     *
+     * @since 2.21
+     */
+    public int radix() default DEFAULT_RADIX;
+
+    /**
+     * Set of {@link JsonFormat.Feature}s to explicitly enable with respect
+     * to handling of annotated property. This will have precedence over possible
+     * global configuration.
+     *
+     * @since 2.6
+     */
+    public JsonFormat.Feature[] with() default { };
+
+    /**
+     * Set of {@link JsonFormat.Feature}s to explicitly disable with respect
+     * to handling of annotated property. This will have precedence over possible
+     * global configuration.
+     *
+     * @since 2.6
+     */
+    public JsonFormat.Feature[] without() default { };
+
+    /*
+    /**********************************************************
+    /* Value enumeration(s), value class(es)
+    /**********************************************************
+     */
+
+    /**
+     * Value enumeration used for indicating preferred Shape; translates
+     * loosely to JSON types, with some extra values to indicate less precise
+     * choices (i.e. allowing one of multiple actual shapes)
+     */
+    public enum Shape
+    {
+        // // // Concrete physical shapes, scalars
+        /**
+         * Value that indicates that Binary type (native, if format supports it;
+         * encoding using Base64 if only textual types supported) should be used.
+         *
+         * @since 2.10
+         */
+        BINARY,
+
+        /**
+         * Value that indicates that (JSON) boolean type
+         * (true, false) should be used.
+         */
+        BOOLEAN,
+
+        /**
+         * Value that indicates that a numeric (JSON) type should be used
+         * (but does not specify whether integer or floating-point representation
+         * should be used)
+         */
+        NUMBER,
+
+        /**
+         * Value that indicates that floating-point numeric type should be used
+         */
+        NUMBER_FLOAT,
+
+        /**
+         * Value that indicates that integer number type should be used
+         * (and not {@link #NUMBER_FLOAT}).
+         */
+        NUMBER_INT,
+
+        /**
+         * Value that indicates that (JSON) String type should be used.
+         */
+        STRING,
+
+        /**
+         * Value that indicates shape should not be structural (that is, not
+         * {@link #ARRAY} or {@link #OBJECT}), but can be any other shape.
+         */
+        SCALAR,
+
+        // // // Concrete physical shapes, structured
+
+        /**
+         * Value that indicates that (JSON) Array type should be used.
+         */
+        ARRAY,
+
+        /**
+         * Value that indicates that (JSON) Object type should be used.
+         */
+        OBJECT,
+
+        // // // Additional logical meta-types
+
+        /**
+         * Marker enum value that indicates "whatever" choice, meaning that annotation
+         * does NOT specify shape to use.
+         * Note that this is different from {@link Shape#NATURAL}, which
+         * specifically instructs use of the "natural" shape for datatype.
+         */
+        ANY,
+
+        /**
+         * Marker enum value that indicates the "default" choice for given datatype;
+         * for example, JSON String for {@link java.lang.String}, or JSON Number
+         * for Java numbers.
+         * Note that this is different from {@link Shape#ANY} in that this is actual
+         * explicit choice that overrides possible default settings.
+         *
+         * @since 2.8
+         */
+        NATURAL,
+
+        /**
+         * Marker enum value that indicates not only shape of {@link #OBJECT} but further
+         * handling as POJO, where applicable. Mostly makes difference at Java Object level
+         * when distinguishing handling between {@link java.util.Map} and POJO types.
+         *
+         * @since 2.20
+         */
+        POJO,
+
+        ;
+
+        public boolean isNumeric() {
+            return (this == NUMBER) || (this == NUMBER_INT) || (this == NUMBER_FLOAT);
+        }
+
+        /** @since 2.20 */
+        public static boolean isNumeric(Shape shapeOrNull) {
+            return (shapeOrNull != null) && shapeOrNull.isNumeric();
+        }
+
+        public boolean isStructured() {
+            return (this == OBJECT) || (this == ARRAY) || (this == POJO);
+        }
+
+        /** @since 2.20 */
+        public static boolean isStructured(Shape shapeOrNull) {
+            return (shapeOrNull != null) && shapeOrNull.isStructured();
+        }
+    }
+
+    /**
+     * Set of features that can be enabled/disabled for property annotated.
+     * These often relate to specific <code>SerializationFeature</code>
+     * or <code>DeserializationFeature</code>, as noted by entries.
+     *<p>
+     * Note that whether specific setting has an effect depends on whether
+     * <code>JsonSerializer</code> (2.x) / <code>ValueSerializer</code> (3.x)
+     * or <code>JsonDeserializer</code> (2.x) / <code>ValueDeserializer</code> (3.x) being used
+     * takes the format setting into account. If not, please file an issue
+     * for adding support via issue tracker for package that has handlers
+     * (if you know which one; if not, just use `jackson-databind`).
+     *
+     * @since 2.6
+     */
+    public enum Feature {
+        /**
+         * Override for <code>DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY</code>
+         * which will allow deserialization of JSON non-array values into single-element
+         * Java arrays and {@link java.util.Collection}s.
+         */
+        ACCEPT_SINGLE_VALUE_AS_ARRAY,
+
+        /**
+         * Override for <code>MapperFeature.ACCEPT_CASE_INSENSITIVE_PROPERTIES</code>,
+         * which allows case-insensitive matching of property names (but NOT values,
+         * see {@link #ACCEPT_CASE_INSENSITIVE_VALUES} for that).
+         *<p>
+         * Only affects deserialization, has no effect on serialization.
+         *
+         * @since 2.8
+         */
+        ACCEPT_CASE_INSENSITIVE_PROPERTIES,
+
+        /**
+         * Override for <code>DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_AS_NULL</code>,
+         * which allows unknown Enum values to be parsed as null values.
+         *
+         * @since 2.15
+         */
+        READ_UNKNOWN_ENUM_VALUES_AS_NULL,
+
+        /**
+         * Override for <code>DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE</code>,
+         * which allows unknown Enum values to be ignored and a predefined value specified through
+         * {@link com.fasterxml.jackson.annotation.JsonEnumDefaultValue @JsonEnumDefaultValue} annotation.
+         *
+         * @since 2.15
+         */
+        READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE,
+
+        /**
+         * Override for {@code DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE},
+         * (counterpart to {@link #WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS}),
+         * similar constraints apply.
+         *
+         * @since 2.15
+         */
+        READ_DATE_TIMESTAMPS_AS_NANOSECONDS,
+
+        /**
+         * Override for <code>MapperFeature.ACCEPT_CASE_INSENSITIVE_VALUES</code>
+         * and <code>MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS</code>,
+         * which allows case-sensitive matching of (some) property values, such
+         * as {@code Enum}s.
+         * Only affects deserialization, has no effect on serialization.
+         *
+         * @since 2.10
+         */
+        ACCEPT_CASE_INSENSITIVE_VALUES,
+
+        /**
+         * Override for <code>SerializationFeature.WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS</code>,
+         * similar constraints apply.
+         */
+        WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS,
+
+        /**
+         * Override for <code>SerializationFeature.WRITE_DATES_WITH_ZONE_ID</code>,
+         * similar constraints apply.
+         */
+        WRITE_DATES_WITH_ZONE_ID,
+
+        /**
+         * Override for <code>SerializationFeature.WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED</code>
+         * which will force serialization of single-element arrays and {@link java.util.Collection}s
+         * as that single element and excluding array wrapper.
+         */
+        WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED,
+
+        /**
+         * Override for <code>SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS</code>,
+         * enabling of which will force sorting of {@link java.util.Map} keys before
+         * serialization.
+         */
+        WRITE_SORTED_MAP_ENTRIES,
+
+        /**
+         * Override for <code>DeserializationFeature.ADJUST_DATES_TO_CONTEXT_TIMEZONE</code>
+         * that specifies whether context provided timezone
+         * <code>DeserializationContext.getTimeZone()</code> should be used to adjust Date/Time
+         * values on deserialization, even if value itself contains timezone information
+         *<p>
+         * NOTE: due to limitations of "old" JDK date/time types (that is,
+         * {@link java.util.Date} and {@link java.util.Calendar}), this setting is only
+         * applicable to <code>Joda</code> and <code>Java 8 date/time</code> values,
+         * but not to <code>java.util.Date</code> or <code>java.util.Calendar</code>.
+         *
+         * @since 2.8
+         */
+        ADJUST_DATES_TO_CONTEXT_TIME_ZONE
+    }
+
+    /**
+     * Helper class that encapsulates information equivalent to {@link java.lang.Boolean}
+     * valued {@link java.util.EnumMap}.
+     *
+     * @since 2.6
+     */
+    public static class Features
+        implements java.io.Serializable // @since 2.21
+    {
+        private static final long serialVersionUID = 1L;
+
+        private final int _enabled, _disabled;
+
+        private final static Features EMPTY = new Features(0, 0);
+
+        private Features(int e, int d) {
+            _enabled = e;
+            _disabled = d;
+        }
+
+        public static Features empty() {
+            return EMPTY;
+        }
+
+        public static Features construct(JsonFormat f) {
+            return construct(f.with(), f.without());
+        }
+
+        public static Features construct(Feature[] enabled, Feature[] disabled)
+        {
+            int e = 0;
+            for (Feature f : enabled) {
+                e |= (1 << f.ordinal());
+            }
+            int d = 0;
+            for (Feature f : disabled) {
+                d |= (1 << f.ordinal());
+            }
+            return new Features(e, d);
+        }
+
+        public Features withOverrides(Features overrides) {
+            // Cheap checks first: maybe one is empty?
+            if (overrides == null) {
+                return this;
+            }
+            int overrideD = overrides._disabled;
+            int overrideE = overrides._enabled;
+            if ((overrideD == 0) && (overrideE == 0)) {
+                return this;
+            }
+            if ((_enabled == 0) && (_disabled == 0)) {
+                return overrides;
+            }
+            // If not, calculate combination with overrides
+            int newE = (_enabled & ~overrideD) | overrideE;
+            int newD = (_disabled & ~overrideE) | overrideD;
+
+            // one more thing; no point in creating new instance if there's no change
+            if ((newE == _enabled) && (newD == _disabled)) {
+                return this;
+            }
+
+            return new Features(newE, newD);
+        }
+
+        public Features with(Feature...features) {
+            int e = _enabled;
+            int d = _disabled;
+            for (Feature f : features) {
+                int mask = (1 << f.ordinal());
+                e |= mask;
+                d &= ~mask;
+            }
+            return (e == _enabled && d == _disabled) ? this : new Features(e, d);
+        }
+
+        public Features without(Feature...features) {
+            int e = _enabled;
+            int d = _disabled;
+            for (Feature f : features) {
+                int mask = (1 << f.ordinal());
+                d |= mask;
+                e &= ~mask;
+            }
+            return (d == _disabled && e == _enabled) ? this : new Features(e, d);
+        }
+
+        public Boolean get(Feature f) {
+            int mask = (1 << f.ordinal());
+            if ((_disabled & mask) != 0) {
+                return Boolean.FALSE;
+            }
+            if ((_enabled & mask) != 0) {
+                return Boolean.TRUE;
+            }
+            return null;
+        }
+
+        @Override
+        public String toString() {
+            if (this == EMPTY) {
+                return "EMPTY";
+            }
+            return String.format("(enabled=0x%x,disabled=0x%x)", _enabled, _disabled);
+        }
+
+        @Override
+        public int hashCode() {
+            return _disabled + _enabled;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o == this) return true;
+            if (o == null) return false;
+            if (o.getClass() != getClass()) return false;
+            Features other = (Features) o;
+            return (other._enabled == _enabled) && (other._disabled == _disabled);
+        }
+    }
+
+    /**
+     * Helper class used to contain information from a single {@link JsonFormat}
+     * annotation.
+     */
+    public static class Value
+        implements JacksonAnnotationValue<JsonFormat>, // since 2.6
+            java.io.Serializable
+    {
+        private static final long serialVersionUID = 1L;
+
+        private final static Value EMPTY = new Value();
+
+        private final String _pattern;
+        private final Shape _shape;
+        private final Locale _locale;
+
+        private final String _timezoneStr;
+
+        /**
+         * @since 2.9
+         */
+        private final Boolean _lenient;
+
+        /**
+         * @since 2.6
+         */
+        private final Features _features;
+
+        /**
+         * @since 2.21
+         */
+        private final int _radix;
+
+        // lazily constructed when created from annotations
+        private transient TimeZone _timezone;
+
+        public Value() {
+            this("", Shape.ANY, "", "", Features.empty(), null, DEFAULT_RADIX);
+        }
+
+        public Value(JsonFormat ann) {
+            this(ann.pattern(), ann.shape(), ann.locale(), ann.timezone(),
+                    Features.construct(ann), ann.lenient().asBoolean(), ann.radix());
+        }
+
+        /**
+         * @since 2.21
+         */
+        public Value(String p, Shape sh, String localeStr, String tzStr, Features f,
+                Boolean lenient, int radix)
+        {
+            this(p, sh,
+                    (localeStr == null || localeStr.length() == 0 || DEFAULT_LOCALE.equals(localeStr)) ?
+                            null : _parseLocale(localeStr),
+                    (tzStr == null || tzStr.length() == 0 || DEFAULT_TIMEZONE.equals(tzStr)) ?
+                            null : tzStr,
+                    null, f, lenient, radix);
+        }
+
+        /**
+         * @since 2.9
+         */
+        @Deprecated //since 2.21
+        public Value(String p, Shape sh, String localeStr, String tzStr, Features f,
+                Boolean lenient)
+        {
+            this(p, sh,
+                    (localeStr == null || localeStr.length() == 0 || DEFAULT_LOCALE.equals(localeStr)) ?
+                            null : _parseLocale(localeStr),
+                    (tzStr == null || tzStr.length() == 0 || DEFAULT_TIMEZONE.equals(tzStr)) ?
+                            null : tzStr,
+                    null, f, lenient);
+        }
+
+        /**
+         * @since 2.21
+         */
+        public Value(String p, Shape sh, Locale l, TimeZone tz, Features f,
+                Boolean lenient, int radix)
+        {
+            _pattern = (p == null) ? "" : p;
+            _shape = (sh == null) ? Shape.ANY : sh;
+            _locale = l;
+            _timezone = tz;
+            _timezoneStr = null;
+            _features = (f == null) ? Features.empty() : f;
+            _lenient = lenient;
+            _radix = radix;
+        }
+
+        /**
+         * @since 2.9
+         */
+        @Deprecated //since 2.21
+        public Value(String p, Shape sh, Locale l, TimeZone tz, Features f,
+                Boolean lenient)
+        {
+            _pattern = (p == null) ? "" : p;
+            _shape = (sh == null) ? Shape.ANY : sh;
+            _locale = l;
+            _timezone = tz;
+            _timezoneStr = null;
+            _features = (f == null) ? Features.empty() : f;
+            _lenient = lenient;
+            _radix = DEFAULT_RADIX;
+        }
+
+        /**
+         * @since 2.21
+         */
+        public Value(String p, Shape sh, Locale l, String tzStr, TimeZone tz, Features f,
+                Boolean lenient, int radix)
+        {
+            _pattern = (p == null) ? "" : p;
+            _shape = (sh == null) ? Shape.ANY : sh;
+            _locale = l;
+            _timezone = tz;
+            _timezoneStr = tzStr;
+            _features = (f == null) ? Features.empty() : f;
+            _lenient = lenient;
+            _radix = radix;
+        }
+
+        /**
+         * @since 2.9
+         */
+        @Deprecated //since 2.21
+        public Value(String p, Shape sh, Locale l, String tzStr, TimeZone tz, Features f,
+                Boolean lenient)
+        {
+            this(p, sh, l, tzStr, tz, f, lenient, DEFAULT_RADIX);
+        }
+
+        /**
+         * @since 2.7
+         */
+        public final static Value empty() {
+            return EMPTY;
+        }
+
+        /**
+         * Helper method that will try to combine values from two {@link Value}
+         * instances, using one as base settings, and the other as overrides
+         * to use instead of base values when defined; base values are only
+         * use if override does not specify a value (matching value is null
+         * or logically missing).
+         * Note that one or both of value instances may be `null`, directly;
+         * if both are `null`, result will also be `null`; otherwise never null.
+         *
+         * @since 2.8
+         */
+        public static Value merge(Value base, Value overrides)
+        {
+            return (base == null) ? overrides
+                    : base.withOverrides(overrides);
+        }
+
+        /**
+         * @since 2.8
+         */
+        public static Value mergeAll(Value... values)
+        {
+            Value result = null;
+            for (Value curr : values) {
+                if (curr != null) {
+                    result = (result == null)  ? curr : result.withOverrides(curr);
+                }
+            }
+            return result;
+        }
+
+        /**
+         * @since 2.7
+         */
+        public final static Value from(JsonFormat ann) {
+            return (ann == null) ? EMPTY : new Value(ann);
+        }
+
+        /**
+         * @since 2.7
+         */
+        public final Value withOverrides(Value overrides) {
+            if ((overrides == null) || (overrides == EMPTY) || (overrides == this)) {
+                return this;
+            }
+            if (this == EMPTY) { // cheesy, but probably common enough
+                return overrides;
+            }
+            String p = overrides._pattern;
+            if ((p == null) || p.isEmpty()) {
+                p = _pattern;
+            }
+            Shape sh = overrides._shape;
+            if (sh == Shape.ANY) {
+                sh = _shape;
+            }
+            Locale l = overrides._locale;
+            if (l == null) {
+                l = _locale;
+            }
+            Features f = _features;
+            if (f == null) {
+                f = overrides._features;
+            } else {
+                f = f.withOverrides(overrides._features);
+            }
+            Boolean lenient = overrides._lenient;
+            if (lenient == null) {
+                lenient = _lenient;
+            }
+            int radix = overrides._radix;
+            if(radix == DEFAULT_RADIX) {
+                radix = _radix;
+            }
+
+            // timezone not merged, just choose one
+            String tzStr = overrides._timezoneStr;
+            TimeZone tz;
+
+            if ((tzStr == null) || tzStr.isEmpty()) { // no overrides, use space
+                tzStr = _timezoneStr;
+                tz = _timezone;
+            } else {
+                tz = overrides._timezone;
+            }
+            return new Value(p, sh, l, tzStr, tz, f, lenient, radix);
+        }
+
+        /**
+         * @since 2.6
+         */
+        public static Value forPattern(String p) {
+            return new Value(p, null, null, null, null, Features.empty(), null, DEFAULT_RADIX);
+        }
+
+        /**
+         * @since 2.7
+         */
+        public static Value forShape(Shape sh) {
+            return new Value("", sh, null, null, null, Features.empty(), null, DEFAULT_RADIX);
+        }
+
+        /**
+         * @since 2.9
+         */
+        public static Value forLeniency(boolean lenient) {
+            return new Value("", null, null, null, null, Features.empty(),
+                    Boolean.valueOf(lenient), DEFAULT_RADIX);
+        }
+
+        /**
+        * @since 2.21
+        */
+        public static Value forRadix(int radix) {
+            return new Value("", null, null, null, null, Features.empty(),
+                    null, radix);
+        }
+
+        /**
+         * @since 2.1
+         */
+        public Value withPattern(String p) {
+            return new Value(p, _shape, _locale, _timezoneStr, _timezone,
+                    _features, _lenient, _radix);
+        }
+
+        /**
+         * @since 2.1
+         */
+        public Value withShape(Shape s) {
+            if (s == _shape) {
+                return this;
+            }
+            return new Value(_pattern, s, _locale, _timezoneStr, _timezone,
+                    _features, _lenient, _radix);
+        }
+
+        /**
+         * @since 2.1
+         */
+        public Value withLocale(Locale l) {
+            return new Value(_pattern, _shape, l, _timezoneStr, _timezone,
+                    _features, _lenient, _radix);
+        }
+
+        /**
+         * @since 2.1
+         */
+        public Value withTimeZone(TimeZone tz) {
+            return new Value(_pattern, _shape, _locale, null, tz,
+                    _features, _lenient, _radix);
+        }
+
+        /**
+         * @since 2.9
+         */
+        public Value withLenient(Boolean lenient) {
+            if (lenient == _lenient) {
+                return this;
+            }
+            return new Value(_pattern, _shape, _locale, _timezoneStr, _timezone,
+                    _features, lenient, _radix);
+        }
+
+        /**
+         * @since 2.21
+         */
+        public Value withRadix(int radix) {
+            if (radix == _radix) {
+                return this;
+            }
+            return new Value(_pattern, _shape, _locale, _timezoneStr, _timezone,
+                    _features, _lenient, radix);
+        }
+
+        /**
+         * @since 2.6
+         */
+        public Value withFeature(JsonFormat.Feature f) {
+            Features newFeats = _features.with(f);
+            return (newFeats == _features) ? this :
+                new Value(_pattern, _shape, _locale, _timezoneStr, _timezone,
+                        newFeats, _lenient, _radix);
+        }
+
+        /**
+         * @since 2.6
+         */
+        public Value withoutFeature(JsonFormat.Feature f) {
+            Features newFeats = _features.without(f);
+            return (newFeats == _features) ? this :
+                new Value(_pattern, _shape, _locale, _timezoneStr, _timezone,
+                        newFeats, _lenient, _radix);
+        }
+
+        @Override
+        public Class<JsonFormat> valueFor() {
+            return JsonFormat.class;
+        }
+
+        public String getPattern() { return _pattern; }
+        public Shape getShape() { return _shape; }
+        public Locale getLocale() { return _locale; }
+
+        /**
+         * @return {@code Boolean.TRUE} if explicitly set to true; {@code Boolean.FALSE}
+         *   if explicit set to false; or {@code null} if not set either way (assuming
+         *   "default leniency" for the context)
+         *
+         * @since 2.9
+         */
+        public Boolean getLenient() {
+            return _lenient;
+        }
+
+        /**
+         * @return radix to use for serializing subclasses of {@link Number} as strings.
+         * If set to -1, a custom radix has not been specified.
+         * @since 2.21
+         */
+        public int getRadix() { return _radix; }
+
+        /**
+         * Convenience method equivalent to
+         *<pre>
+         *   Boolean.TRUE.equals(getLenient())
+         *</pre>
+         * that is, returns {@code true} if (and only if) leniency has been explicitly
+         * set to {code true}; but not if it is undefined.
+         *
+         * @since 2.9
+         */
+        public boolean isLenient() {
+            return Boolean.TRUE.equals(_lenient);
+        }
+
+        /**
+         * Alternate access (compared to {@link #getTimeZone()}) which is useful
+         * when caller just wants time zone id to convert, but not as JDK
+         * provided {@link TimeZone}
+         *
+         * @since 2.4
+         */
+        public String timeZoneAsString() {
+            if (_timezone != null) {
+                return _timezone.getID();
+            }
+            return _timezoneStr;
+        }
+
+        public TimeZone getTimeZone() {
+            TimeZone tz = _timezone;
+            if (tz == null) {
+                if (_timezoneStr == null) {
+                    return null;
+                }
+                tz = TimeZone.getTimeZone(_timezoneStr);
+                _timezone = tz;
+            }
+            return tz;
+        }
+
+        /**
+         * @since 2.4
+         */
+        public boolean hasShape() { return _shape != Shape.ANY; }
+
+        /**
+         * @since 2.4
+         */
+        public boolean hasPattern() {
+            return (_pattern != null) && (_pattern.length() > 0);
+        }
+
+        /**
+         * @since 2.4
+         */
+        public boolean hasLocale() { return _locale != null; }
+
+        /**
+         * @since 2.4
+         */
+        public boolean hasTimeZone() {
+            return (_timezone != null) || (_timezoneStr != null && !_timezoneStr.isEmpty());
+        }
+
+        /**
+         * Accessor for checking whether there is a setting for leniency.
+         * NOTE: does NOT mean that `lenient` is `true` necessarily; just that
+         * it has been set.
+         *
+         * @since 2.9
+         */
+        public boolean hasLenient() {
+            return _lenient != null;
+        }
+
+        /**
+         * Accessor for checking whether non-default radix has been specified.
+         *
+         * @since 2.21
+         */
+        public boolean hasNonDefaultRadix() {
+            return _radix != DEFAULT_RADIX;
+        }
+
+        /**
+         * Accessor for checking whether this format value has specific setting for
+         * given feature. Result is 3-valued with either `null`, {@link Boolean#TRUE} or
+         * {@link Boolean#FALSE}, indicating 'yes/no/dunno' choices, where `null` ("dunno")
+         * indicates that the default handling should be used based on global defaults,
+         * and there is no format override.
+         *
+         * @since 2.6
+         */
+        public Boolean getFeature(JsonFormat.Feature f) {
+            return _features.get(f);
+        }
+
+        /**
+         * Accessor for getting full set of features enabled/disabled.
+         *
+         * @since 2.8
+         */
+        public Features getFeatures() {
+            return _features;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("JsonFormat.Value(pattern=%s,shape=%s,lenient=%s,locale=%s,timezone=%s,features=%s,radix=%s)",
+                    _pattern, _shape, _lenient, _locale, _timezoneStr, _features, _radix);
+        }
+
+        @Override
+        public int hashCode() {
+             int hash = (_timezoneStr == null) ? 1 : _timezoneStr.hashCode();
+             if (_pattern != null) {
+                 hash ^= _pattern.hashCode();
+             }
+             hash += _shape.hashCode();
+             if (_lenient != null) {
+                 hash ^= _lenient.hashCode();
+             }
+             if (_locale != null) {
+                 hash += _locale.hashCode();
+             }
+             hash ^= _features.hashCode();
+             hash += _radix;
+             return hash;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o == this) return true;
+            if (o == null) return false;
+            if (o.getClass() != getClass()) return false;
+            Value other = (Value) o;
+
+            if ((_shape != other._shape)
+                    || !_features.equals(other._features)) {
+                return false;
+            }
+            return Objects.equals(_lenient, other._lenient)
+                    && Objects.equals(_timezoneStr, other._timezoneStr)
+                    && Objects.equals(_pattern, other._pattern)
+                    && Objects.equals(_locale, other._locale)
+                    && (_radix == other._radix);
+        }
+
+        /**
+         * Helper method for parsing locale string into {@link Locale},
+         * handling both underscore and hyphen as separator (so both
+         * "en_US" and "en-US" work), as well as optional variant
+         * (like "en_US_POSIX").
+         *
+         * @since 2.22
+         */
+        private static Locale _parseLocale(String localeStr) {
+            final int len = localeStr.length();
+            for (int i = 0; i < len; ++i) {
+                char c = localeStr.charAt(i);
+                if (c == '_' || c == '-') {
+                    String language = localeStr.substring(0, i);
+                    String rest = localeStr.substring(i + 1);
+                    // Look for second separator for variant
+                    for (int j = 0, rlen = rest.length(); j < rlen; ++j) {
+                        char c2 = rest.charAt(j);
+                        if (c2 == '_' || c2 == '-') {
+                            return new Locale(language, rest.substring(0, j), rest.substring(j + 1));
+                        }
+                    }
+                    return new Locale(language, rest);
+                }
+            }
+            return new Locale(localeStr);
+        }
+    }
+}
+
+
+[15] AGENT
+I’m going to create the improved test file in the working directory with the same package, EvoSuite runner annotations, scaffolding inheritance, and imports. The refactor will only replace opaque generated variable names with intent-revealing names and constants while preserving the same calls and assertions.
+
+[16] FILE_CHANGE in_progress
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/jackson-annotations/auto/testcases/JsonFormat_ESTest/test13/JsonFormat_ESTest_test13.java
+
+[17] FILE_CHANGE completed
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/jackson-annotations/auto/testcases/JsonFormat_ESTest/test13/JsonFormat_ESTest_test13.java
+
+[18] AGENT
+The test file is now in place. I’m running the required compile check exactly as specified so we can verify the generated test against the project classpath.
+
+[19] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[20] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[21] AGENT
+Done. `JsonFormat_ESTest_test13.java` was refactored for readability and `bash compile.sh` returned `COMPILE_OK`.

@@ -1,0 +1,41 @@
+package org.jsoup.parser;
+
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.junit.jupiter.api.Test;
+import java.lang.reflect.Field;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import static org.jsoup.parser.Parser.NamespaceHtml;
+import static org.junit.jupiter.api.Assertions.*;
+
+public class TagSetTest_supportsMultipleCustomizers {
+
+    private static int tagSetNamespaceCount(TagSet tagSet) {
+        try {
+            Field tagsField = TagSet.class.getDeclaredField("tags");
+            tagsField.setAccessible(true);
+            Map<?, ?> tags = (Map<?, ?>) tagsField.get(tagSet);
+            return tags.size();
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Test
+    void supportsMultipleCustomizers() {
+        TagSet tags = TagSet.Html();
+        tags.onNewTag(tag -> {
+            if (tag.normalName().equals("script"))
+                tag.set(Tag.SelfClose);
+        });
+        tags.onNewTag(tag -> {
+            if (!tag.isKnownTag())
+                tag.set(Tag.RcData);
+        });
+        assertTrue(tags.valueOf("script", NamespaceHtml).is(Tag.SelfClose));
+        assertFalse(tags.valueOf("script", NamespaceHtml).is(Tag.RcData));
+        assertTrue(tags.valueOf("custom-tag", NamespaceHtml).is(Tag.RcData));
+    }
+}

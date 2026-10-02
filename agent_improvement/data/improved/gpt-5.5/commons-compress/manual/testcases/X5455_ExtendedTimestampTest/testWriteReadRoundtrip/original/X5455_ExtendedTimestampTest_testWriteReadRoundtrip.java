@@ -1,0 +1,153 @@
+package org.apache.commons.compress.archivers.zip;
+
+import static org.apache.commons.compress.archivers.zip.X5455_ExtendedTimestamp.ACCESS_TIME_BIT;
+import static org.apache.commons.compress.archivers.zip.X5455_ExtendedTimestamp.CREATE_TIME_BIT;
+import static org.apache.commons.compress.archivers.zip.X5455_ExtendedTimestamp.MODIFY_TIME_BIT;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.File;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.attribute.FileTime;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Enumeration;
+import java.util.TimeZone;
+import java.util.zip.ZipException;
+import org.apache.commons.compress.AbstractTest;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+public class X5455_ExtendedTimestampTest_testWriteReadRoundtrip {
+
+    private static final ZipShort X5455 = new ZipShort(0x5455);
+
+    private static final ZipLong ZERO_TIME = new ZipLong(0);
+
+    private static final ZipLong MAX_TIME_SECONDS = new ZipLong(Integer.MAX_VALUE);
+
+    private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd/HH:mm:ss Z");
+
+    /**
+     * InfoZIP seems to adjust the time stored inside the LFH and CD to GMT when writing ZIPs while java.util.zip.ZipEntry thinks it was in local time.
+     *
+     * The archive read in {@link #testSampleFile} has been created with GMT-8, so we need to adjust for the difference.
+     */
+    private static Date adjustFromGMTToExpectedOffset(final Date from) {
+        final Calendar cal = Calendar.getInstance();
+        cal.setTime(from);
+        cal.add(Calendar.MILLISECOND, cal.get(Calendar.ZONE_OFFSET));
+        if (cal.getTimeZone().inDaylightTime(from)) {
+            cal.add(Calendar.MILLISECOND, cal.get(Calendar.DST_OFFSET));
+        }
+        cal.add(Calendar.HOUR, 8);
+        return cal.getTime();
+    }
+
+    private static boolean isFlagSet(final byte data, final byte flag) {
+        return (data & flag) == flag;
+    }
+
+    /**
+     * The extended field (xf) we are testing.
+     */
+    private X5455_ExtendedTimestamp xf;
+
+    @TempDir
+    private File tmpDir;
+
+    @BeforeEach
+    public void before() {
+        xf = new X5455_ExtendedTimestamp();
+    }
+
+    private void parseReparse(final byte providedFlags, final ZipLong time, final byte expectedFlags, final byte[] expectedLocal, final byte[] almostExpectedCentral) throws ZipException {
+        // We're responsible for expectedCentral's flags. Too annoying to set in caller.
+        final byte[] expectedCentral = new byte[almostExpectedCentral.length];
+        System.arraycopy(almostExpectedCentral, 0, expectedCentral, 0, almostExpectedCentral.length);
+        expectedCentral[0] = expectedFlags;
+        xf.setModifyTime(time);
+        xf.setAccessTime(time);
+        xf.setCreateTime(time);
+        xf.setFlags(providedFlags);
+        byte[] result = xf.getLocalFileDataData();
+        assertArrayEquals(expectedLocal, result);
+        // And now we re-parse:
+        xf.parseFromLocalFileData(result, 0, result.length);
+        assertEquals(expectedFlags, xf.getFlags());
+        if (isFlagSet(expectedFlags, MODIFY_TIME_BIT)) {
+            assertTrue(xf.isBit0_modifyTimePresent());
+            assertEquals(time, xf.getModifyTime());
+        }
+        if (isFlagSet(expectedFlags, ACCESS_TIME_BIT)) {
+            assertTrue(xf.isBit1_accessTimePresent());
+            assertEquals(time, xf.getAccessTime());
+        }
+        if (isFlagSet(expectedFlags, CREATE_TIME_BIT)) {
+            assertTrue(xf.isBit2_createTimePresent());
+            assertEquals(time, xf.getCreateTime());
+        }
+        // Do the same as above, but with Central Directory data:
+        xf.setModifyTime(time);
+        xf.setAccessTime(time);
+        xf.setCreateTime(time);
+        xf.setFlags(providedFlags);
+        result = xf.getCentralDirectoryData();
+        assertArrayEquals(expectedCentral, result);
+        // And now we re-parse:
+        xf.parseFromCentralDirectoryData(result, 0, result.length);
+        assertEquals(expectedFlags, xf.getFlags());
+        // Central Directory never contains ACCESS or CREATE, but
+        // may contain MODIFY.
+        if (isFlagSet(expectedFlags, MODIFY_TIME_BIT)) {
+            assertTrue(xf.isBit0_modifyTimePresent());
+            assertEquals(time, xf.getModifyTime());
+        }
+    }
+
+    private void parseReparse(final ZipLong time, final byte[] expectedLocal, final byte[] almostExpectedCentral) throws ZipException {
+        parseReparse(expectedLocal[0], time, expectedLocal[0], expectedLocal, almostExpectedCentral);
+    }
+
+    @AfterEach
+    public void removeTempFiles() {
+        if (tmpDir != null) {
+            AbstractTest.forceDelete(tmpDir);
+        }
+    }
+
+    @Test
+    void testWriteReadRoundtrip() throws IOException {
+        final File output = new File(tmpDir, "write_rewrite.zip");
+        final Calendar instance = Calendar.getInstance();
+        instance.clear();
+        instance.set(1997, 8, 24, 15, 10, 2);
+        final Date date = instance.getTime();
+        try (OutputStream out = Files.newOutputStream(output.toPath());
+            ZipArchiveOutputStream os = new ZipArchiveOutputStream(out)) {
+            final ZipArchiveEntry ze = new ZipArchiveEntry("foo");
+            xf.setModifyJavaTime(date);
+            xf.setFlags((byte) 1);
+            ze.addExtraField(xf);
+            os.putArchiveEntry(ze);
+            os.closeArchiveEntry();
+        }
+        try (ZipFile zf = ZipFile.builder().setFile(output).get()) {
+            final ZipArchiveEntry ze = zf.getEntry("foo");
+            final X5455_ExtendedTimestamp ext = (X5455_ExtendedTimestamp) ze.getExtraField(X5455);
+            assertNotNull(ext);
+            assertTrue(ext.isBit0_modifyTimePresent());
+            assertEquals(date, ext.getModifyJavaTime());
+        }
+    }
+}

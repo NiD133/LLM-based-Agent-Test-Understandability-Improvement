@@ -1,0 +1,45 @@
+package org.threeten.extra.chrono;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import java.time.Clock;
+import java.time.DateTimeException;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.chrono.ChronoZonedDateTime;
+import java.time.chrono.Era;
+import java.time.chrono.IsoEra;
+import java.time.format.TextStyle;
+import java.time.temporal.ChronoField;
+import java.time.temporal.TemporalAccessor;
+import java.time.temporal.ValueRange;
+import java.util.List;
+import java.util.Locale;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.evosuite.runtime.mock.java.time.MockClock;
+import org.evosuite.runtime.mock.java.time.MockOffsetDateTime;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class Symmetry010Chronology_ESTest_test00 extends Symmetry010Chronology_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test00() throws Throwable {
+        Symmetry010Chronology symmetry010Chronology0 = Symmetry010Chronology.INSTANCE;
+        Symmetry454Date symmetry454Date0 = Symmetry454Date.now();
+        IsoEra isoEra0 = symmetry454Date0.getEra();
+        // Undeclared exception!
+        try {
+            symmetry010Chronology0.dateYearDay((Era) isoEra0, 4, 0);
+            fail("Expecting exception: DateTimeException");
+        } catch (DateTimeException e) {
+            //
+            // Invalid value for DayOfYear (valid values 1 - 364/371): 0
+            //
+            verifyException("java.time.temporal.ValueRange", e);
+        }
+    }
+}

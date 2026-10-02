@@ -1,0 +1,17 @@
+package org.threeten.extra;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.Serializable;
+
+import org.junit.jupiter.api.Test;
+
+public class TestMutableClock_test_isSerializable {
+
+    // MutableClock must implement Serializable so that clocks used in tests
+    // can be persisted and restored across JVM boundaries.
+    @Test
+    public void test_isSerializable() {
+        assertTrue(Serializable.class.isAssignableFrom(MutableClock.class));
+    }
+}

@@ -1,0 +1,22 @@
+package org.threeten.extra;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import java.time.chrono.ThaiBuddhistDate;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.evosuite.runtime.mock.java.time.chrono.MockThaiBuddhistDate;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class Months_ESTest_test28 extends Months_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test_betweenSameThaiBuddhistDate_returnsZeroMonths() throws Throwable {
+        // The number of months between a date and itself must be zero
+        ThaiBuddhistDate today = MockThaiBuddhistDate.now();
+        Months result = Months.between(today, today);
+        assertTrue(result.isZero());
+    }
+}

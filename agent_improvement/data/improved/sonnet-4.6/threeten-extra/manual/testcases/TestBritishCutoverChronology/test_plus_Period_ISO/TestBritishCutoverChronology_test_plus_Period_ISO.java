@@ -1,0 +1,19 @@
+package org.threeten.extra.chrono;
+
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import java.time.DateTimeException;
+import java.time.Period;
+
+import org.junit.jupiter.api.Test;
+
+public class TestBritishCutoverChronology_test_plus_Period_ISO {
+
+    // BritishCutoverDate rejects ISO Period because an ISO period belongs to a
+    // different chronology; only ChronoPeriod instances backed by the same
+    // calendar system are accepted.
+    @Test
+    public void test_plus_Period_ISO() {
+        assertThrows(DateTimeException.class, () -> BritishCutoverDate.of(2014, 5, 26).plus(Period.ofMonths(2)));
+    }
+}

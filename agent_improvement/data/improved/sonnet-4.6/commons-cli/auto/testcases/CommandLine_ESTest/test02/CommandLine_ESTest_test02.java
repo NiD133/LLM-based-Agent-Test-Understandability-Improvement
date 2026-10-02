@@ -1,0 +1,33 @@
+package org.apache.commons.cli;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.shaded.org.mockito.Mockito.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Properties;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.evosuite.runtime.ViolatedAssumptionAnswer;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class CommandLine_ESTest_test02 extends CommandLine_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void getOptionObject_returnsNull_whenOptionHasNoValueSet() throws Throwable {
+        CommandLine commandLine = new CommandLine();
+        // Create option with opt="p1", longOpt="", hasArg=true, description="p1"
+        Option optionWithEmptyLongName = new Option("p1", "", true, "p1");
+        commandLine.addOption(optionWithEmptyLongName);
+
+        // Lookup by the empty-string long option name; no value was set, so result is null
+        Object result = commandLine.getOptionObject("");
+
+        assertNull(result);
+    }
+}

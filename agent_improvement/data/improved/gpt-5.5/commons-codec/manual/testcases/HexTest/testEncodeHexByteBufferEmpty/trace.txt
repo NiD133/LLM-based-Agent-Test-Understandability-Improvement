@@ -1,0 +1,1036 @@
+[3] AGENT
+I’ll use the `compile-check` skill as required, and `repair-loop` only if compilation fails. First I’m reading the skill instructions and the two allowed Java sources so the refactor preserves the exact behavior.
+
+[4] COMMAND in_progress
+/bin/zsh -lc pwd
+
+[5] COMMAND completed
+/bin/zsh -lc pwd
+--- output ---
+/Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-codec/manual/testcases/HexTest/testEncodeHexByteBufferEmpty
+
+
+[6] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[7] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[8] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[9] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[10] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-codec/manual/testcases/HexTest/HexTest_testEncodeHexByteBufferEmpty.java"
+
+[11] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-codec/manual/testcases/HexTest/HexTest_testEncodeHexByteBufferEmpty.java"
+--- output ---
+package org.apache.commons.codec.binary;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.io.UnsupportedEncodingException;
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.charset.UnsupportedCharsetException;
+import java.util.Arrays;
+import java.util.concurrent.ThreadLocalRandom;
+import org.apache.commons.codec.DecoderException;
+import org.apache.commons.codec.EncoderException;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+
+public class HexTest_testEncodeHexByteBufferEmpty {
+
+    private static final String BAD_ENCODING_NAME = "UNKNOWN";
+
+    private static final boolean LOG = false;
+
+    /**
+     * Allocate a ByteBuffer.
+     *
+     * <p>The default implementation uses {@link ByteBuffer#allocate(int)}.
+     * The method is overridden in AllocateDirectHexTest to use
+     * {@link ByteBuffer#allocateDirect(int)}
+     *
+     * @param capacity the capacity
+     * @return the byte buffer
+     */
+    protected ByteBuffer allocate(final int capacity) {
+        return ByteBuffer.allocate(capacity);
+    }
+
+    private boolean charsetSanityCheck(final String name) {
+        final String source = "the quick brown dog jumped over the lazy fox";
+        try {
+            final byte[] bytes = source.getBytes(name);
+            final String str = new String(bytes, name);
+            final boolean equals = source.equals(str);
+            if (!equals) {
+                // Here with:
+                //
+                // Java Sun 1.4.2_19 x86 32-bits on Windows XP
+                // JIS_X0212-1990
+                // x-JIS0208
+                //
+                // Java Sun 1.5.0_17 x86 32-bits on Windows XP
+                // JIS_X0212-1990
+                // x-IBM834
+                // x-JIS0208
+                // x-MacDingbat
+                // x-MacSymbol
+                //
+                // Java Sun 1.6.0_14 x86 32-bits
+                // JIS_X0212-1990
+                // x-IBM834
+                // x-JIS0208
+                // x-MacDingbat
+                // x-MacSymbol
+                //
+                log("FAILED charsetSanityCheck=Interesting Java charset oddity: Roundtrip failed for " + name);
+            }
+            return equals;
+        } catch (final UnsupportedEncodingException | UnsupportedOperationException e) {
+            // Caught here with:
+            // x-JISAutoDetect on Windows XP and Java Sun 1.4.2_19 x86 32-bits
+            // x-JISAutoDetect on Windows XP and Java Sun 1.5.0_17 x86 32-bits
+            // x-JISAutoDetect on Windows XP and Java Sun 1.6.0_14 x86 32-bits
+            if (LOG) {
+                log("FAILED charsetSanityCheck=" + name + ", e=" + e);
+                log(e);
+            }
+            return false;
+        }
+    }
+
+    private void checkDecodeHexByteBufferOddCharacters(final ByteBuffer data) {
+        assertThrows(DecoderException.class, () -> new Hex().decode(data));
+    }
+
+    private void checkDecodeHexCharArrayOddCharacters(final char[] data) {
+        assertThrows(DecoderException.class, () -> Hex.decodeHex(data));
+    }
+
+    private void checkDecodeHexCharArrayOddCharacters(final String data) {
+        assertThrows(DecoderException.class, () -> Hex.decodeHex(data));
+    }
+
+    /**
+     * Encodes the given string into a byte buffer using the UTF-8 charset.
+     *
+     * <p>The buffer is allocated using {@link #allocate(int)}.
+     *
+     * @param string the String to encode
+     * @return the byte buffer
+     */
+    private ByteBuffer getByteBufferUtf8(final String string) {
+        final byte[] bytes = string.getBytes(StandardCharsets.UTF_8);
+        final ByteBuffer bb = allocate(bytes.length);
+        bb.put(bytes);
+        bb.flip();
+        return bb;
+    }
+
+    private void log(final String s) {
+        if (LOG) {
+            System.out.println(s);
+            System.out.flush();
+        }
+    }
+
+    private void log(final Throwable t) {
+        if (LOG) {
+            t.printStackTrace(System.out);
+            System.out.flush();
+        }
+    }
+
+    /**
+     * @param name
+     * @param parent
+     * @throws UnsupportedEncodingException
+     * @throws DecoderException
+     */
+    private void testCharset(final String name, final String parent) throws UnsupportedEncodingException, DecoderException {
+        if (!charsetSanityCheck(name)) {
+            return;
+        }
+        log(parent + "=" + name);
+        final Hex customCodec = new Hex(name);
+        // source data
+        final String sourceString = "Hello World";
+        final byte[] sourceBytes = sourceString.getBytes(name);
+        // test 1
+        // encode source to hex string to bytes with charset
+        final byte[] actualEncodedBytes = customCodec.encode(sourceBytes);
+        // encode source to hex string...
+        String expectedHexString = Hex.encodeHexString(sourceBytes);
+        // ... and get the bytes in the expected charset
+        final byte[] expectedHexStringBytes = expectedHexString.getBytes(name);
+        assertArrayEquals(expectedHexStringBytes, actualEncodedBytes);
+        // test 2
+        String actualStringFromBytes = new String(actualEncodedBytes, name);
+        assertEquals(expectedHexString, actualStringFromBytes, name);
+        // second test:
+        final Hex utf8Codec = new Hex();
+        expectedHexString = "48656c6c6f20576f726c64";
+        final byte[] decodedUtf8Bytes = (byte[]) utf8Codec.decode(expectedHexString);
+        actualStringFromBytes = new String(decodedUtf8Bytes, utf8Codec.getCharset());
+        // sanity check:
+        assertEquals(sourceString, actualStringFromBytes, name);
+        // actual check:
+        final byte[] decodedCustomBytes = customCodec.decode(actualEncodedBytes);
+        actualStringFromBytes = new String(decodedCustomBytes, name);
+        assertEquals(sourceString, actualStringFromBytes, name);
+    }
+
+    @Test
+    void testEncodeHexByteBufferEmpty() {
+        assertArrayEquals(new char[0], Hex.encodeHex(allocate(0)));
+        assertArrayEquals(new byte[0], new Hex().encode(allocate(0)));
+    }
+}
+
+
+[12] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-codec/src/main/java/org/apache/commons/codec/binary/Hex.java"
+
+[13] COMMAND completed
+/bin/zsh -lc "sed -n '1,260p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-codec/src/main/java/org/apache/commons/codec/binary/Hex.java"
+--- output ---
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.commons.codec.binary;
+
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+
+import org.apache.commons.codec.BinaryDecoder;
+import org.apache.commons.codec.BinaryEncoder;
+import org.apache.commons.codec.CharEncoding;
+import org.apache.commons.codec.DecoderException;
+import org.apache.commons.codec.EncoderException;
+
+/**
+ * Converts hexadecimal Strings. The Charset used for certain operation can be set, the default is set in
+ * {@link #DEFAULT_CHARSET_NAME}
+ *
+ * This class is thread-safe.
+ *
+ * @since 1.1
+ */
+public class Hex implements BinaryEncoder, BinaryDecoder {
+
+    /**
+     * Default charset is {@link StandardCharsets#UTF_8}.
+     *
+     * @since 1.7
+     */
+    public static final Charset DEFAULT_CHARSET = StandardCharsets.UTF_8;
+
+    /**
+     * Default charset name is {@link CharEncoding#UTF_8}.
+     *
+     * @since 1.4
+     */
+    public static final String DEFAULT_CHARSET_NAME = CharEncoding.UTF_8;
+
+    /**
+     * Used to build output as hex.
+     */
+    private static final char[] DIGITS_LOWER = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+
+    /**
+     * Used to build output as hex.
+     */
+    private static final char[] DIGITS_UPPER = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
+
+    /**
+     * Converts an array of characters representing hexadecimal values into an array of bytes of those same values. The
+     * returned array will be half the length of the passed array, as it takes two characters to represent any given
+     * byte. An exception is thrown if the passed char array has an odd number of elements.
+     *
+     * @param data An array of characters containing hexadecimal digits.
+     * @return A byte array containing binary data decoded from the supplied char array.
+     * @throws DecoderException Thrown if an odd number of characters or illegal characters are supplied.
+     */
+    public static byte[] decodeHex(final char[] data) throws DecoderException {
+        final byte[] out = new byte[data.length >> 1];
+        decodeHex(data, out, 0);
+        return out;
+    }
+
+    /**
+     * Converts an array of characters representing hexadecimal values into an array of bytes of those same values. The
+     * returned array will be half the length of the passed array, as it takes two characters to represent any given
+     * byte. An exception is thrown if the passed char array has an odd number of elements.
+     *
+     * @param data An array of characters containing hexadecimal digits.
+     * @param out A byte array to contain the binary data decoded from the supplied char array.
+     * @param outOffset The position within {@code out} to start writing the decoded bytes.
+     * @return the number of bytes written to {@code out}.
+     * @throws DecoderException Thrown if an odd number of characters or illegal characters are supplied.
+     * @since 1.15
+     */
+    public static int decodeHex(final char[] data, final byte[] out, final int outOffset) throws DecoderException {
+        final int len = data.length;
+        if ((len & 1) != 0) {
+            throw new DecoderException("Odd number of characters %,d.", len);
+        }
+        final int outLen = len >> 1;
+        if (out.length - outOffset < outLen) {
+            throw new DecoderException("Output array is not large enough to accommodate decoded data.");
+        }
+        // two characters form the hex value.
+        for (int i = outOffset, j = 0; j < len; i++) {
+            int f = toDigit(data[j], j) << 4;
+            j++;
+            f |= toDigit(data[j], j);
+            j++;
+            out[i] = (byte) (f & 0xFF);
+        }
+        return outLen;
+    }
+
+    /**
+     * Converts a String representing hexadecimal values into an array of bytes of those same values. The returned array
+     * will be half the length of the passed String, as it takes two characters to represent any given byte. An
+     * exception is thrown if the passed String has an odd number of elements.
+     *
+     * @param data A String containing hexadecimal digits.
+     * @return A byte array containing binary data decoded from the supplied char array.
+     * @throws DecoderException Thrown if an odd number of characters or illegal characters are supplied.
+     * @since 1.11
+     */
+    public static byte[] decodeHex(final String data) throws DecoderException {
+        return decodeHex(data.toCharArray());
+    }
+
+    /**
+     * Converts an array of bytes into an array of characters representing the hexadecimal values of each byte in order.
+     * The returned array will be double the length of the passed array, as it takes two characters to represent any
+     * given byte.
+     *
+     * @param data a byte[] to convert to hexadecimal characters.
+     * @return A char[] containing lower-case hexadecimal characters.
+     */
+    public static char[] encodeHex(final byte[] data) {
+        return encodeHex(data, true);
+    }
+
+    /**
+     * Converts an array of bytes into an array of characters representing the hexadecimal values of each byte in order.
+     * The returned array will be double the length of the passed array, as it takes two characters to represent any
+     * given byte.
+     *
+     * @param data        a byte[] to convert to Hex characters.
+     * @param toLowerCase {@code true} converts to lowercase, {@code false} to uppercase.
+     * @return A char[] containing hexadecimal characters in the selected case.
+     * @since 1.4
+     */
+    public static char[] encodeHex(final byte[] data, final boolean toLowerCase) {
+        return encodeHex(data, toAlphabet(toLowerCase));
+    }
+
+    /**
+     * Converts an array of bytes into an array of characters representing the hexadecimal values of each byte in order.
+     * The returned array will be double the length of the passed array, as it takes two characters to represent any
+     * given byte.
+     *
+     * @param data     a byte[] to convert to hexadecimal characters.
+     * @param toDigits the output alphabet (must contain at least 16 chars).
+     * @return A char[] containing the appropriate characters from the alphabet For best results, this should be either
+     *         upper- or lower-case hex.
+     * @since 1.4
+     */
+    protected static char[] encodeHex(final byte[] data, final char[] toDigits) {
+        final int dataLength = data.length;
+        return encodeHex(data, 0, dataLength, toDigits, new char[dataLength << 1], 0);
+    }
+
+    /**
+     * Converts an array of bytes into an array of characters representing the hexadecimal values of each byte in order.
+     *
+     * @param data a byte[] to convert to hexadecimal characters.
+     * @param dataOffset the position in {@code data} to start encoding from.
+     * @param dataLen the number of bytes from {@code dataOffset} to encode.
+     * @param toLowerCase {@code true} converts to lowercase, {@code false} to uppercase.
+     * @return A char[] containing the appropriate characters from the alphabet For best results, this should be either
+     *         upper- or lower-case hex.
+     * @since 1.15
+     */
+    public static char[] encodeHex(final byte[] data, final int dataOffset, final int dataLen, final boolean toLowerCase) {
+        return encodeHex(data, dataOffset, dataLen, toAlphabet(toLowerCase), new char[dataLen << 1], 0);
+    }
+
+    /**
+     * Converts an array of bytes into an array of characters representing the hexadecimal values of each byte in order.
+     *
+     * @param data a byte[] to convert to hexadecimal characters.
+     * @param dataOffset the position in {@code data} to start encoding from.
+     * @param dataLen the number of bytes from {@code dataOffset} to encode.
+     * @param toLowerCase {@code true} converts to lowercase, {@code false} to uppercase.
+     * @param out a char[] which will hold the resultant appropriate characters from the alphabet.
+     * @param outOffset the position within {@code out} at which to start writing the encoded characters.
+     * @since 1.15
+     */
+    public static void encodeHex(final byte[] data, final int dataOffset, final int dataLen, final boolean toLowerCase, final char[] out, final int outOffset) {
+        encodeHex(data, dataOffset, dataLen, toAlphabet(toLowerCase), out, outOffset);
+    }
+
+    /**
+     * Converts an array of bytes into an array of characters representing the hexadecimal values of each byte in order.
+     *
+     * @param data a byte[] to convert to hexadecimal characters.
+     * @param dataOffset the position in {@code data} to start encoding from.
+     * @param dataLen the number of bytes from {@code dataOffset} to encode.
+     * @param toDigits the output alphabet (must contain at least 16 chars).
+     * @param out a char[] which will hold the resultant appropriate characters from the alphabet.
+     * @param outOffset the position within {@code out} at which to start writing the encoded characters.
+     * @return the given {@code out}.
+     */
+    private static char[] encodeHex(final byte[] data, final int dataOffset, final int dataLen, final char[] toDigits, final char[] out, final int outOffset) {
+        // two characters form the hex value.
+        for (int i = dataOffset, j = outOffset; i < dataOffset + dataLen; i++) {
+            out[j++] = toDigits[(0xF0 & data[i]) >>> 4];
+            out[j++] = toDigits[0x0F & data[i]];
+        }
+        return out;
+    }
+
+    /**
+     * Converts a byte buffer into an array of characters representing the hexadecimal values of each byte in order. The
+     * returned array will be double the length of the passed array, as it takes two characters to represent any given
+     * byte.
+     *
+     * <p>All bytes identified by {@link ByteBuffer#remaining()} will be used; after this method
+     * the value {@link ByteBuffer#remaining() remaining()} will be zero.</p>
+     *
+     * @param data a byte buffer to convert to hexadecimal characters.
+     * @return A char[] containing lower-case hexadecimal characters.
+     * @since 1.11
+     */
+    public static char[] encodeHex(final ByteBuffer data) {
+        return encodeHex(data, true);
+    }
+
+    /**
+     * Converts a byte buffer into an array of characters representing the hexadecimal values of each byte in order. The
+     * returned array will be double the length of the passed array, as it takes two characters to represent any given
+     * byte.
+     *
+     * <p>All bytes identified by {@link ByteBuffer#remaining()} will be used; after this method
+     * the value {@link ByteBuffer#remaining() remaining()} will be zero.</p>
+     *
+     * @param data        a byte buffer to convert to hexadecimal characters.
+     * @param toLowerCase {@code true} converts to lowercase, {@code false} to uppercase.
+     * @return A char[] containing hexadecimal characters in the selected case.
+     * @since 1.11
+     */
+    public static char[] encodeHex(final ByteBuffer data, final boolean toLowerCase) {
+        return encodeHex(data, toAlphabet(toLowerCase));
+    }
+
+    /**
+     * Converts a byte buffer into an array of characters representing the hexadecimal values of each byte in order. The
+     * returned array will be double the length of the passed array, as it takes two characters to represent any given
+     * byte.
+     *
+     * <p>All bytes identified by {@link ByteBuffer#remaining()} will be used; after this method
+     * the value {@link ByteBuffer#remaining() remaining()} will be zero.</p>
+     *
+     * @param byteBuffer a byte buffer to convert to hexadecimal characters.
+     * @param toDigits   the output alphabet (must be at least 16 characters).
+     * @return A char[] containing the appropriate characters from the alphabet For best results, this should be either
+
+
+[14] AGENT
+The original file is a full copied fixture around a very small test. I’m going to keep the tested calls and expectations identical while removing unrelated helpers/imports so the intent of the empty-buffer case is visible.
+
+[15] COMMAND in_progress
+/bin/zsh -lc "sed -n '220,520p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-codec/src/main/java/org/apache/commons/codec/binary/Hex.java"
+
+[16] COMMAND completed
+/bin/zsh -lc "sed -n '220,520p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-codec/src/main/java/org/apache/commons/codec/binary/Hex.java"
+--- output ---
+     * byte.
+     *
+     * <p>All bytes identified by {@link ByteBuffer#remaining()} will be used; after this method
+     * the value {@link ByteBuffer#remaining() remaining()} will be zero.</p>
+     *
+     * @param data a byte buffer to convert to hexadecimal characters.
+     * @return A char[] containing lower-case hexadecimal characters.
+     * @since 1.11
+     */
+    public static char[] encodeHex(final ByteBuffer data) {
+        return encodeHex(data, true);
+    }
+
+    /**
+     * Converts a byte buffer into an array of characters representing the hexadecimal values of each byte in order. The
+     * returned array will be double the length of the passed array, as it takes two characters to represent any given
+     * byte.
+     *
+     * <p>All bytes identified by {@link ByteBuffer#remaining()} will be used; after this method
+     * the value {@link ByteBuffer#remaining() remaining()} will be zero.</p>
+     *
+     * @param data        a byte buffer to convert to hexadecimal characters.
+     * @param toLowerCase {@code true} converts to lowercase, {@code false} to uppercase.
+     * @return A char[] containing hexadecimal characters in the selected case.
+     * @since 1.11
+     */
+    public static char[] encodeHex(final ByteBuffer data, final boolean toLowerCase) {
+        return encodeHex(data, toAlphabet(toLowerCase));
+    }
+
+    /**
+     * Converts a byte buffer into an array of characters representing the hexadecimal values of each byte in order. The
+     * returned array will be double the length of the passed array, as it takes two characters to represent any given
+     * byte.
+     *
+     * <p>All bytes identified by {@link ByteBuffer#remaining()} will be used; after this method
+     * the value {@link ByteBuffer#remaining() remaining()} will be zero.</p>
+     *
+     * @param byteBuffer a byte buffer to convert to hexadecimal characters.
+     * @param toDigits   the output alphabet (must be at least 16 characters).
+     * @return A char[] containing the appropriate characters from the alphabet For best results, this should be either
+     *         upper- or lower-case hex.
+     * @since 1.11
+     */
+    protected static char[] encodeHex(final ByteBuffer byteBuffer, final char[] toDigits) {
+        return encodeHex(toByteArray(byteBuffer), toDigits);
+    }
+
+    /**
+     * Converts an array of bytes into a String representing the hexadecimal values of each byte in order. The returned
+     * String will be double the length of the passed array, as it takes two characters to represent any given byte.
+     *
+     * @param data a byte[] to convert to hexadecimal characters.
+     * @return A String containing lower-case hexadecimal characters.
+     * @since 1.4
+     */
+    public static String encodeHexString(final byte[] data) {
+        return new String(encodeHex(data));
+    }
+
+    /**
+     * Converts an array of bytes into a String representing the hexadecimal values of each byte in order. The returned
+     * String will be double the length of the passed array, as it takes two characters to represent any given byte.
+     *
+     * @param data        a byte[] to convert to hexadecimal characters.
+     * @param toLowerCase {@code true} converts to lowercase, {@code false} to uppercase.
+     * @return A String containing lower-case hexadecimal characters.
+     * @since 1.11
+     */
+    public static String encodeHexString(final byte[] data, final boolean toLowerCase) {
+        return new String(encodeHex(data, toLowerCase));
+    }
+
+    /**
+     * Converts a byte buffer into a String representing the hexadecimal values of each byte in order. The returned
+     * String will be double the length of the passed array, as it takes two characters to represent any given byte.
+     *
+     * <p>All bytes identified by {@link ByteBuffer#remaining()} will be used; after this method
+     * the value {@link ByteBuffer#remaining() remaining()} will be zero.</p>
+     *
+     * @param data a byte buffer to convert to hexadecimal characters.
+     * @return A String containing lower-case hexadecimal characters.
+     * @since 1.11
+     */
+    public static String encodeHexString(final ByteBuffer data) {
+        return new String(encodeHex(data));
+    }
+
+    /**
+     * Converts a byte buffer into a String representing the hexadecimal values of each byte in order. The returned
+     * String will be double the length of the passed array, as it takes two characters to represent any given byte.
+     *
+     * <p>All bytes identified by {@link ByteBuffer#remaining()} will be used; after this method
+     * the value {@link ByteBuffer#remaining() remaining()} will be zero.</p>
+     *
+     * @param data        a byte buffer to convert to hexadecimal characters.
+     * @param toLowerCase {@code true} converts to lowercase, {@code false} to uppercase.
+     * @return A String containing lower-case hexadecimal characters.
+     * @since 1.11
+     */
+    public static String encodeHexString(final ByteBuffer data, final boolean toLowerCase) {
+        return new String(encodeHex(data, toLowerCase));
+    }
+
+    /**
+     * Converts a boolean to an alphabet.
+     *
+     * @param toLowerCase true for lowercase, false for uppercase.
+     * @return an alphabet.
+     */
+    private static char[] toAlphabet(final boolean toLowerCase) {
+        return toLowerCase ? DIGITS_LOWER : DIGITS_UPPER;
+    }
+
+    /**
+     * Convert the byte buffer to a byte array. All bytes identified by
+     * {@link ByteBuffer#remaining()} will be used.
+     *
+     * @param byteBuffer the byte buffer.
+     * @return the byte[].
+     */
+    private static byte[] toByteArray(final ByteBuffer byteBuffer) {
+        final int remaining = byteBuffer.remaining();
+        // Use the underlying buffer if possible
+        if (byteBuffer.hasArray()) {
+            final byte[] byteArray = byteBuffer.array();
+            if (remaining == byteArray.length) {
+                byteBuffer.position(remaining);
+                return byteArray;
+            }
+        }
+        // Copy the bytes
+        final byte[] byteArray = new byte[remaining];
+        byteBuffer.get(byteArray);
+        return byteArray;
+    }
+
+    /**
+     * Converts a hexadecimal character to an integer.
+     *
+     * @param ch    A character to convert to an integer digit.
+     * @param index The index of the character in the source.
+     * @return An integer.
+     * @throws DecoderException Thrown if ch is an illegal hexadecimal character.
+     */
+    protected static int toDigit(final char ch, final int index) throws DecoderException {
+        final int digit = Character.digit(ch, 16);
+        if (digit == -1) {
+            throw new DecoderException("Illegal hexadecimal character 0x%02X at index %,d.", ch & 0xFF, index);
+        }
+        return digit;
+    }
+
+    private final Charset charset;
+
+    /**
+     * Creates a new codec with the default charset name {@link #DEFAULT_CHARSET}
+     */
+    public Hex() {
+        // use default encoding
+        this.charset = DEFAULT_CHARSET;
+    }
+
+    /**
+     * Creates a new codec with the given Charset.
+     *
+     * @param charset the charset.
+     * @since 1.7
+     */
+    public Hex(final Charset charset) {
+        this.charset = charset;
+    }
+
+    /**
+     * Creates a new codec with the given charset name.
+     *
+     * @param charsetName the charset name.
+     * @throws java.nio.charset.UnsupportedCharsetException If the named charset is unavailable.
+     * @since 1.4
+     * @since 1.7 throws UnsupportedCharsetException if the named charset is unavailable
+     */
+    public Hex(final String charsetName) {
+        this(Charset.forName(charsetName));
+    }
+
+    /**
+     * Converts an array of character bytes representing hexadecimal values into an array of bytes of those same values.
+     * The returned array will be half the length of the passed array, as it takes two characters to represent any given
+     * byte. An exception is thrown if the passed char array has an odd number of elements.
+     *
+     * @param array An array of character bytes containing hexadecimal digits.
+     * @return A byte array containing binary data decoded from the supplied byte array (representing characters).
+     * @throws DecoderException Thrown if an odd number of characters is supplied to this function.
+     * @see #decodeHex(char[])
+     */
+    @Override
+    public byte[] decode(final byte[] array) throws DecoderException {
+        return decodeHex(new String(array, getCharset()).toCharArray());
+    }
+
+    /**
+     * Converts a buffer of character bytes representing hexadecimal values into an array of bytes of those same values.
+     * The returned array will be half the length of the passed array, as it takes two characters to represent any given
+     * byte. An exception is thrown if the passed char array has an odd number of elements.
+     *
+     * <p>All bytes identified by {@link ByteBuffer#remaining()} will be used; after this method
+     * the value {@link ByteBuffer#remaining() remaining()} will be zero.</p>
+     *
+     * @param buffer An array of character bytes containing hexadecimal digits.
+     * @return A byte array containing binary data decoded from the supplied byte array (representing characters).
+     * @throws DecoderException Thrown if an odd number of characters is supplied to this function.
+     * @see #decodeHex(char[])
+     * @since 1.11
+     */
+    public byte[] decode(final ByteBuffer buffer) throws DecoderException {
+        return decodeHex(new String(toByteArray(buffer), getCharset()).toCharArray());
+    }
+
+    /**
+     * Converts a String or an array of character bytes representing hexadecimal values into an array of bytes of those
+     * same values. The returned array will be half the length of the passed String or array, as it takes two characters
+     * to represent any given byte. An exception is thrown if the passed char array has an odd number of elements.
+     *
+     * @param object A String, ByteBuffer, byte[], or an array of character bytes containing hexadecimal digits.
+     * @return A byte array containing binary data decoded from the supplied byte array (representing characters).
+     * @throws DecoderException Thrown if an odd number of characters is supplied to this function or the object is not
+     *                          a String or char[].
+     * @see #decodeHex(char[])
+     */
+    @Override
+    public Object decode(final Object object) throws DecoderException {
+        if (object instanceof String) {
+            return decode(((String) object).toCharArray());
+        }
+        if (object instanceof byte[]) {
+            return decode((byte[]) object);
+        }
+        if (object instanceof ByteBuffer) {
+            return decode((ByteBuffer) object);
+        }
+        try {
+            return decodeHex((char[]) object);
+        } catch (final ClassCastException e) {
+            throw new DecoderException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Converts an array of bytes into an array of bytes for the characters representing the hexadecimal values of each
+     * byte in order. The returned array will be double the length of the passed array, as it takes two characters to
+     * represent any given byte.
+     * <p>
+     * The conversion from hexadecimal characters to the returned bytes is performed with the charset named by
+     * {@link #getCharset()}.
+     * </p>
+     *
+     * @param array a byte[] to convert to hexadecimal characters.
+     * @return A byte[] containing the bytes of the lower-case hexadecimal characters.
+     * @since 1.7 No longer throws IllegalStateException if the charsetName is invalid.
+     * @see #encodeHex(byte[])
+     */
+    @Override
+    public byte[] encode(final byte[] array) {
+        return encodeHexString(array).getBytes(getCharset());
+    }
+
+    /**
+     * Converts byte buffer into an array of bytes for the characters representing the hexadecimal values of each byte
+     * in order. The returned array will be double the length of the passed array, as it takes two characters to
+     * represent any given byte.
+     *
+     * <p>The conversion from hexadecimal characters to the returned bytes is performed with the charset named by
+     * {@link #getCharset()}.</p>
+     *
+     * <p>All bytes identified by {@link ByteBuffer#remaining()} will be used; after this method
+     * the value {@link ByteBuffer#remaining() remaining()} will be zero.</p>
+     *
+     * @param array a byte buffer to convert to hexadecimal characters.
+     * @return A byte[] containing the bytes of the lower-case hexadecimal characters.
+     * @see #encodeHex(byte[])
+     * @since 1.11
+     */
+    public byte[] encode(final ByteBuffer array) {
+        return encodeHexString(array).getBytes(getCharset());
+    }
+
+    /**
+     * Converts a String or an array of bytes into an array of characters representing the hexadecimal values of each
+     * byte in order. The returned array will be double the length of the passed String or array, as it takes two
+     * characters to represent any given byte.
+     * <p>
+     * The conversion from hexadecimal characters to bytes to be encoded to performed with the charset named by
+     * {@link #getCharset()}.
+     * </p>
+     *
+     * @param object a String, ByteBuffer, or byte[] to convert to hexadecimal characters.
+     * @return A char[] containing lower-case hexadecimal characters.
+     * @throws EncoderException Thrown if the given object is not a String or byte[].
+     * @see #encodeHex(byte[])
+     */
+    @Override
+
+
+[17] COMMAND in_progress
+/bin/zsh -lc "sed -n '520,760p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-codec/src/main/java/org/apache/commons/codec/binary/Hex.java"
+
+[18] COMMAND completed
+/bin/zsh -lc "sed -n '520,760p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-codec/src/main/java/org/apache/commons/codec/binary/Hex.java"
+--- output ---
+    @Override
+    public Object encode(final Object object) throws EncoderException {
+        final byte[] byteArray;
+        if (object instanceof String) {
+            byteArray = ((String) object).getBytes(getCharset());
+        } else if (object instanceof ByteBuffer) {
+            byteArray = toByteArray((ByteBuffer) object);
+        } else {
+            try {
+                byteArray = (byte[]) object;
+            } catch (final ClassCastException e) {
+                throw new EncoderException(e.getMessage(), e);
+            }
+        }
+        return encodeHex(byteArray);
+    }
+
+    /**
+     * Gets the charset.
+     *
+     * @return the charset.
+     * @since 1.7
+     */
+    public Charset getCharset() {
+        return this.charset;
+    }
+
+    /**
+     * Gets the charset name.
+     *
+     * @return the charset name.
+     * @since 1.4
+     */
+    public String getCharsetName() {
+        return this.charset.name();
+    }
+
+    /**
+     * Returns a string representation of the object, which includes the charset name.
+     *
+     * @return a string representation of the object.
+     */
+    @Override
+    public String toString() {
+        return super.toString() + "[charsetName=" + this.charset + "]";
+    }
+}
+
+
+[19] AGENT
+I’m writing a focused replacement test class in the working directory now. The assertions remain byte-for-byte equivalent in their calls: `Hex.encodeHex(allocate(0))` and `new Hex().encode(allocate(0))` still compare against empty arrays.
+
+[20] FILE_CHANGE in_progress
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-codec/manual/testcases/HexTest/testEncodeHexByteBufferEmpty/HexTest_testEncodeHexByteBufferEmpty.java
+
+[21] FILE_CHANGE completed
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-codec/manual/testcases/HexTest/testEncodeHexByteBufferEmpty/HexTest_testEncodeHexByteBufferEmpty.java
+
+[22] AGENT
+The refactor is in place. I’m running the required compile check exactly through `bash compile.sh`; if javac reports anything, I’ll make only the targeted repair.
+
+[23] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[24] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[25] AGENT
+Implemented the focused, more understandable test in `HexTest_testEncodeHexByteBufferEmpty.java`.
+
+Verification: `bash compile.sh` returned `COMPILE_OK`.

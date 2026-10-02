@@ -1,0 +1,15 @@
+package org.threeten.extra.chrono;
+
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import org.junit.jupiter.api.Test;
+
+public class TestAccountingChronology_test_date_of_no_chronology {
+
+    @Test
+    public void test_date_of_no_chronology() {
+        // AccountingDate.of requires a non-null chronology; passing null must throw
+        //noinspection DataFlowIssue - testing nulls
+        assertThrows(NullPointerException.class, () -> AccountingDate.of(null, 2012, 1, 1));
+    }
+}

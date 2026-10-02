@@ -1,0 +1,23 @@
+package org.apache.commons.cli;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import java.util.List;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class Options_ESTest_test11 extends Options_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test11() throws Throwable {
+        Options options0 = new Options();
+        OptionGroup optionGroup0 = new OptionGroup();
+        optionGroup0.setRequired(true);
+        Options options1 = options0.addOptionGroup(optionGroup0);
+        assertSame(options0, options1);
+    }
+}

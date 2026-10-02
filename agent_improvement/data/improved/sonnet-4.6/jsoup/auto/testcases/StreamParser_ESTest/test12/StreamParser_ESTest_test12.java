@@ -1,0 +1,33 @@
+package org.jsoup.parser;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import java.util.Iterator;
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.regex.Pattern;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.nodes.Node;
+import org.jsoup.select.Evaluator;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class StreamParser_ESTest_test12 extends StreamParser_ESTest_scaffolding {
+
+    // Verifies that a newly constructed StreamParser exposes a non-null iterator,
+    // confirming the iterator() method is usable even before any input has been parsed.
+    @Test(timeout = 4000)
+    public void test_iteratorIsNonNullOnFreshStreamParser() throws Throwable {
+        Parser htmlParser = Parser.htmlParser();
+        StreamParser streamParser = new StreamParser(htmlParser);
+
+        Iterator<Element> elementIterator = streamParser.iterator();
+
+        assertNotNull(elementIterator);
+    }
+}

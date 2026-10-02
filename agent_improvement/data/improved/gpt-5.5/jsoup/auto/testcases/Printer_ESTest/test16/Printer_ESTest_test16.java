@@ -1,0 +1,36 @@
+package org.jsoup.nodes;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.evosuite.runtime.mock.java.io.MockFileWriter;
+import org.jsoup.internal.QuietAppendable;
+import org.jsoup.parser.Parser;
+import org.jsoup.parser.Tag;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class Printer_ESTest_test16 extends Printer_ESTest_scaffolding {
+
+    private static final String HTML_WITH_UNKNOWN_TAG = ";LsK[I<HGG0N`Y>jC@@";
+    private static final String BASE_URI_WITH_CONTROL_CHARACTER = "6lKNy";
+    private static final String EXPECTED_PRETTY_PRINTED_DOCUMENT =
+            "<html>\n"
+                    + " <head></head>\n"
+                    + " <body>\n"
+                    + "  ;LsK[I<hgg0n`y>jC@@</hgg0n`y>\n"
+                    + " </body>\n"
+                    + "</html>";
+
+    @Test(timeout = 4000)
+    public void test16() throws Throwable {
+        Document parsedDocument = Parser.parse(HTML_WITH_UNKNOWN_TAG, BASE_URI_WITH_CONTROL_CHARACTER);
+
+        String prettyPrintedDocument = parsedDocument.toString();
+
+        assertEquals(EXPECTED_PRETTY_PRINTED_DOCUMENT, prettyPrintedDocument);
+    }
+}

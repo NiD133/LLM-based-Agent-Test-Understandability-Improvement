@@ -1,0 +1,1934 @@
+{
+  "status": "COMPILE_SUCCESS",
+  "attempts_used": 1,
+  "model": "claude-opus-4-8",
+  "prompt_version": "understandability_improvement_constraints",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `WordUtilsTest.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-text/src/test/java/org/apache/commons/text/WordUtilsTest.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n"
+    },
+    {
+      "role": "assistant",
+      "content": "Now I'll write the improved, more understandable version of the test, preserving all behavior.Compilation succeeded (`COMPILE_OK`; the deprecation note is from the original `isDelimiter` tests and is expected).\n\nI refactored `WordUtilsTest.java` for understandability while preserving exact runtime behavior — every method is still called with the same arguments and the same expected outcomes. Key improvements:\n\n- **Logical grouping**: tests reordered and separated by the CUT method they exercise (`abbreviate`, `capitalize`, `capitalizeFully`, `containsAllWords`, `initials`, `isDelimiter`, `swapCase`, `uncapitalize`, `wrap`, regressions, constructor) with section banners.\n- **`@DisplayName` on every test** describing the intent in plain language.\n- **Explanatory inline comments** clarifying non-obvious cases (whole-word matching, `upper == -1` meaning \"no limit\", suffix-only-when-shortened, leading/trailing space handling, locale independence, etc.).\n- **Clearer naming**: the generic `chars`/`array` locals are renamed to `delimiters`.\n- **Self-documenting surrogate-pair constants** (`GOTHIC_A`, `GOTHIC_DELIM_1`, …) replacing raw `\\uD800\\uDFxx` escapes — same code points, just readable. The char-array delimiters are derived from those constants (`GOTHIC_DELIM_1.toCharArray()`), yielding identical arrays.\n- Inline `\\u01C8`/`\\u01C9` escapes in `swapCase` replaced with the actual title/lower-case characters (identical values, UTF-8 source)."
+    }
+  ],
+  "last_code": "/*\n * Licensed to the Apache Software Foundation (ASF) under one or more\n * contributor license agreements.  See the NOTICE file distributed with\n * this work for additional information regarding copyright ownership.\n * The ASF licenses this file to You under the Apache License, Version 2.0\n * (the \"License\"); you may not use this file except in compliance with\n * the License.  You may obtain a copy of the License at\n *\n *      https://www.apache.org/licenses/LICENSE-2.0\n *\n * Unless required by applicable law or agreed to in writing, software\n * distributed under the License is distributed on an \"AS IS\" BASIS,\n * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n * See the License for the specific language governing permissions and\n * limitations under the License.\n */\npackage org.apache.commons.text;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nimport static org.junit.jupiter.api.Assertions.assertFalse;\nimport static org.junit.jupiter.api.Assertions.assertNotNull;\nimport static org.junit.jupiter.api.Assertions.assertNull;\nimport static org.junit.jupiter.api.Assertions.assertThrows;\nimport static org.junit.jupiter.api.Assertions.assertTimeout;\nimport static org.junit.jupiter.api.Assertions.assertTrue;\n\nimport java.lang.reflect.Constructor;\nimport java.lang.reflect.Modifier;\nimport java.time.Duration;\nimport java.util.stream.IntStream;\n\nimport org.apache.commons.lang3.ArrayUtils;\nimport org.apache.commons.lang3.StringUtils;\nimport org.junit.jupiter.api.DisplayName;\nimport org.junit.jupiter.api.Test;\nimport org.junitpioneer.jupiter.DefaultLocale;\n\n/**\n * Tests {@link WordUtils}.\n */\nclass WordUtilsTest {\n\n    /** Every Unicode whitespace character, concatenated; used to verify whitespace is preserved verbatim. */\n    private static final String WHITESPACE = IntStream.rangeClosed(Character.MIN_CODE_POINT, Character.MAX_CODE_POINT).filter(Character::isWhitespace)\n            .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append).toString();\n\n    // Supplementary-plane (surrogate-pair) characters used by the surrogate-pair tests.\n    // Each constant is a single Unicode code point encoded as a UTF-16 surrogate pair.\n    /** U+10300 GOTHIC LETTER AHSA. */\n    private static final String GOTHIC_A = \"𐌀\";\n    /** U+10301 GOTHIC LETTER BAIRKAN. */\n    private static final String GOTHIC_B = \"𐌁\";\n    /** U+10302 GOTHIC LETTER GIBA. */\n    private static final String GOTHIC_C = \"𐌂\";\n    /** U+10303 GOTHIC LETTER DAGS. */\n    private static final String GOTHIC_D = \"𐌃\";\n    /** U+10314 GOTHIC LETTER PAIRTHRA; used as a supplementary-plane delimiter. */\n    private static final String GOTHIC_DELIM_1 = \"𐌔\";\n    /** U+10318 GOTHIC LETTER QAIRTHRA; used as a second supplementary-plane delimiter. */\n    private static final String GOTHIC_DELIM_2 = \"𐌘\";\n\n    // -----------------------------------------------------------------------\n    // abbreviate\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"abbreviate rejects an upper limit below -1\")\n    void testAbbreviateForLowerThanMinusOneValues() {\n        assertThrows(IllegalArgumentException.class, () -> WordUtils.abbreviate(\"01 23 45 67 89\", 9, -10, null));\n    }\n\n    @Test\n    @DisplayName(\"abbreviate breaks at the first space at or after the lower limit\")\n    void testAbbreviateForLowerValue() {\n        assertEquals(\"012\", WordUtils.abbreviate(\"012 3456789\", 0, 5, null));\n        assertEquals(\"01234\", WordUtils.abbreviate(\"01234 56789\", 5, 10, null));\n        // upper == -1 means \"no upper limit\", so break at the first space after lower\n        assertEquals(\"01 23 45 67\", WordUtils.abbreviate(\"01 23 45 67 89\", 9, -1, null));\n        // no space between lower (9) and upper (10), so truncate hard at upper\n        assertEquals(\"01 23 45 6\", WordUtils.abbreviate(\"01 23 45 67 89\", 9, 10, null));\n        // lower beyond the string length leaves the string untouched\n        assertEquals(\"0123456789\", WordUtils.abbreviate(\"0123456789\", 15, 20, null));\n    }\n\n    @Test\n    @DisplayName(\"abbreviate appends the suffix only when the string is actually shortened\")\n    void testAbbreviateForLowerValueAndAppendedString() {\n        assertEquals(\"012\", WordUtils.abbreviate(\"012 3456789\", 0, 5, null));\n        assertEquals(\"01234-\", WordUtils.abbreviate(\"01234 56789\", 5, 10, \"-\"));\n        assertEquals(\"01 23 45 67abc\", WordUtils.abbreviate(\"01 23 45 67 89\", 9, -1, \"abc\"));\n        assertEquals(\"01 23 45 6\", WordUtils.abbreviate(\"01 23 45 67 89\", 9, 10, \"\"));\n    }\n\n    @Test\n    @DisplayName(\"abbreviate handles null and empty input\")\n    void testAbbreviateForNullAndEmptyString() {\n        assertNull(WordUtils.abbreviate(null, 1, -1, \"\"));\n        assertEquals(StringUtils.EMPTY, WordUtils.abbreviate(\"\", 1, -1, \"\"));\n        assertEquals(\"\", WordUtils.abbreviate(\"0123456790\", 0, 0, \"\"));\n        assertEquals(\"\", WordUtils.abbreviate(\" 0123456790\", 0, -1, \"\"));\n    }\n\n    @Test\n    @DisplayName(\"abbreviate truncates at the upper limit when no space is available\")\n    void testAbbreviateForUpperLimit() {\n        assertEquals(\"01234\", WordUtils.abbreviate(\"0123456789\", 0, 5, \"\"));\n        assertEquals(\"012\", WordUtils.abbreviate(\"012 3456789\", 2, 5, \"\"));\n        assertEquals(\"0123456789\", WordUtils.abbreviate(\"0123456789\", 0, -1, \"\"));\n    }\n\n    @Test\n    @DisplayName(\"abbreviate at the upper limit also appends the suffix when shortened\")\n    void testAbbreviateForUpperLimitAndAppendedString() {\n        assertEquals(\"01234-\", WordUtils.abbreviate(\"0123456789\", 0, 5, \"-\"));\n        assertEquals(\"012\", WordUtils.abbreviate(\"012 3456789\", 2, 5, null));\n        assertEquals(\"0123456789\", WordUtils.abbreviate(\"0123456789\", 0, -1, \"\"));\n    }\n\n    @Test\n    @DisplayName(\"abbreviate rejects an upper limit below the lower limit\")\n    void testAbbreviateUpperLessThanLowerValues() {\n        assertThrows(IllegalArgumentException.class, () -> WordUtils.abbreviate(\"0123456789\", 5, 2, \"\"));\n    }\n\n    @Test\n    @DisplayName(\"LANG-673: abbreviate honors lower/upper limits larger than the string\")\n    void testLANG673() {\n        assertEquals(\"01\", WordUtils.abbreviate(\"01 23 45 67 89\", 0, 40, \"\"));\n        assertEquals(\"01 23 45 67\", WordUtils.abbreviate(\"01 23 45 67 89\", 10, 40, \"\"));\n        assertEquals(\"01 23 45 67 89\", WordUtils.abbreviate(\"01 23 45 67 89\", 40, 40, \"\"));\n    }\n\n    // -----------------------------------------------------------------------\n    // capitalize\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"capitalize uppercases the first letter of each word, leaving the rest untouched\")\n    void testCapitalize_String() {\n        // null / empty / blank are returned unchanged\n        assertNull(WordUtils.capitalize(null));\n        assertEquals(\"\", WordUtils.capitalize(\"\"));\n        assertEquals(\"  \", WordUtils.capitalize(\"  \"));\n\n        assertEquals(\"I\", WordUtils.capitalize(\"I\"));\n        assertEquals(\"I\", WordUtils.capitalize(\"i\"));\n        assertEquals(\"I Am Here 123\", WordUtils.capitalize(\"i am here 123\"));\n        assertEquals(\"I Am Here 123\", WordUtils.capitalize(\"I Am Here 123\"));\n        // already-uppercase tails are preserved\n        assertEquals(\"I Am HERE 123\", WordUtils.capitalize(\"i am HERE 123\"));\n        assertEquals(\"I AM HERE 123\", WordUtils.capitalize(\"I AM HERE 123\"));\n    }\n\n    @Test\n    @DisplayName(\"capitalize uses a custom delimiter set to mark word boundaries\")\n    void testCapitalizeWithDelimiters_String() {\n        assertNull(WordUtils.capitalize(null, null));\n        assertEquals(\"\", WordUtils.capitalize(\"\", ArrayUtils.EMPTY_CHAR_ARRAY));\n        assertEquals(\"  \", WordUtils.capitalize(\"  \", ArrayUtils.EMPTY_CHAR_ARRAY));\n\n        char[] delimiters = { '-', '+', ' ', '@' };\n        assertEquals(\"I\", WordUtils.capitalize(\"I\", delimiters));\n        assertEquals(\"I\", WordUtils.capitalize(\"i\", delimiters));\n        assertEquals(\"I-Am Here+123\", WordUtils.capitalize(\"i-am here+123\", delimiters));\n        assertEquals(\"I Am+Here-123\", WordUtils.capitalize(\"I Am+Here-123\", delimiters));\n        assertEquals(\"I+Am-HERE 123\", WordUtils.capitalize(\"i+am-HERE 123\", delimiters));\n        assertEquals(\"I-AM HERE+123\", WordUtils.capitalize(\"I-AM HERE+123\", delimiters));\n\n        // with '.' as the only delimiter, a space is no longer a word boundary\n        delimiters = new char[] { '.' };\n        assertEquals(\"I aM.Fine\", WordUtils.capitalize(\"i aM.fine\", delimiters));\n        // null delimiters fall back to whitespace\n        assertEquals(\"I Am.fine\", WordUtils.capitalize(\"i am.fine\", null));\n    }\n\n    // -----------------------------------------------------------------------\n    // capitalizeFully\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"capitalizeFully is locale-independent (regression for Turkish dotless-i)\")\n    @DefaultLocale(language = \"tr\", country = \"TR\")\n    void testCapitalizeFully_LocaleIndependent() {\n        // Turkish lower-cases 'I' (U+0049) to dotless 'i' (U+0131), which would otherwise leak into the result.\n        assertEquals(\"Heli World\", WordUtils.capitalizeFully(\"HELI WORLD\"));\n        assertEquals(\"I Am Here 123\", WordUtils.capitalizeFully(\"I AM HERE 123\"));\n    }\n\n    @Test\n    @DisplayName(\"capitalizeFully uppercases the first letter and lowercases the rest of each word\")\n    void testCapitalizeFully_String() {\n        assertNull(WordUtils.capitalizeFully(null));\n        assertEquals(\"\", WordUtils.capitalizeFully(\"\"));\n        assertEquals(\"  \", WordUtils.capitalizeFully(\"  \"));\n        assertEquals(\"I\", WordUtils.capitalizeFully(\"I\"));\n        assertEquals(\"I\", WordUtils.capitalizeFully(\"i\"));\n        assertEquals(\"I Am Here 123\", WordUtils.capitalizeFully(\"i am here 123\"));\n        assertEquals(\"I Am Here 123\", WordUtils.capitalizeFully(\"I Am Here 123\"));\n        // unlike capitalize, the tail of each word is forced to lower case\n        assertEquals(\"I Am Here 123\", WordUtils.capitalizeFully(\"i am HERE 123\"));\n        assertEquals(\"I Am Here 123\", WordUtils.capitalizeFully(\"I AM HERE 123\"));\n        assertEquals(\"Alphabet\", WordUtils.capitalizeFully(\"alphabet\")); // single word\n        // any whitespace character (tab, newline) separates words\n        assertEquals(\"A\\tB\\nC D\", WordUtils.capitalizeFully(\"a\\tb\\nc d\"));\n        assertEquals(\"And \\tBut \\nCleat  Dome\", WordUtils.capitalizeFully(\"and \\tbut \\ncleat  dome\"));\n        // an all-whitespace string is returned verbatim\n        assertEquals(WHITESPACE, WordUtils.capitalizeFully(WHITESPACE));\n        assertEquals(\"A\" + WHITESPACE + \"B\", WordUtils.capitalizeFully(\"a\" + WHITESPACE + \"b\"));\n    }\n\n    @Test\n    @DisplayName(\"TEXT-88: capitalizeFully with an empty delimiter array makes the whole string one word\")\n    void testCapitalizeFully_Text88() {\n        assertEquals(\"I am fine now\", WordUtils.capitalizeFully(\"i am fine now\", new char[] {}));\n    }\n\n    @Test\n    @DisplayName(\"capitalizeFully uses a custom delimiter set to mark word boundaries\")\n    void testCapitalizeFullyWithDelimiters_String() {\n        assertNull(WordUtils.capitalizeFully(null, null));\n        assertEquals(\"\", WordUtils.capitalizeFully(\"\", ArrayUtils.EMPTY_CHAR_ARRAY));\n        assertEquals(\"  \", WordUtils.capitalizeFully(\"  \", ArrayUtils.EMPTY_CHAR_ARRAY));\n\n        char[] delimiters = { '-', '+', ' ', '@' };\n        assertEquals(\"I\", WordUtils.capitalizeFully(\"I\", delimiters));\n        assertEquals(\"I\", WordUtils.capitalizeFully(\"i\", delimiters));\n        assertEquals(\"I-Am Here+123\", WordUtils.capitalizeFully(\"i-am here+123\", delimiters));\n        assertEquals(\"I Am+Here-123\", WordUtils.capitalizeFully(\"I Am+Here-123\", delimiters));\n        assertEquals(\"I+Am-Here 123\", WordUtils.capitalizeFully(\"i+am-HERE 123\", delimiters));\n        assertEquals(\"I-Am Here+123\", WordUtils.capitalizeFully(\"I-AM HERE+123\", delimiters));\n\n        // with '.' as the only delimiter, a space is no longer a word boundary\n        delimiters = new char[] { '.' };\n        assertEquals(\"I am.Fine\", WordUtils.capitalizeFully(\"i aM.fine\", delimiters));\n        // null delimiters fall back to whitespace\n        assertEquals(\"I Am.fine\", WordUtils.capitalizeFully(\"i am.fine\", null));\n        assertEquals(\"Alphabet\", WordUtils.capitalizeFully(\"alphabet\", null)); // single word\n        assertEquals(\"Alphabet\", WordUtils.capitalizeFully(\"alphabet\", new char[] { '!' })); // no matching delim\n    }\n\n    // -----------------------------------------------------------------------\n    // containsAllWords\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"containsAllWords requires every whole word to be present\")\n    void testContainsAllWords_StringString() {\n        // a null/empty/blank target text never contains any word\n        assertFalse(WordUtils.containsAllWords(null));\n        assertFalse(WordUtils.containsAllWords(null, \"\"));\n        assertFalse(WordUtils.containsAllWords(null, \"ab\"));\n\n        assertFalse(WordUtils.containsAllWords(\"\"));\n        assertFalse(WordUtils.containsAllWords(\"\", (String) null));\n        assertFalse(WordUtils.containsAllWords(\"\", \"\"));\n        assertFalse(WordUtils.containsAllWords(\"\", \"ab\"));\n\n        // no search words, or a null/empty search word, yields false\n        assertFalse(WordUtils.containsAllWords(\"foo\"));\n        assertFalse(WordUtils.containsAllWords(\"foo\", (String) null));\n        assertFalse(WordUtils.containsAllWords(\"bar\", \"\"));\n        // \"by\" is a substring of \"zzabyycdxx\" but not a whole word\n        assertFalse(WordUtils.containsAllWords(\"zzabyycdxx\", \"by\"));\n        assertTrue(WordUtils.containsAllWords(\"lorem ipsum dolor sit amet\", \"ipsum\", \"lorem\", \"dolor\"));\n        // any null among the search words fails the whole check\n        assertFalse(WordUtils.containsAllWords(\"lorem ipsum dolor sit amet\", \"ipsum\", null, \"lorem\", \"dolor\"));\n        assertFalse(WordUtils.containsAllWords(\"lorem ipsum null dolor sit amet\", \"ipsum\", null, \"lorem\", \"dolor\"));\n        assertFalse(WordUtils.containsAllWords(\"ab\", \"b\"));\n        assertFalse(WordUtils.containsAllWords(\"ab\", \"z\"));\n        // regex metacharacters in the search word are treated literally\n        assertFalse(WordUtils.containsAllWords(\"ab\", \"[\"));\n        assertFalse(WordUtils.containsAllWords(\"ab\", \"]\"));\n        assertFalse(WordUtils.containsAllWords(\"ab\", \"*\"));\n        assertTrue(WordUtils.containsAllWords(\"ab x\", \"ab\", \"x\"));\n    }\n\n    @Test\n    @DisplayName(\"containsAllWords returns false for a null CharSequence search word\")\n    void testContainsAllWordsWithNull() {\n        assertFalse(WordUtils.containsAllWords(\"M\", (CharSequence) null));\n    }\n\n    // -----------------------------------------------------------------------\n    // initials\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"initials collects the first character of each whitespace-separated word\")\n    void testInitials_String() {\n        assertNull(WordUtils.initials(null));\n        assertEquals(\"\", WordUtils.initials(\"\"));\n        assertEquals(\"\", WordUtils.initials(\"  \"));\n\n        assertEquals(\"I\", WordUtils.initials(\"I\"));\n        assertEquals(\"i\", WordUtils.initials(\"i\")); // case is preserved\n        assertEquals(\"BJL\", WordUtils.initials(\"Ben John Lee\"));\n        assertEquals(\"BJL\", WordUtils.initials(\"   Ben \\n   John\\tLee\\t\"));\n        // '.' is not whitespace, so \"J.Lee\" is a single word\n        assertEquals(\"BJ\", WordUtils.initials(\"Ben J.Lee\"));\n        assertEquals(\"BJ.L\", WordUtils.initials(\" Ben   John  . Lee\"));\n        assertEquals(\"iah1\", WordUtils.initials(\"i am here 123\"));\n    }\n\n    @Test\n    @DisplayName(\"initials honors the supplied delimiter array (null, empty, and several explicit sets)\")\n    void testInitials_String_charArray() {\n        // null delimiters => whitespace is used as the boundary\n        char[] delimiters = null;\n        assertNull(WordUtils.initials(null, delimiters));\n        assertEquals(\"\", WordUtils.initials(\"\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"  \", delimiters));\n        assertEquals(\"I\", WordUtils.initials(\"I\", delimiters));\n        assertEquals(\"i\", WordUtils.initials(\"i\", delimiters));\n        assertEquals(\"S\", WordUtils.initials(\"SJC\", delimiters));\n        assertEquals(\"BJL\", WordUtils.initials(\"Ben John Lee\", delimiters));\n        assertEquals(\"BJL\", WordUtils.initials(\"   Ben \\n   John\\tLee\\t\", delimiters));\n        assertEquals(\"BJ\", WordUtils.initials(\"Ben J.Lee\", delimiters));\n        assertEquals(\"BJ.L\", WordUtils.initials(\" Ben   John  . Lee\", delimiters));\n        assertEquals(\"KO\", WordUtils.initials(\"Kay O'Murphy\", delimiters));\n        assertEquals(\"iah1\", WordUtils.initials(\"i am here 123\", delimiters));\n\n        // empty delimiters => there are no word boundaries, so the result is empty\n        delimiters = ArrayUtils.EMPTY_CHAR_ARRAY;\n        assertNull(WordUtils.initials(null, delimiters));\n        assertEquals(\"\", WordUtils.initials(\"\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"  \", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"I\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"i\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"SJC\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"Ben John Lee\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"   Ben \\n   John\\tLee\\t\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"Ben J.Lee\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\" Ben   John  . Lee\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"Kay O'Murphy\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"i am here 123\", delimiters));\n\n        // space as the only delimiter\n        delimiters = \" \".toCharArray();\n        assertNull(WordUtils.initials(null, delimiters));\n        assertEquals(\"\", WordUtils.initials(\"\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"  \", delimiters));\n        assertEquals(\"I\", WordUtils.initials(\"I\", delimiters));\n        assertEquals(\"i\", WordUtils.initials(\"i\", delimiters));\n        assertEquals(\"S\", WordUtils.initials(\"SJC\", delimiters));\n        assertEquals(\"BJL\", WordUtils.initials(\"Ben John Lee\", delimiters));\n        assertEquals(\"BJ\", WordUtils.initials(\"Ben J.Lee\", delimiters));\n        // tab/newline are not delimiters here, so they become part of the \"initial\"\n        assertEquals(\"B\\nJ\", WordUtils.initials(\"   Ben \\n   John\\tLee\\t\", delimiters));\n        assertEquals(\"BJ.L\", WordUtils.initials(\" Ben   John  . Lee\", delimiters));\n        assertEquals(\"KO\", WordUtils.initials(\"Kay O'Murphy\", delimiters));\n        assertEquals(\"iah1\", WordUtils.initials(\"i am here 123\", delimiters));\n\n        // space and dot as delimiters\n        delimiters = \" .\".toCharArray();\n        assertNull(WordUtils.initials(null, delimiters));\n        assertEquals(\"\", WordUtils.initials(\"\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"  \", delimiters));\n        assertEquals(\"I\", WordUtils.initials(\"I\", delimiters));\n        assertEquals(\"i\", WordUtils.initials(\"i\", delimiters));\n        assertEquals(\"S\", WordUtils.initials(\"SJC\", delimiters));\n        assertEquals(\"BJL\", WordUtils.initials(\"Ben John Lee\", delimiters));\n        assertEquals(\"BJL\", WordUtils.initials(\"Ben J.Lee\", delimiters));\n        assertEquals(\"BJL\", WordUtils.initials(\" Ben   John  . Lee\", delimiters));\n        assertEquals(\"KO\", WordUtils.initials(\"Kay O'Murphy\", delimiters));\n        assertEquals(\"iah1\", WordUtils.initials(\"i am here 123\", delimiters));\n\n        // space, dot and apostrophe as delimiters\n        delimiters = \" .'\".toCharArray();\n        assertNull(WordUtils.initials(null, delimiters));\n        assertEquals(\"\", WordUtils.initials(\"\", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"  \", delimiters));\n        assertEquals(\"I\", WordUtils.initials(\"I\", delimiters));\n        assertEquals(\"i\", WordUtils.initials(\"i\", delimiters));\n        assertEquals(\"S\", WordUtils.initials(\"SJC\", delimiters));\n        assertEquals(\"BJL\", WordUtils.initials(\"Ben John Lee\", delimiters));\n        assertEquals(\"BJL\", WordUtils.initials(\"Ben J.Lee\", delimiters));\n        assertEquals(\"BJL\", WordUtils.initials(\" Ben   John  . Lee\", delimiters));\n        // apostrophe now splits \"O'Murphy\" into two words\n        assertEquals(\"KOM\", WordUtils.initials(\"Kay O'Murphy\", delimiters));\n        assertEquals(\"iah1\", WordUtils.initials(\"i am here 123\", delimiters));\n\n        // letters/digits as delimiters: the character *after* each delimiter becomes an initial\n        delimiters = \"SIJo1\".toCharArray();\n        assertNull(WordUtils.initials(null, delimiters));\n        assertEquals(\"\", WordUtils.initials(\"\", delimiters));\n        assertEquals(\" \", WordUtils.initials(\"  \", delimiters));\n        assertEquals(\"\", WordUtils.initials(\"I\", delimiters));\n        assertEquals(\"i\", WordUtils.initials(\"i\", delimiters));\n        assertEquals(\"C\", WordUtils.initials(\"SJC\", delimiters));\n        assertEquals(\"Bh\", WordUtils.initials(\"Ben John Lee\", delimiters));\n        assertEquals(\"B.\", WordUtils.initials(\"Ben J.Lee\", delimiters));\n        assertEquals(\" h\", WordUtils.initials(\" Ben   John  . Lee\", delimiters));\n        assertEquals(\"K\", WordUtils.initials(\"Kay O'Murphy\", delimiters));\n        assertEquals(\"i2\", WordUtils.initials(\"i am here 123\", delimiters));\n    }\n\n    @Test\n    @DisplayName(\"initials handles supplementary-plane (surrogate-pair) characters and delimiters\")\n    void testInitialsSurrogatePairs() {\n        // Default delimiter (space): take the first code point of each word\n        assertEquals(GOTHIC_A + GOTHIC_C, WordUtils.initials(GOTHIC_A + GOTHIC_B + \" \" + GOTHIC_C + GOTHIC_D));\n        assertEquals(GOTHIC_A + GOTHIC_C, WordUtils.initials(GOTHIC_A + GOTHIC_B + \" \" + GOTHIC_C + GOTHIC_D, null));\n        assertEquals(GOTHIC_A + GOTHIC_C, WordUtils.initials(GOTHIC_A + \" \" + GOTHIC_C + \" \", null));\n\n        // BMP (UTF-16) characters as delimiters\n        assertEquals(GOTHIC_A + GOTHIC_C, WordUtils.initials(GOTHIC_A + GOTHIC_B + \".\" + GOTHIC_C + GOTHIC_D, new char[] { '.' }));\n        assertEquals(GOTHIC_A + GOTHIC_C, WordUtils.initials(GOTHIC_A + GOTHIC_B + \"A\" + GOTHIC_C + GOTHIC_D, new char[] { 'A' }));\n\n        // Supplementary-plane (UTF-32) characters as delimiters\n        assertEquals(GOTHIC_A + GOTHIC_C,\n                WordUtils.initials(GOTHIC_A + GOTHIC_B + GOTHIC_DELIM_1 + GOTHIC_C + GOTHIC_D, GOTHIC_DELIM_1.toCharArray()));\n        assertEquals(GOTHIC_A + GOTHIC_C,\n                WordUtils.initials(GOTHIC_A + GOTHIC_B + GOTHIC_DELIM_1 + GOTHIC_DELIM_2 + GOTHIC_C + GOTHIC_D,\n                        (GOTHIC_DELIM_1 + GOTHIC_DELIM_2).toCharArray()));\n    }\n\n    // -----------------------------------------------------------------------\n    // isDelimiter (deprecated)\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"isDelimiter(char, ...) treats null delimiters as whitespace\")\n    void testIsDelimiter() {\n        // null delimiters => whitespace check\n        assertFalse(WordUtils.isDelimiter('.', null));\n        assertTrue(WordUtils.isDelimiter(' ', null));\n\n        // explicit single delimiter\n        assertFalse(WordUtils.isDelimiter(' ', new char[] { '.' }));\n        assertTrue(WordUtils.isDelimiter('.', new char[] { '.' }));\n\n        // explicit delimiter set\n        assertFalse(WordUtils.isDelimiter(' ', new char[] { '.', '_', 'a' }));\n        assertTrue(WordUtils.isDelimiter('.', new char[] { '.', '_', 'a', '.' }));\n    }\n\n    @Test\n    @DisplayName(\"isDelimiter(int, ...) behaves like the char overload for code points\")\n    void testIsDelimiterCodePoint() {\n        assertFalse(WordUtils.isDelimiter((int) '.', null));\n        assertTrue(WordUtils.isDelimiter((int) ' ', null));\n\n        assertFalse(WordUtils.isDelimiter((int) ' ', new char[] { '.' }));\n        assertTrue(WordUtils.isDelimiter((int) '.', new char[] { '.' }));\n\n        assertFalse(WordUtils.isDelimiter((int) ' ', new char[] { '.', '_', 'a' }));\n        assertTrue(WordUtils.isDelimiter((int) '.', new char[] { '.', '_', 'a', '.' }));\n    }\n\n    // -----------------------------------------------------------------------\n    // swapCase\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"swapCase flips the case of each letter, title-casing word-initial lower-case letters\")\n    void testSwapCase_String() {\n        assertNull(WordUtils.swapCase(null));\n        assertEquals(\"\", WordUtils.swapCase(\"\"));\n        assertEquals(\"  \", WordUtils.swapCase(\"  \"));\n\n        assertEquals(\"i\", WordUtils.swapCase(\"I\"));\n        assertEquals(\"I\", WordUtils.swapCase(\"i\"));\n        assertEquals(\"I AM HERE 123\", WordUtils.swapCase(\"i am here 123\"));\n        assertEquals(\"i aM hERE 123\", WordUtils.swapCase(\"I Am Here 123\"));\n        assertEquals(\"I AM here 123\", WordUtils.swapCase(\"i am HERE 123\"));\n        assertEquals(\"i am here 123\", WordUtils.swapCase(\"I AM HERE 123\"));\n\n        // a title-case character (U+01C8) swaps to its lower-case form (U+01C9)\n        final String input = \"This String contains a TitleCase character: ǈ\";\n        final String expected = \"tHIS sTRING CONTAINS A tITLEcASE CHARACTER: ǉ\";\n        assertEquals(expected, WordUtils.swapCase(input));\n    }\n\n    // -----------------------------------------------------------------------\n    // uncapitalize\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"uncapitalize lowercases the first letter of each word, leaving the rest untouched\")\n    void testUncapitalize_String() {\n        assertNull(WordUtils.uncapitalize(null));\n        assertEquals(\"\", WordUtils.uncapitalize(\"\"));\n        assertEquals(\"  \", WordUtils.uncapitalize(\"  \"));\n        assertEquals(\"i\", WordUtils.uncapitalize(\"I\"));\n        assertEquals(\"i\", WordUtils.uncapitalize(\"i\"));\n        assertEquals(\"i am here 123\", WordUtils.uncapitalize(\"i am here 123\"));\n        assertEquals(\"i am here 123\", WordUtils.uncapitalize(\"I Am Here 123\"));\n        assertEquals(\"i am hERE 123\", WordUtils.uncapitalize(\"i am HERE 123\"));\n        assertEquals(\"i aM hERE 123\", WordUtils.uncapitalize(\"I AM HERE 123\"));\n        assertEquals(\"a\\tb\\nc d\", WordUtils.uncapitalize(\"A\\tB\\nC D\"));\n        assertEquals(\"and \\tbut \\ncLEAT  dome\", WordUtils.uncapitalize(\"And \\tBut \\nCLEAT  Dome\"));\n        // all-whitespace strings pass through capitalizeFully unchanged\n        assertEquals(WHITESPACE, WordUtils.capitalizeFully(WHITESPACE));\n        assertEquals(\"A\" + WHITESPACE + \"B\", WordUtils.capitalizeFully(\"a\" + WHITESPACE + \"b\"));\n    }\n\n    @Test\n    @DisplayName(\"TEXT-88: uncapitalize with an empty delimiter array makes the whole string one word\")\n    void testUnCapitalize_Text88() {\n        assertEquals(\"i am fine now\", WordUtils.uncapitalize(\"I am fine now\", new char[] {}));\n    }\n\n    @Test\n    @DisplayName(\"uncapitalize uses a custom delimiter set to mark word boundaries\")\n    void testUncapitalizeWithDelimiters_String() {\n        assertNull(WordUtils.uncapitalize(null, null));\n        assertEquals(\"\", WordUtils.uncapitalize(\"\", ArrayUtils.EMPTY_CHAR_ARRAY));\n        assertEquals(\"  \", WordUtils.uncapitalize(\"  \", ArrayUtils.EMPTY_CHAR_ARRAY));\n\n        char[] delimiters = { '-', '+', ' ', '@' };\n        assertEquals(\"i\", WordUtils.uncapitalize(\"I\", delimiters));\n        assertEquals(\"i\", WordUtils.uncapitalize(\"i\", delimiters));\n        assertEquals(\"i am-here+123\", WordUtils.uncapitalize(\"i am-here+123\", delimiters));\n        assertEquals(\"i+am here-123\", WordUtils.uncapitalize(\"I+Am Here-123\", delimiters));\n        assertEquals(\"i-am+hERE 123\", WordUtils.uncapitalize(\"i-am+HERE 123\", delimiters));\n        assertEquals(\"i aM-hERE+123\", WordUtils.uncapitalize(\"I AM-HERE+123\", delimiters));\n\n        // with '.' as the only delimiter, a space is no longer a word boundary\n        delimiters = new char[] { '.' };\n        assertEquals(\"i AM.fINE\", WordUtils.uncapitalize(\"I AM.FINE\", delimiters));\n        // null delimiters fall back to whitespace\n        assertEquals(\"i aM.FINE\", WordUtils.uncapitalize(\"I AM.FINE\", null));\n    }\n\n    // -----------------------------------------------------------------------\n    // wrap\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"wrap(String, int) wraps on spaces at the given column using the system line separator\")\n    void testWrap_StringInt() {\n        assertNull(WordUtils.wrap(null, 20));\n        assertNull(WordUtils.wrap(null, -1));\n\n        assertEquals(\"\", WordUtils.wrap(\"\", 20));\n        assertEquals(\"\", WordUtils.wrap(\"\", -1));\n\n        final String systemNewLine = System.lineSeparator();\n\n        // normal wrapping at 20 columns\n        String input = \"Here is one line of text that is going to be wrapped after 20 columns.\";\n        String expected = \"Here is one line of\" + systemNewLine + \"text that is going\" + systemNewLine + \"to be wrapped after\" + systemNewLine + \"20 columns.\";\n        assertEquals(expected, WordUtils.wrap(input, 20));\n\n        // a long word (URL) at the end is left unbroken\n        input = \"Click here to jump to the commons website - https://commons.apache.org\";\n        expected = \"Click here to jump\" + systemNewLine + \"to the commons\" + systemNewLine + \"website -\" + systemNewLine + \"https://commons.apache.org\";\n        assertEquals(expected, WordUtils.wrap(input, 20));\n\n        // a long word (URL) in the middle is left unbroken\n        input = \"Click here, https://commons.apache.org, to jump to the commons website\";\n        expected = \"Click here,\" + systemNewLine + \"https://commons.apache.org,\" + systemNewLine + \"to jump to the\" + systemNewLine + \"commons website\";\n        assertEquals(expected, WordUtils.wrap(input, 20));\n\n        // leading spaces on a new line are stripped; trailing spaces are kept\n        input = \"word1             word2                        word3\";\n        expected = \"word1  \" + systemNewLine + \"word2  \" + systemNewLine + \"word3\";\n        assertEquals(expected, WordUtils.wrap(input, 7));\n    }\n\n    @Test\n    @DisplayName(\"wrap(String, int, newLine, wrapLongWords) covers custom separators and long-word handling\")\n    void testWrap_StringIntStringBoolean() {\n        // null input always returns null, regardless of the other arguments\n        assertNull(WordUtils.wrap(null, 20, \"\\n\", false));\n        assertNull(WordUtils.wrap(null, 20, \"\\n\", true));\n        assertNull(WordUtils.wrap(null, 20, null, true));\n        assertNull(WordUtils.wrap(null, 20, null, false));\n        assertNull(WordUtils.wrap(null, -1, null, true));\n        assertNull(WordUtils.wrap(null, -1, null, false));\n\n        // empty input always returns empty\n        assertEquals(\"\", WordUtils.wrap(\"\", 20, \"\\n\", false));\n        assertEquals(\"\", WordUtils.wrap(\"\", 20, \"\\n\", true));\n        assertEquals(\"\", WordUtils.wrap(\"\", 20, null, false));\n        assertEquals(\"\", WordUtils.wrap(\"\", 20, null, true));\n        assertEquals(\"\", WordUtils.wrap(\"\", -1, null, false));\n        assertEquals(\"\", WordUtils.wrap(\"\", -1, null, true));\n\n        // normal wrap: wrapLongWords makes no difference when no word is too long\n        String input = \"Here is one line of text that is going to be wrapped after 20 columns.\";\n        String expected = \"Here is one line of\\ntext that is going\\nto be wrapped after\\n20 columns.\";\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", false));\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", true));\n\n        // a custom (multi-character) new-line string\n        input = \"Here is one line of text that is going to be wrapped after 20 columns.\";\n        expected = \"Here is one line of<br />text that is going<br />to be wrapped after<br />20 columns.\";\n        assertEquals(expected, WordUtils.wrap(input, 20, \"<br />\", false));\n        assertEquals(expected, WordUtils.wrap(input, 20, \"<br />\", true));\n\n        // very short wrap lengths; -1 is treated as 1\n        input = \"Here is one line\";\n        expected = \"Here\\nis one\\nline\";\n        assertEquals(expected, WordUtils.wrap(input, 6, \"\\n\", false));\n        expected = \"Here\\nis\\none\\nline\";\n        assertEquals(expected, WordUtils.wrap(input, 2, \"\\n\", false));\n        assertEquals(expected, WordUtils.wrap(input, -1, \"\\n\", false));\n\n        // a null new-line string uses the system line separator\n        final String systemNewLine = System.lineSeparator();\n        input = \"Here is one line of text that is going to be wrapped after 20 columns.\";\n        expected = \"Here is one line of\" + systemNewLine + \"text that is going\" + systemNewLine + \"to be wrapped after\" + systemNewLine + \"20 columns.\";\n        assertEquals(expected, WordUtils.wrap(input, 20, null, false));\n        assertEquals(expected, WordUtils.wrap(input, 20, null, true));\n\n        // extra spaces: trailing spaces are preserved on each wrapped line\n        input = \" Here:  is  one  line  of  text  that  is  going  to  be  wrapped  after  20  columns.\";\n        expected = \"Here:  is  one  line\\nof  text  that  is \\ngoing  to  be \\nwrapped  after  20 \\ncolumns.\";\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", false));\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", true));\n\n        // a tab is treated as an ordinary (non-breaking) character\n        input = \"Here is\\tone line of text that is going to be wrapped after 20 columns.\";\n        expected = \"Here is\\tone line of\\ntext that is going\\nto be wrapped after\\n20 columns.\";\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", false));\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", true));\n\n        // a tab landing exactly at the wrap column\n        input = \"Here is one line of\\ttext that is going to be wrapped after 20 columns.\";\n        expected = \"Here is one line\\nof\\ttext that is\\ngoing to be wrapped\\nafter 20 columns.\";\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", false));\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", true));\n\n        // long word at the end: wrapLongWords decides whether the URL is broken\n        input = \"Click here to jump to the commons website - https://commons.apache.org\";\n        expected = \"Click here to jump\\nto the commons\\nwebsite -\\nhttps://commons.apache.org\";\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", false));\n        expected = \"Click here to jump\\nto the commons\\nwebsite -\\nhttps://commons.apac\\nhe.org\";\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", true));\n\n        // long word in the middle: wrapLongWords decides whether the URL is broken\n        input = \"Click here, https://commons.apache.org, to jump to the commons website\";\n        expected = \"Click here,\\nhttps://commons.apache.org,\\nto jump to the\\ncommons website\";\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", false));\n        expected = \"Click here,\\nhttps://commons.apac\\nhe.org, to jump to\\nthe commons website\";\n        assertEquals(expected, WordUtils.wrap(input, 20, \"\\n\", true));\n    }\n\n    @Test\n    @DisplayName(\"wrap(..., wrapOn) wraps on a custom regex instead of spaces\")\n    void testWrap_StringIntStringBooleanString() {\n        // wide enough to fit: nothing changes\n        String input = \"flammable/inflammable\";\n        String expected = \"flammable/inflammable\";\n        assertEquals(expected, WordUtils.wrap(input, 30, \"\\n\", false, \"/\"));\n\n        // wrap on '/' with a small width\n        expected = \"flammable\\ninflammable\";\n        assertEquals(expected, WordUtils.wrap(input, 2, \"\\n\", false, \"/\"));\n\n        // wrap on '/', also breaking long words\n        expected = \"flammable\\ninflammab\\nle\";\n        assertEquals(expected, WordUtils.wrap(input, 9, \"\\n\", true, \"/\"));\n\n        // wrap on '/'; width large enough that long-word breaking is not needed\n        expected = \"flammable\\ninflammable\";\n        assertEquals(expected, WordUtils.wrap(input, 15, \"\\n\", true, \"/\"));\n\n        // no '/' present: only long-word breaking applies\n        input = \"flammableinflammable\";\n        expected = \"flammableinflam\\nmable\";\n        assertEquals(expected, WordUtils.wrap(input, 15, \"\\n\", true, \"/\"));\n    }\n\n    @Test\n    @DisplayName(\"wrap supports a zero-width regex match in the middle of the input\")\n    void testWrapAtMiddleTwice() {\n        assertEquals(\"abcdef\\n\\nabcdef\", WordUtils.wrap(\"abcdefggabcdef\", 2, \"\\n\", false, \"(?=g)\"));\n    }\n\n    @Test\n    @DisplayName(\"wrap supports a zero-width regex match at the start and end of the input\")\n    void testWrapAtStartAndEnd() {\n        assertEquals(\"\\nabcdefabcdef\\n\", WordUtils.wrap(\"nabcdefabcdefn\", 2, \"\\n\", false, \"(?=n)\"));\n    }\n\n    @Test\n    @DisplayName(\"wrap handles multiple zero-width regex matches\")\n    void testWrapWithMultipleRegexMatchOfLength0() {\n        assertEquals(\"abc\\ndefabc\\ndef\", WordUtils.wrap(\"abcdefabcdef\", 2, \"\\n\", false, \"(?=d)\"));\n    }\n\n    @Test\n    @DisplayName(\"wrap handles a single zero-width regex match\")\n    void testWrapWithRegexMatchOfLength0() {\n        assertEquals(\"abc\\ndef\", WordUtils.wrap(\"abcdef\", 2, \"\\n\", false, \"(?=d)\"));\n    }\n\n    @Test\n    @DisplayName(\"wrap with a zero-width regex completes without hanging\")\n    void testZeroWidthWrapOnRegex() {\n        assertTimeout(Duration.ofSeconds(2), () -> assertNotNull(WordUtils.wrap(\"abcdef\", 3, \"\\n\", false, \"(?=a)\")));\n    }\n\n    // -----------------------------------------------------------------------\n    // LANG / TEXT regressions for wrap\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"LANG-1292: wrapping very long runs no longer throws StringIndexOutOfBoundsException\")\n    void testLANG1292() {\n        // Prior to fix, this was throwing StringIndexOutOfBoundsException\n        WordUtils.wrap(\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \" + \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \" + \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n                70);\n    }\n\n    @Test\n    @DisplayName(\"TEXT-123: wrapping with Integer.MAX_VALUE width no longer throws StringIndexOutOfBoundsException\")\n    void testText123() throws Exception {\n        // Prior to fix, this was throwing StringIndexOutOfBoundsException\n        WordUtils.wrap(\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \" + \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n                Integer.MAX_VALUE);\n    }\n\n    // -----------------------------------------------------------------------\n    // constructor\n    // -----------------------------------------------------------------------\n\n    @Test\n    @DisplayName(\"WordUtils exposes a single public constructor and is a non-final public class\")\n    void testConstructor() {\n        assertNotNull(new WordUtils());\n        final Constructor<?>[] cons = WordUtils.class.getDeclaredConstructors();\n        assertEquals(1, cons.length);\n        assertTrue(Modifier.isPublic(cons[0].getModifiers()));\n        assertTrue(Modifier.isPublic(WordUtils.class.getModifiers()));\n        assertFalse(Modifier.isFinal(WordUtils.class.getModifiers()));\n    }\n\n}\n",
+  "last_error": "",
+  "last_java_path": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/commons-text/manual/testsuites/WordUtilsTest/WordUtilsTest.java",
+  "initial_prompt": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `WordUtilsTest.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-text/src/test/java/org/apache/commons/text/WordUtilsTest.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n",
+  "improvement_mode": "agent_improve_and_repair",
+  "file_prefix": "",
+  "project_id": "commons-text",
+  "target_class": "org.apache.commons.text.WordUtils",
+  "test_category": "manual_suite",
+  "test_id": "WordUtilsTest",
+  "suite_class": "WordUtilsTest",
+  "is_evosuite": false,
+  "scaffolding_java": null,
+  "original_java": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/local_workplace/commons-text/src/test/java/org/apache/commons/text/WordUtilsTest.java",
+  "agent_sandbox": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/commons-text/manual/testsuites/WordUtilsTest",
+  "agent_compile_attempts": 1,
+  "skill_names": [
+    "compile-check",
+    "repair-loop"
+  ],
+  "skill_paths": [
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/compile-check/SKILL.md",
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/repair-loop/SKILL.md"
+  ],
+  "provider_model": "claude-opus-4-8",
+  "requested_provider_model": "claude-opus-4-8",
+  "actual_provider_model": "claude-opus-4-8",
+  "runtime_observability": {
+    "rate_limit_events": [
+      {
+        "status": "allowed",
+        "rate_limit_type": "five_hour",
+        "utilization": null,
+        "resets_at": 1782085200,
+        "overage_status": "rejected",
+        "session_id": "b5dd052c-6af9-491d-b2e7-2b5797c0a9a3"
+      }
+    ],
+    "rate_limit_hit": false,
+    "rate_limit_warned": false,
+    "token_usage": {
+      "usage": {
+        "input_tokens": 2819,
+        "cache_creation_input_tokens": 59065,
+        "cache_read_input_tokens": 348192,
+        "output_tokens": 20185,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 59065,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 544,
+            "cache_read_input_tokens": 75758,
+            "cache_creation_input_tokens": 143,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 143
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 579,
+          "outputTokens": 18,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000669,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 2819,
+          "outputTokens": 20185,
+          "cacheReadInputTokens": 348192,
+          "cacheCreationInputTokens": 59065,
+          "webSearchRequests": 0,
+          "costUSD": 1.06197225,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000
+        }
+      },
+      "total_cost_usd": 1.06264125,
+      "num_turns": 9,
+      "duration_ms": 195419,
+      "duration_api_ms": 195569
+    },
+    "context_usage": {
+      "categories": [
+        {
+          "name": "System prompt",
+          "tokens": 2577,
+          "color": "promptBorder"
+        },
+        {
+          "name": "System tools",
+          "tokens": 14547,
+          "color": "inactive"
+        },
+        {
+          "name": "System tools (deferred)",
+          "tokens": 14534,
+          "color": "inactive",
+          "isDeferred": true
+        },
+        {
+          "name": "Skills",
+          "tokens": 1948,
+          "color": "warning"
+        },
+        {
+          "name": "Messages",
+          "tokens": 57328,
+          "color": "purple_FOR_SUBAGENTS_ONLY"
+        },
+        {
+          "name": "Free space",
+          "tokens": 923600,
+          "color": "promptBorder"
+        }
+      ],
+      "totalTokens": 75903,
+      "maxTokens": 1000000,
+      "rawMaxTokens": 1000000,
+      "autocompactSource": "auto",
+      "percentage": 8,
+      "gridRows": [
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "System prompt",
+            "tokens": 2577,
+            "percentage": 0,
+            "squareFullness": 0.5154
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14547,
+            "percentage": 1,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14547,
+            "percentage": 1,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 14547,
+            "percentage": 1,
+            "squareFullness": 0.9093999999999998
+          },
+          {
+            "color": "warning",
+            "isFilled": true,
+            "categoryName": "Skills",
+            "tokens": 1948,
+            "percentage": 0,
+            "squareFullness": 0.3896
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 57328,
+            "percentage": 6,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 923600,
+            "percentage": 92,
+            "squareFullness": 1
+          }
+        ]
+      ],
+      "model": "claude-opus-4-8",
+      "memoryFiles": [],
+      "mcpTools": [],
+      "agents": [],
+      "slashCommands": {
+        "totalCommands": 16,
+        "includedCommands": 16,
+        "tokens": 915
+      },
+      "skills": {
+        "totalSkills": 16,
+        "includedSkills": 16,
+        "tokens": 1948,
+        "skillFrontmatter": [
+          {
+            "name": "compile-check",
+            "source": "projectSettings",
+            "tokens": 194
+          },
+          {
+            "name": "repair-loop",
+            "source": "projectSettings",
+            "tokens": 274
+          },
+          {
+            "name": "deep-research",
+            "source": "built-in",
+            "tokens": 161
+          },
+          {
+            "name": "update-config",
+            "source": "built-in",
+            "tokens": 235
+          },
+          {
+            "name": "keybindings-help",
+            "source": "built-in",
+            "tokens": 82
+          },
+          {
+            "name": "verify",
+            "source": "built-in",
+            "tokens": 86
+          },
+          {
+            "name": "code-review",
+            "source": "built-in",
+            "tokens": 119
+          },
+          {
+            "name": "simplify",
+            "source": "built-in",
+            "tokens": 62
+          },
+          {
+            "name": "fewer-permission-prompts",
+            "source": "built-in",
+            "tokens": 63
+          },
+          {
+            "name": "loop",
+            "source": "built-in",
+            "tokens": 113
+          },
+          {
+            "name": "schedule",
+            "source": "built-in",
+            "tokens": 126
+          },
+          {
+            "name": "claude-api",
+            "source": "built-in",
+            "tokens": 252
+          },
+          {
+            "name": "run",
+            "source": "built-in",
+            "tokens": 122
+          },
+          {
+            "name": "init",
+            "source": "built-in",
+            "tokens": 21
+          },
+          {
+            "name": "review",
+            "source": "built-in",
+            "tokens": 9
+          },
+          {
+            "name": "security-review",
+            "source": "built-in",
+            "tokens": 29
+          }
+        ]
+      },
+      "autoCompactThreshold": 967000,
+      "isAutoCompactEnabled": true,
+      "messageBreakdown": {
+        "toolCallTokens": 10817,
+        "toolResultTokens": 20604,
+        "attachmentTokens": 2127,
+        "assistantMessageTokens": 2290,
+        "userMessageTokens": 832,
+        "redirectedContextTokens": 0,
+        "unattributedTokens": 20658,
+        "toolCallsByType": [
+          {
+            "name": "Read",
+            "callTokens": 214,
+            "resultTokens": 20306
+          },
+          {
+            "name": "Write",
+            "callTokens": 10437,
+            "resultTokens": 95
+          },
+          {
+            "name": "Bash",
+            "callTokens": 133,
+            "resultTokens": 175
+          },
+          {
+            "name": "Skill",
+            "callTokens": 33,
+            "resultTokens": 28
+          }
+        ],
+        "attachmentsByType": [
+          {
+            "name": "skill_listing",
+            "tokens": 1566
+          },
+          {
+            "name": "agent_listing_delta",
+            "tokens": 386
+          },
+          {
+            "name": "deferred_tools_delta",
+            "tokens": 163
+          },
+          {
+            "name": "command_permissions",
+            "tokens": 12
+          }
+        ]
+      },
+      "apiUsage": {
+        "input_tokens": 2,
+        "output_tokens": 544,
+        "cache_creation_input_tokens": 143,
+        "cache_read_input_tokens": 75758
+      }
+    },
+    "auth_used": "oauth",
+    "auth_attempts_available": [
+      "oauth"
+    ]
+  }
+}

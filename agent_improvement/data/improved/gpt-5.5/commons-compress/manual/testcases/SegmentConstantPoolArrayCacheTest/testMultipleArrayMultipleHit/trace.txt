@@ -1,0 +1,271 @@
+[3] AGENT
+I’m using the compile-check workflow required for this task. I’ll keep the edit constrained to a single generated test file in the working directory, then run `bash compile.sh` exactly from cwd.
+
+[8] AGENT
+I need the exact original test body to preserve the runtime calls and assertions, and the CUT signature to avoid guessing. I’m going to read only those two read-only inputs and then make the single allowed test-file edit.
+
+[9] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-compress/manual/testcases/SegmentConstantPoolArrayCacheTest/SegmentConstantPoolArrayCacheTest_testMultipleArrayMultipleHit.java"
+
+[10] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-compress/manual/testcases/SegmentConstantPoolArrayCacheTest/SegmentConstantPoolArrayCacheTest_testMultipleArrayMultipleHit.java"
+--- output ---
+package org.apache.commons.compress.harmony.unpack200;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+
+public class SegmentConstantPoolArrayCacheTest_testMultipleArrayMultipleHit {
+
+    @Test
+    void testMultipleArrayMultipleHit() {
+        final SegmentConstantPoolArrayCache arrayCache = new SegmentConstantPoolArrayCache();
+        final String[] arrayOne = { "Zero", "Shared", "Two", "Shared", "Shared" };
+        final String[] arrayTwo = { "Shared", "One", "Shared", "Shared", "Shared" };
+        List<Integer> listOne = arrayCache.indexesForArrayKey(arrayOne, "Shared");
+        List<Integer> listTwo = arrayCache.indexesForArrayKey(arrayTwo, "Shared");
+        // Make sure we're using the cached values. First trip
+        // through builds the cache.
+        listOne = arrayCache.indexesForArrayKey(arrayOne, "Two");
+        listTwo = arrayCache.indexesForArrayKey(arrayTwo, "Shared");
+        assertEquals(1, listOne.size());
+        assertEquals(2, listOne.get(0).intValue());
+        // Now look for a different element in list one
+        listOne = arrayCache.indexesForArrayKey(arrayOne, "Shared");
+        assertEquals(3, listOne.size());
+        assertEquals(1, listOne.get(0).intValue());
+        assertEquals(3, listOne.get(1).intValue());
+        assertEquals(4, listOne.get(2).intValue());
+        assertEquals(4, listTwo.size());
+        assertEquals(0, listTwo.get(0).intValue());
+        assertEquals(2, listTwo.get(1).intValue());
+        assertEquals(3, listTwo.get(2).intValue());
+        assertEquals(4, listTwo.get(3).intValue());
+        final List<Integer> listThree = arrayCache.indexesForArrayKey(arrayOne, "Not found");
+        assertEquals(0, listThree.size());
+    }
+}
+
+
+[11] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,240p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-compress/src/main/java/org/apache/commons/compress/harmony/unpack200/SegmentConstantPoolArrayCache.java"
+
+[12] COMMAND completed
+/bin/zsh -lc "sed -n '1,240p' /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-compress/src/main/java/org/apache/commons/compress/harmony/unpack200/SegmentConstantPoolArrayCache.java"
+--- output ---
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.commons.compress.harmony.unpack200;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.List;
+
+/**
+ * The SegmentConstantPool spends a lot of time searching through large arrays of Strings looking for matches. This can be sped up by caching the arrays in
+ * HashMaps so the String keys are looked up and resolve to positions in the array rather than iterating through the arrays each time.
+ *
+ * Because the arrays only grow (never shrink or change) we can use the last known size as a way to determine if the array has changed.
+ *
+ * Note that this cache must be synchronized externally if it is shared.
+ *
+ * @see <a href="https://docs.oracle.com/en/java/javase/13/docs/specs/pack-spec.html">Pack200: A Packed Class Deployment Format For Java Applications</a>
+ */
+public class SegmentConstantPoolArrayCache {
+
+    /**
+     * Keeps track of the last known size of an array as well as a HashMap that knows the mapping from element values to the indices of the array
+     * which contain that value.
+     */
+    protected class CachedArray {
+
+        /**
+         * The primary array.
+         */
+        String[] primaryArray;
+
+        /**
+         * The last known size.
+         */
+        int lastKnownSize;
+
+        /**
+         * The primary table.
+         */
+        HashMap<String, List<Integer>> primaryTable;
+
+        /**
+         * Constructs a new CachedArray.
+         *
+         * @param array the array to cache.
+         */
+        public CachedArray(final String[] array) {
+            this.primaryArray = array;
+            this.lastKnownSize = array.length;
+            this.primaryTable = new HashMap<>(lastKnownSize);
+            cacheIndexes();
+        }
+
+        /**
+         * Given a primaryArray, cache its values in a HashMap to provide a backwards mapping from element values to element indexes. For instance, a
+         * primaryArray of: {"Zero", "Foo", "Two", "Foo"} would yield a HashMap of: "Zero" -&gt; 0 "Foo" -&gt; 1, 3 "Two" -&gt; 2 which is then cached.
+         */
+        protected void cacheIndexes() {
+            for (int index = 0; index < primaryArray.length; index++) {
+                final String key = primaryArray[index];
+                primaryTable.computeIfAbsent(key, k -> new ArrayList<>()).add(Integer.valueOf(index));
+            }
+        }
+
+        /**
+         * Given a particular key, answer a List of index locations in the array which contain that key.
+         *
+         * If no elements are found, answer an empty list.
+         *
+         * @param key String element of the array
+         * @return List of indexes containing that key in the array.
+         */
+        public List<Integer> indexesForKey(final String key) {
+            final List<Integer> list = primaryTable.get(key);
+            return list != null ? list : Collections.emptyList();
+        }
+
+        /**
+         * Answer the last known size of the array cached. If the last known size is not the same as the current size, the array must have changed.
+         *
+         * @return int last known size of the cached array
+         */
+        public int lastKnownSize() {
+            return lastKnownSize;
+        }
+    }
+
+    /**
+     * Map of known arrays.
+     */
+    protected IdentityHashMap<String[], CachedArray> knownArrays = new IdentityHashMap<>(1000);
+
+    /**
+     * Last indexes found.
+     */
+    protected List<Integer> lastIndexes;
+
+    /**
+     * Last array searched.
+     */
+    protected String[] lastArray;
+
+    /**
+     * Last key searched.
+     */
+    protected String lastKey;
+
+    /**
+     * Constructs a new SegmentConstantPoolArrayCache.
+     */
+    public SegmentConstantPoolArrayCache() {
+    }
+
+    /**
+     * Tests whether a String array is correctly cached. Return false if the array is not cached, or if the array cache is outdated.
+     *
+     * @param array of String
+     * @return boolean true if up-to-date cache, otherwise false.
+     */
+    protected boolean arrayIsCached(final String[] array) {
+        final CachedArray cachedArray = knownArrays.get(array);
+        return !(cachedArray == null || cachedArray.lastKnownSize() != array.length);
+    }
+
+    /**
+     * Caches the array passed in as the argument
+     *
+     * @param array String[] to cache
+     */
+    protected void cacheArray(final String[] array) {
+        if (arrayIsCached(array)) {
+            throw new IllegalArgumentException("Trying to cache an array that already exists");
+        }
+        knownArrays.put(array, new CachedArray(array));
+        // Invalidate the cache-within-a-cache
+        lastArray = null;
+    }
+
+    /**
+     * Gets the indexes for the given key in the given array.
+     *
+     * @param array the array.
+     * @param key the key.
+     * @return the list of indexes.
+     */
+    public List<Integer> indexesForArrayKey(final String[] array, final String key) {
+        if (!arrayIsCached(array)) {
+            cacheArray(array);
+        }
+
+        // If the search is one we've just done, don't even
+        // bother looking and return the last indices. This
+        // is a second cache within the cache. This is
+        // efficient because we are usually looking for
+        // several secondary elements with the same primary
+        // key.
+        if (lastArray == array && lastKey == key) {
+            return lastIndexes;
+        }
+
+        // Remember the last thing we found.
+        lastArray = array;
+        lastKey = key;
+        lastIndexes = knownArrays.get(array).indexesForKey(key);
+
+        return lastIndexes;
+    }
+}
+
+
+[13] AGENT
+I’ve confirmed the test’s behavior: it deliberately warms the array cache, exercises the last-lookup cache, switches keys on the first array, and verifies a missing key. I’m rewriting the test around named fixtures and a small assertion helper while preserving the same `indexesForArrayKey` call sequence and arguments.
+
+[14] FILE_CHANGE in_progress
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-compress/manual/testcases/SegmentConstantPoolArrayCacheTest/testMultipleArrayMultipleHit/SegmentConstantPoolArrayCacheTest_testMultipleArrayMultipleHit.java
+
+[15] FILE_CHANGE completed
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-compress/manual/testcases/SegmentConstantPoolArrayCacheTest/testMultipleArrayMultipleHit/SegmentConstantPoolArrayCacheTest_testMultipleArrayMultipleHit.java
+
+[16] AGENT
+The only edited file is now in place. I’m running the required compile check from the working directory with `bash compile.sh`.
+
+[17] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[18] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[19] AGENT
+Implemented the refactored test in [SegmentConstantPoolArrayCacheTest_testMultipleArrayMultipleHit.java](/Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-compress/manual/testcases/SegmentConstantPoolArrayCacheTest/testMultipleArrayMultipleHit/SegmentConstantPoolArrayCacheTest_testMultipleArrayMultipleHit.java).
+
+The behavior is preserved: the same cache lookups run in the same order with the same array/key arguments, and the expected index results are unchanged. I improved readability with a named shared key, clearer variable names, and a small `assertIndexes` helper.
+
+Verification: `bash compile.sh` returned `COMPILE_OK`.

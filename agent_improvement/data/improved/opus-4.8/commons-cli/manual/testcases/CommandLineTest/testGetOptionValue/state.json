@@ -1,0 +1,1917 @@
+{
+  "status": "COMPILE_SUCCESS",
+  "attempts_used": 1,
+  "max_attempts": 5,
+  "model": "claude-opus-4-8",
+  "prompt_version": "understandability_improvement_constraints",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `CommandLineTest_testGetOptionValue.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/original/commons-cli/manual/testcases/CommandLineTest/CommandLineTest_testGetOptionValue.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n"
+    },
+    {
+      "role": "assistant",
+      "content": "I've read both files. The original test has substantial dead code: four unused `@MethodSource` provider methods (`createHasOptionParameters`, `createOptionValuesParameters`, `createParsedOptionValueParameters`, `createParsedOptionValuesParameters`), an unused `assertWritten` helper, and several unused imports — none of which are exercised by the single executing test `testGetOptionValue` (which uses only `createOptionValueParameters`). I'll remove that clutter and clarify the repeated `optValue == null ? \"thing\" : optValue` ternaries with named locals, without changing any CUT call.Compilation succeeded (`COMPILE_OK`). The refactored test preserves all original `getOptionValue` calls, arguments, and expected outcomes while removing four unused `@MethodSource` providers, the unused `assertWritten` helper, and dead imports, and clarifying the repeated default-value ternaries with named locals (`DEFAULT_TEXT`, `optWithDefault`, `grpWithDefault`) plus section comments."
+    }
+  ],
+  "last_code": "package org.apache.commons.cli;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nimport static org.junit.jupiter.api.Assertions.assertNull;\n\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.function.Supplier;\nimport java.util.stream.Stream;\n\nimport org.junit.jupiter.params.ParameterizedTest;\nimport org.junit.jupiter.params.provider.Arguments;\nimport org.junit.jupiter.params.provider.MethodSource;\n\n/**\n * Tests the various {@link CommandLine#getOptionValue} overloads (by char, short name, long name,\n * {@link Option}, and {@link OptionGroup}), including the variants that accept a default value or a\n * default-value {@link Supplier}.\n * <p>\n * The test also verifies that querying a deprecated option triggers the deprecation handler exactly\n * once per access, and never for non-deprecated options or unknown names.\n * </p>\n */\npublic class CommandLineTest_testGetOptionValue {\n\n    /** Fallback text returned by the default-value overloads when an option has no value. */\n    private static final String DEFAULT_TEXT = \"thing\";\n\n    /**\n     * Supplies the test cases for {@link #testGetOptionValue}.\n     * <p>\n     * Two optional-argument options are grouped together: {@code T}/{@code tee} (deprecated) and\n     * {@code U}/{@code you}. Each case records the parsed arguments, the option to query, the group,\n     * and the expected value / deprecation flag for both the individual option and the group.\n     * </p>\n     */\n    private static Stream<Arguments> createOptionValueParameters() throws ParseException {\n        final List<Arguments> cases = new ArrayList<>();\n        final Option optT = Option.builder().option(\"T\").longOpt(\"tee\").deprecated().optionalArg(true).get();\n        final Option optU = Option.builder(\"U\").longOpt(\"you\").optionalArg(true).get();\n        final OptionGroup optionGroup = new OptionGroup().addOption(optT).addOption(optU);\n        // T set\n        cases.add(Arguments.of(new String[] { \"-T\" }, optT, optionGroup, true, null, true, null, optT));\n        cases.add(Arguments.of(new String[] { \"-T\", \"foo\" }, optT, optionGroup, true, \"foo\", true, \"foo\", optT));\n        cases.add(Arguments.of(new String[] { \"--tee\" }, optT, optionGroup, true, null, true, null, optT));\n        cases.add(Arguments.of(new String[] { \"--tee\", \"foo\" }, optT, optionGroup, true, \"foo\", true, \"foo\", optT));\n        cases.add(Arguments.of(new String[] { \"-U\" }, optT, optionGroup, false, null, false, null, optU));\n        cases.add(Arguments.of(new String[] { \"-U\", \"foo\" }, optT, optionGroup, false, null, false, \"foo\", optU));\n        cases.add(Arguments.of(new String[] { \"--you\" }, optT, optionGroup, false, null, false, null, optU));\n        cases.add(Arguments.of(new String[] { \"--you\", \"foo\" }, optT, optionGroup, false, null, false, \"foo\", optU));\n        // U set\n        cases.add(Arguments.of(new String[] { \"-T\" }, optU, optionGroup, false, null, true, null, optT));\n        cases.add(Arguments.of(new String[] { \"-T\", \"foo\" }, optU, optionGroup, false, null, true, \"foo\", optT));\n        cases.add(Arguments.of(new String[] { \"--tee\" }, optU, optionGroup, false, null, true, null, optT));\n        cases.add(Arguments.of(new String[] { \"--tee\", \"foo\" }, optU, optionGroup, false, null, true, \"foo\", optT));\n        cases.add(Arguments.of(new String[] { \"-U\" }, optU, optionGroup, false, null, false, null, optU));\n        cases.add(Arguments.of(new String[] { \"-U\", \"foo\" }, optU, optionGroup, false, \"foo\", false, \"foo\", optU));\n        cases.add(Arguments.of(new String[] { \"--you\" }, optU, optionGroup, false, null, false, null, optU));\n        cases.add(Arguments.of(new String[] { \"--you\", \"foo\" }, optU, optionGroup, false, \"foo\", false, \"foo\", optU));\n        return cases.stream();\n    }\n\n    /** Returns the option's short name as a single character, for the {@code char} overloads. */\n    private char asChar(final Option opt) {\n        return opt.getOpt().charAt(0);\n    }\n\n    /**\n     * Verifies that the deprecation handler was invoked exactly once (with {@code opt}) when\n     * {@code expectDeprecated} is {@code true}, or not at all otherwise, then clears the handler log.\n     *\n     * @param expectDeprecated {@code true} if the last access should have logged a deprecation.\n     * @param handler          the list the deprecation handler appends to.\n     * @param opt              the option expected to have been logged (ignored when not deprecated).\n     */\n    private void checkHandler(final boolean expectDeprecated, final List<Option> handler, final Option opt) {\n        if (expectDeprecated) {\n            assertEquals(1, handler.size());\n            assertEquals(opt, handler.get(0));\n        } else {\n            assertEquals(0, handler.size());\n        }\n        handler.clear();\n    }\n\n    /**\n     * Tests every {@code getOptionValue} overload, with and without default values, and checks that\n     * deprecated options report their deprecation exactly once per access.\n     *\n     * @param args        the argument strings to parse.\n     * @param opt         the option to query for values.\n     * @param optionGroup the option group to query for values.\n     * @param optDep      {@code true} if querying {@code opt} should report a deprecation.\n     * @param optValue    the value expected from {@code opt} (or {@code null} if none).\n     * @param grpDep      {@code true} if querying the group should report a deprecation.\n     * @param grpValue    the value expected from the group (or {@code null} if none).\n     * @param grpOpt      the option the group is expected to resolve to.\n     * @throws ParseException on parse error.\n     */\n    @ParameterizedTest(name = \"{0}, {1}\")\n    @MethodSource(\"createOptionValueParameters\")\n    void testGetOptionValue(final String[] args, final Option opt, final OptionGroup optionGroup, final boolean optDep,\n            final String optValue, final boolean grpDep, final String grpValue, final Option grpOpt) throws ParseException {\n        final Options options = new Options().addOptionGroup(optionGroup);\n        final List<Option> handler = new ArrayList<>();\n        final CommandLine commandLine = DefaultParser.builder().setDeprecatedHandler(handler::add).get().parse(options, args);\n\n        // A supplier whose value matches DEFAULT_TEXT, used to exercise the Supplier-based overloads.\n        final Supplier<String> defaultSupplier = () -> DEFAULT_TEXT;\n        // Expected results from the default-value overloads: the real value if present, else the fallback.\n        final String optWithDefault = optValue == null ? DEFAULT_TEXT : optValue;\n        final String grpWithDefault = grpValue == null ? DEFAULT_TEXT : grpValue;\n\n        // A group whose options were never parsed, and a null group, both yielding no value.\n        final OptionGroup unselectedGroup = new OptionGroup()\n                .addOption(Option.builder(\"o\").longOpt(\"other\").hasArg().get())\n                .addOption(Option.builder().option(\"p\").longOpt(\"part\").hasArg().get());\n        final OptionGroup nullGroup = null;\n\n        // Query by char name.\n        assertEquals(optValue, commandLine.getOptionValue(asChar(opt)));\n        checkHandler(optDep, handler, opt);\n        assertEquals(optWithDefault, commandLine.getOptionValue(asChar(opt), DEFAULT_TEXT));\n        checkHandler(optDep, handler, opt);\n        assertEquals(optWithDefault, commandLine.getOptionValue(asChar(opt), defaultSupplier));\n        checkHandler(optDep, handler, opt);\n\n        // Query by short name.\n        assertEquals(optValue, commandLine.getOptionValue(opt.getOpt()));\n        checkHandler(optDep, handler, opt);\n        assertEquals(optWithDefault, commandLine.getOptionValue(opt.getOpt(), DEFAULT_TEXT));\n        checkHandler(optDep, handler, opt);\n        assertEquals(optWithDefault, commandLine.getOptionValue(opt.getOpt(), defaultSupplier));\n        checkHandler(optDep, handler, opt);\n\n        // Query by long name.\n        assertEquals(optValue, commandLine.getOptionValue(opt.getLongOpt()));\n        checkHandler(optDep, handler, opt);\n        assertEquals(optWithDefault, commandLine.getOptionValue(opt.getLongOpt(), DEFAULT_TEXT));\n        checkHandler(optDep, handler, opt);\n        assertEquals(optWithDefault, commandLine.getOptionValue(opt.getLongOpt(), defaultSupplier));\n        checkHandler(optDep, handler, opt);\n\n        // Query by Option instance.\n        assertEquals(optValue, commandLine.getOptionValue(opt));\n        checkHandler(optDep, handler, opt);\n        assertEquals(optWithDefault, commandLine.getOptionValue(opt, DEFAULT_TEXT));\n        checkHandler(optDep, handler, opt);\n        assertEquals(optWithDefault, commandLine.getOptionValue(opt, defaultSupplier));\n        checkHandler(optDep, handler, opt);\n\n        // Query by OptionGroup.\n        assertEquals(grpValue, commandLine.getOptionValue(optionGroup));\n        checkHandler(grpDep, handler, grpOpt);\n        assertEquals(grpWithDefault, commandLine.getOptionValue(optionGroup, DEFAULT_TEXT));\n        checkHandler(grpDep, handler, grpOpt);\n        assertEquals(grpWithDefault, commandLine.getOptionValue(optionGroup, defaultSupplier));\n        checkHandler(grpDep, handler, grpOpt);\n\n        // A group with no selected option yields the default (or null) and never logs a deprecation.\n        assertNull(commandLine.getOptionValue(unselectedGroup));\n        checkHandler(false, handler, grpOpt);\n        assertEquals(DEFAULT_TEXT, commandLine.getOptionValue(unselectedGroup, DEFAULT_TEXT));\n        checkHandler(false, handler, grpOpt);\n        assertEquals(DEFAULT_TEXT, commandLine.getOptionValue(unselectedGroup, defaultSupplier));\n        checkHandler(false, handler, grpOpt);\n\n        // A null group behaves like an unselected group.\n        assertNull(commandLine.getOptionValue(nullGroup));\n        checkHandler(false, handler, grpOpt);\n        assertEquals(DEFAULT_TEXT, commandLine.getOptionValue(nullGroup, DEFAULT_TEXT));\n        checkHandler(false, handler, grpOpt);\n        assertEquals(DEFAULT_TEXT, commandLine.getOptionValue(nullGroup, defaultSupplier));\n        checkHandler(false, handler, grpOpt);\n\n        // An unknown name yields the default (or null) and never logs a deprecation.\n        assertNull(commandLine.getOptionValue(\"Nope\"));\n        checkHandler(false, handler, opt);\n        assertEquals(DEFAULT_TEXT, commandLine.getOptionValue(\"Nope\", DEFAULT_TEXT));\n        checkHandler(false, handler, opt);\n        assertEquals(DEFAULT_TEXT, commandLine.getOptionValue(\"Nope\", defaultSupplier));\n        checkHandler(false, handler, opt);\n    }\n}\n",
+  "last_error": "",
+  "last_java_path": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/commons-cli/manual/testcases/CommandLineTest/testGetOptionValue/CommandLineTest_testGetOptionValue.java",
+  "initial_prompt": "Definition: Understandability refers to how easily developers can comprehend and maintain the test code.\n\nTask: Improve the understandability of the test `CommandLineTest_testGetOptionValue.java` (path:- /Users/tenghaha/Projects/New_Agent_understandability_improvement/data/original/commons-cli/manual/testcases/CommandLineTest/CommandLineTest_testGetOptionValue.java). The refactored code must be syntactically correct and compilable against the provided CUT signatures. Do not alter the runtime behaviour of the original test: the same methods must be called with the same arguments and produce the same expected outcomes.\n",
+  "improvement_mode": "agent_improve_and_repair",
+  "file_prefix": "",
+  "project_id": "commons-cli",
+  "target_class": "org.apache.commons.cli.CommandLine",
+  "test_category": "manual_cases",
+  "test_id": "CommandLineTest_testGetOptionValue",
+  "suite_class": "CommandLineTest",
+  "is_evosuite": false,
+  "scaffolding_java": null,
+  "original_java": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/original/commons-cli/manual/testcases/CommandLineTest/CommandLineTest_testGetOptionValue.java",
+  "agent_sandbox": "/Users/tenghaha/Projects/New_Agent_understandability_improvement/data/improved/claude-opus-4-8-understandability_improvement_constraints/commons-cli/manual/testcases/CommandLineTest/testGetOptionValue",
+  "agent_compile_attempts": 1,
+  "skill_names": [
+    "compile-check",
+    "repair-loop"
+  ],
+  "skill_paths": [
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/compile-check/SKILL.md",
+    "/Users/tenghaha/Projects/New_Agent_understandability_improvement/.claude/skills/repair-loop/SKILL.md"
+  ],
+  "provider_model": "claude-opus-4-8",
+  "requested_provider_model": "claude-opus-4-8",
+  "actual_provider_model": "claude-opus-4-8",
+  "runtime_observability": {
+    "rate_limit_events": [],
+    "rate_limit_hit": false,
+    "rate_limit_warned": false,
+    "token_usage": {
+      "usage": {
+        "input_tokens": 2169,
+        "cache_creation_input_tokens": 36393,
+        "cache_read_input_tokens": 189029,
+        "output_tokens": 7012,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 36393
+        },
+        "inference_geo": "global",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 150,
+            "cache_read_input_tokens": 53626,
+            "cache_creation_input_tokens": 94,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 94,
+              "ephemeral_1h_input_tokens": 0
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "model_usage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 581,
+          "outputTokens": 22,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000691,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        },
+        "claude-opus-4-8": {
+          "inputTokens": 2169,
+          "outputTokens": 7012,
+          "cacheReadInputTokens": 189029,
+          "cacheCreationInputTokens": 36393,
+          "webSearchRequests": 0,
+          "costUSD": 0.5081157500000001,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000
+        }
+      },
+      "total_cost_usd": 0.5088067500000001,
+      "num_turns": 7,
+      "duration_ms": 79286,
+      "duration_api_ms": 81291
+    },
+    "context_usage": {
+      "categories": [
+        {
+          "name": "System prompt",
+          "tokens": 2299,
+          "color": "promptBorder"
+        },
+        {
+          "name": "System tools",
+          "tokens": 15164,
+          "color": "inactive"
+        },
+        {
+          "name": "System tools (deferred)",
+          "tokens": 14258,
+          "color": "inactive",
+          "isDeferred": true
+        },
+        {
+          "name": "Skills",
+          "tokens": 1822,
+          "color": "warning"
+        },
+        {
+          "name": "Messages",
+          "tokens": 34552,
+          "color": "purple_FOR_SUBAGENTS_ONLY"
+        },
+        {
+          "name": "Free space",
+          "tokens": 946163,
+          "color": "promptBorder"
+        }
+      ],
+      "totalTokens": 53722,
+      "maxTokens": 1000000,
+      "rawMaxTokens": 1000000,
+      "autocompactSource": "auto",
+      "percentage": 5,
+      "gridRows": [
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "System prompt",
+            "tokens": 2299,
+            "percentage": 0,
+            "squareFullness": 0.4598
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 15164,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 15164,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "inactive",
+            "isFilled": true,
+            "categoryName": "System tools",
+            "tokens": 15164,
+            "percentage": 2,
+            "squareFullness": 1
+          },
+          {
+            "color": "warning",
+            "isFilled": true,
+            "categoryName": "Skills",
+            "tokens": 1822,
+            "percentage": 0,
+            "squareFullness": 0.3644
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 34552,
+            "percentage": 3,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 34552,
+            "percentage": 3,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 34552,
+            "percentage": 3,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 34552,
+            "percentage": 3,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 34552,
+            "percentage": 3,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 34552,
+            "percentage": 3,
+            "squareFullness": 1
+          },
+          {
+            "color": "purple_FOR_SUBAGENTS_ONLY",
+            "isFilled": true,
+            "categoryName": "Messages",
+            "tokens": 34552,
+            "percentage": 3,
+            "squareFullness": 0.9104000000000001
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          }
+        ],
+        [
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          },
+          {
+            "color": "promptBorder",
+            "isFilled": true,
+            "categoryName": "Free space",
+            "tokens": 946163,
+            "percentage": 95,
+            "squareFullness": 1
+          }
+        ]
+      ],
+      "model": "claude-opus-4-8",
+      "memoryFiles": [],
+      "mcpTools": [],
+      "agents": [],
+      "slashCommands": {
+        "totalCommands": 15,
+        "includedCommands": 15,
+        "tokens": 915
+      },
+      "skills": {
+        "totalSkills": 15,
+        "includedSkills": 15,
+        "tokens": 1822,
+        "skillFrontmatter": [
+          {
+            "name": "compile-check",
+            "source": "projectSettings",
+            "tokens": 194
+          },
+          {
+            "name": "repair-loop",
+            "source": "projectSettings",
+            "tokens": 274
+          },
+          {
+            "name": "deep-research",
+            "source": "built-in",
+            "tokens": 161
+          },
+          {
+            "name": "update-config",
+            "source": "built-in",
+            "tokens": 235
+          },
+          {
+            "name": "keybindings-help",
+            "source": "built-in",
+            "tokens": 82
+          },
+          {
+            "name": "verify",
+            "source": "built-in",
+            "tokens": 86
+          },
+          {
+            "name": "code-review",
+            "source": "built-in",
+            "tokens": 119
+          },
+          {
+            "name": "simplify",
+            "source": "built-in",
+            "tokens": 62
+          },
+          {
+            "name": "fewer-permission-prompts",
+            "source": "built-in",
+            "tokens": 63
+          },
+          {
+            "name": "loop",
+            "source": "built-in",
+            "tokens": 113
+          },
+          {
+            "name": "claude-api",
+            "source": "built-in",
+            "tokens": 252
+          },
+          {
+            "name": "run",
+            "source": "built-in",
+            "tokens": 122
+          },
+          {
+            "name": "init",
+            "source": "built-in",
+            "tokens": 21
+          },
+          {
+            "name": "review",
+            "source": "built-in",
+            "tokens": 9
+          },
+          {
+            "name": "security-review",
+            "source": "built-in",
+            "tokens": 29
+          }
+        ]
+      },
+      "autoCompactThreshold": 967000,
+      "isAutoCompactEnabled": true,
+      "messageBreakdown": {
+        "toolCallTokens": 3029,
+        "toolResultTokens": 16961,
+        "attachmentTokens": 1633,
+        "assistantMessageTokens": 2319,
+        "userMessageTokens": 844,
+        "redirectedContextTokens": 0,
+        "unattributedTokens": 9766,
+        "toolCallsByType": [
+          {
+            "name": "Read",
+            "callTokens": 138,
+            "resultTokens": 16802
+          },
+          {
+            "name": "Write",
+            "callTokens": 2812,
+            "resultTokens": 104
+          },
+          {
+            "name": "Bash",
+            "callTokens": 46,
+            "resultTokens": 27
+          },
+          {
+            "name": "Skill",
+            "callTokens": 33,
+            "resultTokens": 28
+          }
+        ],
+        "attachmentsByType": [
+          {
+            "name": "skill_listing",
+            "tokens": 1466
+          },
+          {
+            "name": "deferred_tools_delta",
+            "tokens": 155
+          },
+          {
+            "name": "command_permissions",
+            "tokens": 12
+          }
+        ]
+      },
+      "apiUsage": {
+        "input_tokens": 2,
+        "output_tokens": 150,
+        "cache_creation_input_tokens": 94,
+        "cache_read_input_tokens": 53626
+      }
+    },
+    "auth_used": "api_key",
+    "auth_attempts_available": [
+      "api_key"
+    ]
+  }
+}

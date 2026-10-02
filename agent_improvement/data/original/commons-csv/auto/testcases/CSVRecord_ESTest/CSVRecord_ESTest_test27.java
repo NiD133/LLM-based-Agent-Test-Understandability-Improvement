@@ -1,0 +1,29 @@
+package org.apache.commons.csv;
+
+import org.junit.Test;
+import static org.junit.Assert.*;
+import static org.evosuite.runtime.EvoAssertions.*;
+import java.io.Reader;
+import java.io.StringReader;
+import java.util.Locale;
+import java.util.Map;
+import org.evosuite.runtime.EvoRunner;
+import org.evosuite.runtime.EvoRunnerParameters;
+import org.junit.runner.RunWith;
+
+@RunWith(EvoRunner.class)
+@EvoRunnerParameters(mockJVMNonDeterminism = true, useVFS = true, useVNET = true, resetStaticState = true, separateClassLoader = false)
+public class CSVRecord_ESTest_test27 extends CSVRecord_ESTest_scaffolding {
+
+    @Test(timeout = 4000)
+    public void test27() throws Throwable {
+        CSVFormat cSVFormat0 = CSVFormat.ORACLE;
+        CSVParser cSVParser0 = CSVParser.parse("org.apache.commons.io.input.UncheckedBufferedReader$Builder", cSVFormat0);
+        CSVRecord cSVRecord0 = cSVParser0.nextRecord();
+        String[] stringArray0 = cSVRecord0.values();
+        assertEquals(1L, cSVRecord0.getRecordNumber());
+        assertEquals(1, stringArray0.length);
+        assertEquals(0L, cSVRecord0.getBytePosition());
+        assertEquals(0L, cSVRecord0.getCharacterPosition());
+    }
+}

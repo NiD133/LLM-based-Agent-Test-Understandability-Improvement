@@ -1,0 +1,352 @@
+[3] AGENT
+I’ll use the compile-check workflow the task requires. First I need to inspect the original test and the relevant CUT signatures so the refactor preserves exact behavior.
+
+[4] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+
+[5] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+
+[6] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/compile-check/SKILL.md"
+--- output ---
+---
+name: compile-check
+description: Compile-check a Java JUnit test by running `bash compile.sh` in your working directory. Invoke this skill EVERY time after you Write (or Edit) the output test file and before you declare the session complete. The skill returns either `COMPILE_OK` (you may stop the session and reply with a one-line confirmation) or `COMPILE_FAIL` followed by javac stderr (hand off to the `repair-loop` skill). Required: a test file must compile against the project classpath before the pipeline can measure coverage and mutation score, so do NOT end the session on an unverified file.
+---
+
+# How to compile-check the output test
+
+`compile.sh` sits in your working directory and already knows the correct
+classpath (project Maven deps + JUnit runtime + EvoSuite runtime if
+applicable). You do NOT need to construct any `javac` command yourself.
+
+## The command
+
+From your working directory, run exactly:
+
+```bash
+bash compile.sh
+```
+
+The script invokes `javac` on the test file you wrote to the output path,
+writes `.class` files into `test-classes/`, and prints **one of two literal
+strings** as the LAST line of stdout:
+
+- `COMPILE_OK` (exit code 0)
+- `COMPILE_FAIL (exit=<N>)` followed by the original `javac` stderr (exit ≠ 0)
+
+Use that final line as your decision signal — do not paraphrase or
+interpret the diagnostics beyond what the line tells you.
+
+## Outcome A — success
+
+```
+COMPILE_OK
+```
+
+Exit code 0. The output test is syntactically correct and its references to
+the class under test resolve. **You are done.** Reply with a short
+one-sentence confirmation and stop. Do NOT run `compile.sh` again, do NOT
+make extra edits.
+
+## Outcome B — failure
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+1 error
+COMPILE_FAIL (exit=1)
+```
+
+Exit code is non-zero. The `javac` stderr points at the exact file, line,
+and symbol that failed. Hand the failure to the `repair-loop` skill.
+
+## Things to remember
+
+- The class under test and the original test are READ-ONLY files at the
+  absolute paths given in your task; they are NOT in your working directory.
+  `Read` the CUT source there ONLY to understand the API — it is not what
+  `compile.sh` uses to compile (compile.sh compiles against the CUT bytecode
+  under the project's `target/classes/`, already on the classpath).
+- A `COMPILE_OK` only means **syntactic + symbol-level** correctness against
+  the CUT. It does NOT mean the test will pass at runtime. Runtime
+  verification (coverage + mutation testing) is done by the pipeline after
+  the session ends, not by you.
+- Bash is restricted to `bash compile.sh` only. Do NOT shell out to Python,
+  Maven, EvoSuite, or any other tool — those run in a separate post-session
+  pipeline step that you don't control.
+- Do NOT introduce new test framework dependencies. Stick to whatever the
+  original test imported (JUnit 4 or 5, AssertJ, etc.).
+
+
+[7] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/.agents/skills/repair-loop/SKILL.md"
+--- output ---
+---
+name: repair-loop
+description: Repair a Java JUnit test that failed to compile. Invoke this skill whenever the `compile-check` skill (i.e. `bash compile.sh`) reports `COMPILE_FAIL` with javac errors such as `cannot find symbol`, `package X does not exist`, `incompatible types`, `';' expected`, `method X cannot be applied to given types`, or similar. The skill walks the focused-edit + recompile cycle: read the javac stderr, identify the offending line, consult the CUT source (its path is given in your task) to find the correct API name, Edit ONLY the offending lines (not the whole test), then re-invoke `compile-check`. Stop after `COMPILE_OK`, or after the same error persists for 3 attempts, or when max_turns is exhausted. Do NOT use this skill for runtime test failures — this pipeline does not run tests during the agent session.
+---
+
+# Iterative compile-error repair
+
+When the `compile-check` skill reports `COMPILE_FAIL`, walk the
+cycle below. Do not abandon the refactoring, do not revert to the original
+test, and do not rewrite the test wholesale. Make the smallest possible
+local change that fixes the compile error.
+
+## The repair cycle
+
+1. **Read the first error in the stderr.** Cascade errors usually disappear
+   once the first one is fixed — start there.
+2. **Identify file, line, and symbol** from the `javac` message.
+3. **Read the CUT source** (its path is given in your task) to find the real
+   API. If you already read it earlier in this session, do NOT re-Read it —
+   the file is already in your context.
+4. **Use the `Edit` tool** to change ONLY the lines tied to the error.
+5. **Run `bash compile.sh` again.**
+6. **Repeat** until `COMPILE_OK` or you hit a stopping condition.
+
+**One (Edit → bash compile.sh) cycle = 1 attempt.** Count attempts yourself,
+regardless of whether the next `bash compile.sh` reports the SAME error or
+a NEW one. The pipeline does not maintain this counter for you.
+
+## Worked example: repairing a renamed method call
+
+Stderr from `compile.sh`:
+
+```
+NullReaderTest.java:42: error: cannot find symbol
+        reader.getLengthLong();
+              ^
+  symbol:   method getLengthLong()
+  location: variable reader of type NullReader
+COMPILE_FAIL (exit=1)
+```
+
+Diagnosis: line 42 calls a method that does not exist on `NullReader`.
+
+Workflow:
+
+1. Open the CUT source (its path is in your task) and search for `Length` or
+   `get…Long` to find the real method name. Discover it is
+   `public long getPosition()`.
+2. Edit only line 42:
+
+   ```java
+   // Before
+   reader.getLengthLong();
+   // After
+   reader.getPosition();
+   ```
+
+3. Run `bash compile.sh`. If it prints `COMPILE_OK`, stop with a one-line
+   confirmation.
+
+## Common error patterns and what they usually mean
+
+| stderr fragment | likely cause | fix direction |
+|---|---|---|
+| `cannot find symbol … method X` | renamed / mistyped method | check CUT, use the real method name |
+| `cannot find symbol … variable X` | typo'd local var or removed field | re-introduce or correct the name |
+| `cannot find symbol … class X` | missing `import` | add a single `import` line at the top |
+| `package X does not exist` | wrong package in `import` | verify the CUT's package, fix the import |
+| `incompatible types: A cannot be converted to B` | type mismatch | cast, change var type, or call a converter |
+| `';' expected` / `<identifier> expected` | syntax error from a partial Edit | re-read the broken line and fix it |
+| `method X in class Y cannot be applied to given types` | wrong overload / arg count | check CUT signature, fix the call |
+| `class X is public, should be declared in a file named X.java` | class-vs-file-name mismatch | rename either the class OR the file so they match. The pipeline does NOT rename for you. |
+
+## What NOT to do
+
+- Do NOT re-write the whole test on every failure — keep edits focused on
+  the reported lines.
+- Do NOT re-Read the output test in full on every cycle — your context
+  already has it after the first read.
+- Do NOT add new third-party dependencies. Only standard JDK + what the
+  original test already imports.
+- Do NOT add comments saying "fixed compile error" — the diff is the
+  explanation.
+- Do NOT silently change runtime behaviour while repairing — same
+  assertions, same call sequence, same fixtures. Repair = make-it-compile,
+  not improve-some-more.
+- Do NOT modify the `package` declaration — Maven discovery will break.
+- Do NOT remove `@Test` / `@BeforeEach` / `@AfterEach` / `@BeforeAll` /
+  `@AfterAll` annotations.
+
+## Stopping conditions
+
+Stop when **any** of these is true:
+
+- `bash compile.sh` prints `COMPILE_OK` → reply with one line and stop.
+- The same error persists after 3 attempts → reply with one line describing
+  what's stuck and stop. Further attempts unlikely to help.
+- The SDK ends the session because `max_turns` was reached → you do not
+  control this; nothing to do.
+
+
+[8] COMMAND in_progress
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-text/manual/testcases/StringTokenizerTest/StringTokenizerTest_testToString.java"
+
+[9] COMMAND completed
+/bin/zsh -lc "sed -n '1,220p' /Users/tenghaha/Desktop/Codex_Improvement/data/original/commons-text/manual/testcases/StringTokenizerTest/StringTokenizerTest_testToString.java"
+--- output ---
+package org.apache.commons.text;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.NoSuchElementException;
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.text.matcher.StringMatcher;
+import org.apache.commons.text.matcher.StringMatcherFactory;
+import org.junit.jupiter.api.Test;
+
+public class StringTokenizerTest_testToString {
+
+    private static final String CSV_SIMPLE_FIXTURE = "A,b,c";
+
+    private static final String TSV_SIMPLE_FIXTURE = "A\tb\tc";
+
+    private void checkClone(final StringTokenizer tokenizer) {
+        assertNotSame(StringTokenizer.getCSVInstance(), tokenizer);
+        assertNotSame(StringTokenizer.getTSVInstance(), tokenizer);
+    }
+
+    private void testCSV(final String data) {
+        testXSVAbc(StringTokenizer.getCSVInstance(data));
+        testXSVAbc(StringTokenizer.getCSVInstance(data.toCharArray()));
+    }
+
+    void testEmpty(final StringTokenizer tokenizer) {
+        checkClone(tokenizer);
+        assertFalse(tokenizer.hasNext());
+        assertFalse(tokenizer.hasPrevious());
+        assertNull(tokenizer.nextToken());
+        assertEquals(0, tokenizer.size());
+        assertThrows(NoSuchElementException.class, tokenizer::next);
+    }
+
+    void testXSVAbc(final StringTokenizer tokenizer) {
+        checkClone(tokenizer);
+        assertEquals(-1, tokenizer.previousIndex());
+        assertEquals(0, tokenizer.nextIndex());
+        assertNull(tokenizer.previousToken());
+        assertEquals("A", tokenizer.nextToken());
+        assertEquals(1, tokenizer.nextIndex());
+        assertEquals("b", tokenizer.nextToken());
+        assertEquals(2, tokenizer.nextIndex());
+        assertEquals("c", tokenizer.nextToken());
+        assertEquals(3, tokenizer.nextIndex());
+        assertNull(tokenizer.nextToken());
+        assertEquals(3, tokenizer.nextIndex());
+        assertEquals("c", tokenizer.previousToken());
+        assertEquals(2, tokenizer.nextIndex());
+        assertEquals("b", tokenizer.previousToken());
+        assertEquals(1, tokenizer.nextIndex());
+        assertEquals("A", tokenizer.previousToken());
+        assertEquals(0, tokenizer.nextIndex());
+        assertNull(tokenizer.previousToken());
+        assertEquals(0, tokenizer.nextIndex());
+        assertEquals(-1, tokenizer.previousIndex());
+        assertEquals(3, tokenizer.size());
+    }
+
+    @Test
+    void testToString() {
+        final StringTokenizer tkn = new StringTokenizer("a b c d e");
+        assertEquals("StringTokenizer[not tokenized yet]", tkn.toString());
+        tkn.next();
+        assertEquals("StringTokenizer[a, b, c, d, e]", tkn.toString());
+    }
+}
+
+
+[10] COMMAND in_progress
+/bin/zsh -lc "grep -n \"StringTokenizer\\|toString\" /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-text/src/main/java/org/apache/commons/text/StringTokenizer.java | head -80"
+
+[11] COMMAND completed
+/bin/zsh -lc "grep -n \"StringTokenizer\\|toString\" /Users/tenghaha/Desktop/Codex_Improvement/local_workplace/commons-text/src/main/java/org/apache/commons/text/StringTokenizer.java | head -80"
+--- output ---
+35: * {@link java.util.StringTokenizer StringTokenizer}, however it offers much more control and flexibility including
+36: * implementing the {@code ListIterator} interface. By default, it is set up like {@code StringTokenizer}.
+59: * <caption>StringTokenizer properties and options</caption>
+94:public class StringTokenizer implements ListIterator<String>, Cloneable {
+98:    private static final StringTokenizer CSV_TOKENIZER_PROTOTYPE = new StringTokenizer()
+109:    private static final StringTokenizer TSV_TOKENIZER_PROTOTYPE = new StringTokenizer()
+123:    private static StringTokenizer getCSVClone() {
+124:        return (StringTokenizer) CSV_TOKENIZER_PROTOTYPE.clone();
+137:    public static StringTokenizer getCSVInstance() {
+148:    public static StringTokenizer getCSVInstance(final char[] input) {
+159:    public static StringTokenizer getCSVInstance(final String input) {
+168:    private static StringTokenizer getTSVClone() {
+169:        return (StringTokenizer) TSV_TOKENIZER_PROTOTYPE.clone();
+181:    public static StringTokenizer getTSVInstance() {
+192:    public static StringTokenizer getTSVInstance(final char[] input) {
+203:    public static StringTokenizer getTSVInstance(final String input) {
+235:     * Constructs a tokenizer splitting on space, tab, newline and form feed as per StringTokenizer, but with no text to tokenize.
+240:    public StringTokenizer() {
+245:     * Constructs a tokenizer splitting on space, tab, newline and form feed as per StringTokenizer.
+249:    public StringTokenizer(final char[] input) {
+259:    public StringTokenizer(final char[] input, final char delim) {
+271:    public StringTokenizer(final char[] input, final char delim, final char quote) {
+282:    public StringTokenizer(final char[] input, final String delim) {
+293:    public StringTokenizer(final char[] input, final StringMatcher delim) {
+305:    public StringTokenizer(final char[] input, final StringMatcher delim, final StringMatcher quote) {
+311:     * Constructs a tokenizer splitting on space, tab, newline and form feed as per StringTokenizer.
+315:    public StringTokenizer(final String input) {
+325:    public StringTokenizer(final String input, final char delim) {
+337:    public StringTokenizer(final String input, final char delim, final char quote) {
+348:    public StringTokenizer(final String input, final String delim) {
+359:    public StringTokenizer(final String input, final StringMatcher delim) {
+371:    public StringTokenizer(final String input, final StringMatcher delim, final StringMatcher quote) {
+444:        final StringTokenizer cloned = (StringTokenizer) super.clone();
+815:    public StringTokenizer reset() {
+827:    public StringTokenizer reset(final char[] input) {
+839:    public StringTokenizer reset(final String input) {
+862:    public StringTokenizer setDelimiterChar(final char delim) {
+875:    public StringTokenizer setDelimiterMatcher(final StringMatcher delim) {
+886:    public StringTokenizer setDelimiterString(final String delim) {
+896:    public StringTokenizer setEmptyTokenAsNull(final boolean emptyAsNull) {
+910:    public StringTokenizer setIgnoredChar(final char ignored) {
+923:    public StringTokenizer setIgnoredMatcher(final StringMatcher ignored) {
+936:    public StringTokenizer setIgnoreEmptyTokens(final boolean ignoreEmptyTokens) {
+950:    public StringTokenizer setQuoteChar(final char quote) {
+963:    public StringTokenizer setQuoteMatcher(final StringMatcher quote) {
+978:    public StringTokenizer setTrimmerMatcher(final StringMatcher trimmer) {
+1039:    public String toString() {
+1041:            return "StringTokenizer[not tokenized yet]";
+1043:        return "StringTokenizer" + getTokenList();
+
+
+[12] AGENT
+The original `testToString` behavior is very small; most surrounding helpers and imports are unrelated fixtures from the broader test class. I’m going to write a focused version that keeps the same constructor call, `toString()` checks, and `next()` call, but removes the unused setup noise.
+
+[13] FILE_CHANGE in_progress
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/manual/testcases/StringTokenizerTest/testToString/StringTokenizerTest_testToString.java
+
+[14] FILE_CHANGE completed
+add: /Users/tenghaha/Desktop/Codex_Improvement/data/improved/codex-gpt-5.5-understandability_improvement_constraints/commons-text/manual/testcases/StringTokenizerTest/testToString/StringTokenizerTest_testToString.java
+
+[15] AGENT
+The test file is now focused on the `toString` scenario and avoids unrelated imports/helpers. I’m running the required compile check exactly through `compile.sh`.
+
+[16] COMMAND in_progress
+/bin/zsh -lc 'bash compile.sh'
+
+[17] COMMAND completed
+/bin/zsh -lc 'bash compile.sh'
+--- output ---
+COMPILE_OK
+
+
+[18] AGENT
+COMPILE_OK — refactored `StringTokenizerTest_testToString.java` is focused on the tested behavior and compiles successfully.
