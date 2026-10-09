@@ -38,7 +38,7 @@ To run any script, do these two steps first:
    runs RefactoringMiner, GumTree and the oracle-masking helper) and, only if you
    intend to call the agents (Step 4, stability
    runs, RQ4 oracle generation), the credentials `CLAUDE_CODE_OAUTH_TOKEN` or
-   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `CODEX_CLI_PATH`. Every config file
+   `ANTHROPIC_API_KEY`, and `CODEX_CLI_PATH`. Every config file
    refers to the JDKs through these variables; nothing else is machine-specific.
 2. **Install the Python packages.** Python 3.11 or newer, then
 
