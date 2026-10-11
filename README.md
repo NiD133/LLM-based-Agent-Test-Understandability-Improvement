@@ -266,7 +266,6 @@ for EvoSuite tests.
 | `comparison.covered_lines_diff` | `only_in_improved`, `only_in_baseline`, `common_count` |
 | `comparison.killed_mutants_diff` | `only_in_improved`, `only_in_baseline` |
 | `comparison.verdict.is_exact_match` | **the acceptance flag**: same covered lines, same covered branches, same killed mutants |
-| `comparison.verdict.is_superset_or_equal` | improved kills at least the baseline's mutants |
 
 ### `improved/summary/` — the behaviour-check aggregate
 
@@ -280,6 +279,7 @@ Produced by `pipeline_control.generate_summary: true` in `agent_improvement/conf
 | `summary.md` | one table: accepted (exact-match) suites and cases per model, by test origin, with totals — the paper's "accepted tests" table. Computed from `comparison.verdict.is_exact_match` of every `metrics.json` |
 | `feature_analysis_input.json` | `{"tests": [...]}` — one entry per (model, test) whose improvement is exact match (17,190 entries: 5,810 Opus, 5,772 Sonnet, 5,608 GPT-5.5). Each entry: `model`, `project`, `src`, `gran`, `suite`, `case`, `class_fqn`, `original` and `improved` (paths of the two `.java` files, relative to the repository root), `exact_in_all_models`. The work list of `feature_analysis/feature_analysis.py` (RQ1) |
 | `suite_cases.json` | `{"units": [...]}` — one entry per (model, project, src, suite), 840 in total, with `suite_exact`, `n_cases`, `n_cases_exact`, `case_exact_fraction`, `non_exact_cases`, `both_exact` and `passes` (= suite exact AND ≥ 90 % of its cases exact). 719 units pass: 245 Opus, 236 Sonnet, 238 GPT-5.5. `feature_analysis/plot_heatmaps.py` pairs suite and cases only for passing units (RQ3) |
+| `per_test.csv` | one row per (model, test), 18,120 rows: the verdict and its three parts (`is_exact_match`, `is_lines_equal`, `is_branches_equal`, `is_mut_superset`), coverage and mutation score of the improved test, `mutants_killed_original` / `_improved`, `loc_original` / `loc_improved` (SLOC), `n_oracles_original` / `n_oracles_improved` (counted by `agent_improvement/scripts/mask_oracles.py`), the two `.java` paths, token usage. Read by `human_evaluation/select_human_eval.py` and `downstream_tasks/.../select_suites.py` |
 
 ### Reading it
 
@@ -394,8 +394,9 @@ human_evaluation/
   select_human_eval.py        stage 1-2: picks the 180 pairs and lays them out over 15 surveys x 2 parts
   human_eval_selection.json   its output: the 180 generated pairs with model, origin, project, suite, case,
                               LOC bucket, features, survey, part, slot, phase (floor / random), Test A side
-  human_eval_summary.md       the same selection for a reader: quotas, question order, feature coverage,
-                              the pair list of every survey
+  human_eval_summary.md       the script's output (stages 1-2) for a reader: quotas, question order, feature
+                              coverage, the pair list of every survey, plus the kept-vs-replaced comparison;
+                              57 of its slots differ from the deployed surveys
   analysis/manual_replacements.csv
                               stage 3: the 57 slots replaced by hand before deployment
                               (generated pair -> shipped pair, same model / origin / LOC bucket flags)
@@ -404,8 +405,9 @@ human_evaluation/
   FinalSurveys/Agent_<N>_Understandability.qsf            the 15 surveys as shipped
   FinalSurveys/Agent_<N>_Understandability_responses.csv  the Qualtrics responses, de-identified
                               (IP, location, name and e-mail columns removed; Prolific IDs replaced by P01-P49)
-  identify_stimuli.py         recovers, from the shipped .qsf files, which test each slot shows
-  analysis/design_map.csv     its output, one row per slot; analyze_human_eval.py reads it
+  analysis/design_map.csv     one row per slot of the 15 shipped surveys (survey, part, slot, model,
+                              origin, project, suite, case, LOC, LOC bucket, features), recovered from
+                              the .qsf files; analyze_human_eval.py reads it
   analyze_human_eval.py       the numbers the paper reports -> analysis/results.md, analysis/results.json
 ```
 
@@ -419,19 +421,27 @@ long > 30 LOC of the original test without blank, comment, package and import
 lines) with seed 20260924, and laid out so that Part 1 shows the two versions of
 a pair at least four screens apart (three pairs original-first) and Part 2 puts
 the improved version as Test A in three of six pairs. Stage 3, by hand: before
-deployment 57 pairs were replaced by pairs from the same stratum
-(`analysis/manual_replacements.csv`). `survey_allocation.md` shows the result:
-90 developer-written / 90 EvoSuite pairs, 29–31 per model × origin column, all
-14 projects, and every recurrent feature covered in its column.
+deployment the draw was screened and 57 of the 180 pairs were replaced, mainly
+where the improvement was too small to be visible on a short test (identifier
+renames, comment edits or blank lines only), where the split test file consisted
+largely of suite scaffolding copied in by the test splitter (data providers,
+helper methods), or to reduce repetition of the same test class across surveys;
+four slots were swapped between surveys to keep the per-column quotas. 48 of the
+57 replacements stay in the same model × origin × length stratum.
+`analysis/manual_replacements.csv` lists every replacement.
+`survey_allocation.md` shows the deployed result: 90 developer-written / 90
+EvoSuite pairs, 29–31 per model × origin column, all 14 projects, and every
+recurrent feature covered in its column. The replacement did not drive the
+result: the 123 untouched script-selected pairs show an effect at least as
+strong as the full set (`human_eval_summary.md`, last section).
 
 The selection script is kept as the record of stages 1–2. Its input
 `feature_by_test.csv` was regenerated after the draw (comment features were
 re-defined), so running it today yields a different set that satisfies the same
-rules; the surveys that were actually shipped are the `.qsf` files, and
-`identify_stimuli.py` recovers their content.
+rules; the surveys that were actually shipped are the `.qsf` files.
+`human_eval_summary.md` is that script's output, not the deployed set.
 
 ```bash
-python3 human_evaluation/identify_stimuli.py       # -> analysis/design_map.csv
 python3 human_evaluation/analyze_human_eval.py     # -> analysis/results.md, results.json
 ```
 

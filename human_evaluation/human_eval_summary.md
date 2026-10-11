@@ -2,6 +2,8 @@
 
 Seed `20260924`. Drawn from 13829 eligible pairs (4836 distinct test logics).
 
+**Status.** This file is the output of `select_human_eval.py` (stages 1–2 of the selection). Before deployment the draw was screened by hand and 57 of the 180 slots were replaced (`analysis/manual_replacements.csv`); the per-survey lists below therefore differ from the shipped surveys in those slots. The deployed content is in `survey_allocation.md`. Because the script's input (`feature_by_test.csv`) was regenerated after the draw, re-running the script today produces a different set under the same rules. The last section of this file compares the human ratings on the untouched and the replaced slots.
+
 ## Summary
 
 | model | manual | auto | total |
@@ -563,3 +565,15 @@ All floors met.
    - features: Blank-Line Separation Added, Javadoc Comment Change, Method Rename, Variable Rename
 6. **[gpt-5.5]** commons-collections / BoundedIteratorTest / testFullIterator  (manual, long, 43→35 LOC)  — Test A = original
    - features: Add Attribute Modifier, Attribute Rename, Blank-Line Separation Added, Change Attribute Type, Change Return Type, Change Variable Type, Javadoc Comment Change, Line Comment Change, Remove Method Annotation, Remove Thrown Exception Type, Variable Rename
+
+## Replaced vs. script-selected slots
+
+57 of the 180 slots were replaced before deployment. The table compares the ratings of the 45 included participants on the 123 untouched script-selected slots, on the 57 replaced slots and on all 180 (the numbers the paper reports), computed with the same filtering as `analyze_human_eval.py`.
+
+| | script-selected, untouched (123 slots) | replaced (57 slots) | all (paper) |
+|---|---|---|---|
+| Part 1 individual rating, original → improved | 3.21 → 4.22 (Δ +1.01) | 3.24 → 3.85 (Δ +0.61) | 3.22 → 4.09 (Δ +0.87) |
+| Part 2 pairwise rating, original → improved | 2.51 → 4.48 (Δ +1.97) | 2.65 → 4.37 (Δ +1.72) | 2.55 → 4.45 (Δ +1.90) |
+| Part 2 improved version preferred (decisive comparisons) | 185 / 192 (96.4 %) | 71 / 74 (95.9 %) | 256 / 266 (96.2 %) |
+
+The untouched slots and the full set give the same picture: the improved version is preferred in 96 % of decisive comparisons in both, and the rating gains differ by 0.1 points or less (Part 1 +1.01 vs +0.87, Part 2 +1.97 vs +1.90). The replaced slots score slightly lower, not higher, so the manual screening did not inflate the reported effect.
