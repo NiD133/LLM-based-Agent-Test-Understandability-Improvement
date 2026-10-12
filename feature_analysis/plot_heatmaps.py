@@ -3,8 +3,6 @@
 plot_heatmaps.py — feature-change heatmaps for RQ1.
 
     python3 feature_analysis/plot_heatmaps.py
-    python3 feature_analysis/plot_heatmaps.py --granularity testsuites
-    python3 feature_analysis/plot_heatmaps.py --top-n 15
 
 INPUT — one file:
 
@@ -38,9 +36,6 @@ GRANULARITY IS FIXED, NOT MIXED
     every split case gets its own Javadoc, which is exactly why mixing them
     cannot be fixed by a caveat in the caption.)
 
-    Pass --granularity testsuites for the suite-level figure, and read the two
-    side by side rather than merging them.
-
 COLUMNS: 3 models, one figure per origin. Manual and auto are NOT put on one
     grid: they are different test populations (developer-written vs
     EvoSuite-generated), they do not share a row set — manual carries 63
@@ -49,7 +44,7 @@ COLUMNS: 3 models, one figure per origin. Manual and auto are NOT put on one
     Delta figure carries the cross-origin comparison instead.
 
 OUTPUT — feature_analysis/out/heatmaps/, every figure as .pdf (no CSV, no
-JSON, no TXT; --formats png,pdf adds PNG previews). The PDF is the one to
+JSON, no TXT). The PDF is the one to
 \\includegraphics: text and cells are vector, fonts are embedded as TrueType.
 ONE plain run writes all of these:
 
@@ -217,9 +212,8 @@ DROP_ALL_ZERO_ROWS = True
 # --fig-width 3.4 for a single column; --font-scale to trade legibility
 # against how many columns fit.
 DPI = 300                  # 220 was below most venues' camera-ready floor
-# Every figure is written once per format. PDF only by default — it is what the
-# paper includes; --formats png,pdf adds PNG previews. DPI only matters for the
-# PNG — the PDF has no raster content.
+# Every figure is written once per format. PDF only — it is what the paper
+# includes. DPI would only matter for a PNG — the PDF has no raster content.
 OUTPUT_FORMATS = ("pdf",)
 FIG_WIDTH_IN = 7.0         # \textwidth of a 2-column IEEE/ACM page
 CELL_FONTSIZE = 7.0
@@ -227,8 +221,8 @@ LABEL_FONTSIZE = 7.5
 TITLE_FONTSIZE = 8.5
 ROW_HEIGHT_IN = 0.24       # ~2.5x the 7 pt line height
 CHROME_H_IN = 1.30         # title + rotated x labels + margins
-# --no-title: a paper figure carries its title in the LaTeX caption. The
-# figure then gets shorter by one title line and its pad, rather than handing
+# SHOW_TITLE = False: a paper figure carries its title in the LaTeX caption.
+# The figure then gets shorter by one title line and its pad, rather than handing
 # that space to taller rows.
 SHOW_TITLE = True
 TITLE_H_IN = 0.25

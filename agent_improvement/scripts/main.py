@@ -133,12 +133,10 @@ def load_config(config_path: str) -> types.SimpleNamespace:
     and deep-merges this one on top. It lets a sub-study keep its own config
     without duplicating the shared blocks that would then drift:
 
-        # downstream/config.yaml
-        extends: "../config.yaml"      # inherit tools:, mutation_testing:, …
+        # <sub-study>/config.yaml
+        extends: "../config.yaml"        # inherit tools:, mutation_testing:, …
         paths:
-          data_root: "downstream/data" # …but redirect the whole output tree
-        downstream:
-          ...
+          data_root: "<sub-study>/data"  # …but redirect the whole output tree
 
     `extends` is resolved relative to the config file that declares it, and
     chains (a parent may extend a grandparent). A config without the key
@@ -429,8 +427,8 @@ def original_dir(project_id: str, test_category: str,
 
     `filter_out_baseline` writes here AFTER applying stage_gates. Only classes
     that passed the gate (or all classes when apply_filter=false) are copied
-    from baseline/ to original/. Downstream steps (Step 4 agent improvement,
-    Step 5 compile improved, Step 6 evaluation) consume from here."""
+    from baseline/ to original/. The later steps (Step 3 split, Step 4 agent
+    improvement, Step 5 compile and measure) consume from here."""
     return _per_test_dir(ORIGINAL_ROOT, project_id, test_category, suite_class)
 
 
@@ -1017,8 +1015,6 @@ def _build_merged_metrics(
     # set() them directly — dicts aren't hashable. Use _killed_mutant_key()
     # to derive a hashable identity tuple per mutant; preserve the original
     # dicts in the diff output so the report stays human-readable.
-    # (Same key function is used by Step 6 _is_exact_match, so the two
-    #  diff/verdict views stay consistent.)
     imp_by_key  = {_killed_mutant_key(m): m
                    for m in (imp.get("killed_mutants") or [])
                    if isinstance(m, dict)}
@@ -1032,7 +1028,7 @@ def _build_merged_metrics(
         "only_in_baseline": [base_by_key[k] for k in sorted(base_mut_keys - imp_mut_keys)],
     }
 
-    # Exact-match criterion used by Step 6 (build_evaluation_set):
+    # Exact-match criterion (the acceptance verdict written to metrics.json):
     #   line covered_lines set-equal AND branches_by_line set-equal
     #   AND killed_mutants ⊇ baseline.killed_mutants
     is_lines_equal   = (imp_lines == base_lines)
@@ -2874,8 +2870,7 @@ def _requested_agent_models(cfg) -> dict[str, list[str]]:
     Routing is decided by which config section the model lives in, NOT by
     parsing the model id prefix. So `agent.model: "anything-you-want"`
     always goes to Claude Code SDK; `codex_agent.model: "anything"` goes to
-    the configured Codex runtime (CLI by default; OpenAI Agents SDK when
-    `codex_agent.runtime: agents_sdk`).
+    the Codex CLI runner.
     """
     claude = _models_from_section(getattr(cfg, "agent", None))
     codex  = _models_from_section(getattr(cfg, "codex_agent", None))
@@ -3028,34 +3023,9 @@ def _killed_mutant_key(m: dict) -> tuple:
     )
 
 
-# ── Step 6 — three INDEPENDENT evaluation tasks ─────────────────────────────
-# Each is gated by its OWN `enabled:` flag, reads the shared per-test index
-# data/exact_match.json, applies ITS OWN filtering metrics (from the same
-# pipeline_control block), and writes ONE file under its own data/<task>/ folder.
-
 def _enabled(block) -> bool:
     """True when a nested pipeline_control block carries `enabled: true`."""
     return bool(getattr(block, "enabled", False))
-
-
-# ── Step 6a — human evaluation set ──────────────────────────────────────────
-
-
-# ── Step 6b — structural analysis set ───────────────────────────────────────
-
-
-# ── Step 6c — downstream task set (oracle kill-contribution) ─────────────────
-
-
-    # NOTE: the three Step-6 OUTPUT files (human_eval / structural_analysis /
-    # downstream_tasks) are NO LONGER written here. Each is now an independent,
-    # separately-gated task that reads data/exact_match.json and applies its own
-    # filtering metrics — see run_build_human_eval / run_structural_analysis /
-    # run_filter_downstream_tests. build_evaluation_set only produces the
-    # data/evaluation/ review tree + its SUMMARY now.
-
-
-# ── Final report ──────────────────────────────────────────────────────────────
 
 
 # ── Pipeline-control helpers ─────────────────────────────────────────────────

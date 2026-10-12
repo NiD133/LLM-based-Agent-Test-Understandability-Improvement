@@ -150,7 +150,7 @@ def _n_oracles(text: str) -> Optional[int]:
 
 def _class_path_map(data_root: Path) -> dict:
     """{class_fqn: class_path} from data/dataset.json, so each record can carry
-    the source path the old exact_match.json had. Empty when the manifest is
+    the source path of the class under test. Empty when the manifest is
     absent — the field simply comes back None."""
     manifest = data_root / "dataset.json"
     if not manifest.exists():

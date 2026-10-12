@@ -246,7 +246,7 @@ for EvoSuite tests.
 
 | Field | Meaning |
 |---|---|
-| `status` | `COMPILE_SUCCESS`, `COMPILE_FAIL`, `MAX_ATTEMPTS`, `LLM_ERROR` — how the agent session ended |
+| `status` | `COMPILE_SUCCESS`, `COMPILE_FAIL` — how the agent session ended |
 | `attempts_used`, `agent_compile_attempts` | compile/repair rounds the agent used |
 | `model`, `provider_model`, `actual_provider_model`, `prompt_version` | what was run |
 | `initial_prompt` | the turn-1 user message (same text as `prompt.txt`) |
@@ -522,7 +522,7 @@ Each setting is run three times (`runs/<setting>_run<k>/`).
 | stage | script | output |
 |---|---|---|
 | 1 remove oracles, measure | `prep.py` | `suites/<S>/{original/<S>.java, masked/<S>.java, gt.json, floor.json, mask_info.json}`, `prep_summary.json` |
-| 2 improve the oracle-free suite | `improve.py` | `improve/results.json`, `improve/results/<unit>/` (trace, state, tests), `improved/<S>/<S>.java` |
+| 2 improve the oracle-free suite | `improve.py` | `improve/results.json`, `improve/results/<unit>/` (trace, state), `improved/<S>/<S>.java` |
 | 3 consistency gate | `gate.py` | `gate_summary.json` (improved suite covers the same lines and branches and kills the same mutants as its floor); 47 of 49 pass |
 | 4 regenerate oracles, 3 settings × 3 runs | `oraclegen.py` | `runs/<label>/results.json` (94 rows = 47 suites × 2 arms), `runs/<label>/results/<unit>/{state.json, trace.txt, thinking.txt, tests/}` |
 | summary | `summarize.py`, `per_suite.py`, `combined_table.py` | `FINAL_REPORT.txt`, `PER_SUITE.txt`, `COMBINED_TABLE.txt` |

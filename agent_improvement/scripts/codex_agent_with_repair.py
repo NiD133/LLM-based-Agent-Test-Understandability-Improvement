@@ -75,7 +75,7 @@ def resolve_skill_path(mode: str, cfg=None) -> Optional[Path]:
 
     if mode_key in {"compile", "compile_check", "coverage", "compile_coverage"}:
         explicit_attr = "compile_check_skill_path"
-        skill_dir_names = ["compile-check", "compile-coverage-check"]
+        skill_dir_names = ["compile-check"]
     elif mode_key in {"repair", "with_repair"}:
         explicit_attr = "repair_skill_path"
         skill_dir_names = ["repair-loop"]
@@ -547,10 +547,7 @@ def analyze_codex_skill_usage(raw_jsonl: str, skill_cards: Optional[list[dict]] 
                 if name:
                     loaded_names.add(name)
 
-        # Backward-compatible aliases: early runs used both directory names in
-        # different workspaces.
-        if ".agents/skills/compile-check/SKILL.md" in searchable \
-                or ".agents/skills/compile-coverage-check/SKILL.md" in searchable:
+        if ".agents/skills/compile-check/SKILL.md" in searchable:
             loaded_names.add("compile-check")
         if ".agents/skills/repair-loop/SKILL.md" in searchable:
             loaded_names.add("repair-loop")
@@ -566,9 +563,7 @@ def analyze_codex_skill_usage(raw_jsonl: str, skill_cards: Optional[list[dict]] 
         if "COMPILE_OK" in output:
             compile_sh_successes += 1
 
-    compile_loaded = bool(
-        {"compile-check", "compile-coverage-check"} & loaded_names
-    )
+    compile_loaded = "compile-check" in loaded_names
     repair_loaded = "repair-loop" in loaded_names
     return {
         "skill_configured": bool(skill_cards),

@@ -3,7 +3,6 @@
 select_human_eval.py — pick and lay out the 180 test pairs for the human study.
 
     python3 human_evaluation/select_human_eval.py
-    python3 human_evaluation/select_human_eval.py --export-code
     python3 human_evaluation/select_human_eval.py --seed 7        # sensitivity run
 
 WHAT THIS PRODUCES
@@ -79,7 +78,6 @@ OUTPUTS — human_evaluation/
     human_eval_part1_layout.csv   15 x 12 rows, the Part-1 position schedule
     human_eval_summary.md         quota check + per-column coverage table
     human_eval_selection.json     full record incl. config and seed
-    surveys/                      only with --export-code: the .java files
 """
 
 from __future__ import annotations

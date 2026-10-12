@@ -6,26 +6,19 @@ Single source of truth for the two run-time output roots:
 
 WHY THIS EXISTS
 ---------------
-These two roots used to be hardcoded independently in ~6 scripts
-(git_manager, coverage_runner, main, downstream_agent, evosuite_runner,
-jacoco_html), so there was no way to point one experiment's output somewhere
-else without editing every file. Now every script asks THIS module at
-run time, and the roots are driven by config.yaml:
+These two roots used to be hardcoded independently in several scripts
+(git_manager, coverage_runner, main, evosuite_runner), so there was no way to
+point one experiment's output somewhere else without editing every file. Now
+every script asks THIS module at run time, and the roots are driven by
+config.yaml:
 
     paths:
       workplace_dir: "local_workplace"   # relative to project root, or absolute
       data_root:     "data"
 
-A downstream task can therefore keep its clones + data fully self-contained:
-
-    # downstream/config.yaml
-    paths:
-      workplace_dir: "downstream/local_workplace"
-      data_root:     "downstream/data"
-
-so running the pipeline with --config downstream/config.yaml never touches
-the main study's local_workplace/ or data/ (including the shared
-exact_match.json / SUMMARY / tests_for_improvements.json aggregation files).
+A sub-study can therefore keep its clones + data fully self-contained by
+pointing both roots elsewhere in its own config, so running the pipeline with
+that config never touches the main study's local_workplace/ or data/.
 
 HOW IT WORKS
 ------------

@@ -1,7 +1,7 @@
 # Human study: what each survey contains
 
 Recovered from the 15 shipped Qualtrics surveys (`FinalSurveys/Agent_<N>_Understandability.qsf`):
-the same data as `analysis/design_map.csv` and `analysis/tables/stimuli.csv`, laid out per survey.
+the same data as `analysis/design_map.csv`, laid out per survey.
 A *pair* is one original test and its agent-improved version. In Part 1 the two versions are separate Likert
 items (screen = position among the 13 Part-1 screens, screen 10 is the attention check; I = improved, O = original).
 In Part 2 they are shown side by side as Test A and Test B (the attention check is the third of seven screens).

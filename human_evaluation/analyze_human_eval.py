@@ -16,7 +16,7 @@ INPUTS
         Agent_<N>_Understandability_*.zip    the Qualtrics response export
         (or a loose Agent_<N>_*.csv in the same folder)
     human_evaluation/analysis/design_map.csv
-                                             written by identify_stimuli.py:
+                                             recovered from the shipped .qsf files:
                                              the LLM and test source of every
                                              slot, which the .qsf does not carry
 
@@ -59,9 +59,6 @@ WHAT IS COMPUTED -- only what the paper reports
                     per feature: times selected, share of judgements,
                     participants who selected it, mean Part-2 gain when
                     selected vs not, Cliff's delta
-
-    identify_stimuli.py imports the side map, Survey, sloc and LOC_BUCKETS
-    from this module, so keep those names.
 
 THE DESIGN, AS SHIPPED
     Part 1  12 Likert items = 6 tests x 2 versions. Both versions of the same
@@ -159,10 +156,6 @@ PART2_SIDE_A = {
     "P2_P05": "improved", "P2_P06": "original", "P2_P07": "original",
 }
 PART2_AC = "P2_P03_AC"
-
-# LOC strata of the study (short <= 15 < medium <= 30 < long). Not used by the
-# summary; identify_stimuli.py imports it.
-LOC_BUCKETS = {"short": (0, 15), "medium": (15, 30)}   # above medium = "long"
 
 # Part-2 screens in slot order: the attention check sits between slots 2 and 3,
 # so the on-screen numbering skips P03.
@@ -667,7 +660,7 @@ def build_tables(surveys: dict[int, Survey], responses: dict[int, pd.DataFrame])
 
 def apply_meta(T: dict, path: Path) -> None:
     """Join each slot's LLM (`model`) and test source (`src`) from the design
-    map written by identify_stimuli.py; the .qsf carries neither. Key: survey,
+    map (analysis/design_map.csv); the .qsf carries neither. Key: survey,
     part (1 or 2), slot (1..6; Part-2 screens map to slots via PART2_SLOT)."""
     m = pd.read_csv(path)
     need = ["survey", "part", "slot", "model", "src"]
@@ -685,7 +678,7 @@ def apply_meta(T: dict, path: Path) -> None:
                           on=["survey", "slot"], how="left", validate="m:1")
         if merged[["model", "src"]].isna().to_numpy().any():
             raise SystemExit(f"{path}: some {name} rows have no model/src entry; "
-                             f"re-run identify_stimuli.py")
+                             f"check analysis/design_map.csv")
         T[name] = merged
 
 
@@ -1120,7 +1113,7 @@ def main() -> None:
     ap.add_argument("--survey-dir", type=Path, default=SURVEY_DIR)
     ap.add_argument("--out", type=Path, default=OUT_DIR)
     ap.add_argument("--meta", type=Path, default=META_FILE,
-                    help="design map from identify_stimuli.py, for the LLM and "
+                    help="design map (analysis/design_map.csv), for the LLM and "
                          "test-source breakdown (default: %(default)s)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
@@ -1130,7 +1123,7 @@ def main() -> None:
     if not args.survey_dir.is_dir():
         raise SystemExit(f"{args.survey_dir} not found")
     if not args.meta.is_file():
-        raise SystemExit(f"{args.meta} not found; run identify_stimuli.py first")
+        raise SystemExit(f"{args.meta} not found")
 
     surveys, responses = {}, {}
     for qsf in sorted(args.survey_dir.glob("Agent_*_Understandability.qsf")):
